@@ -133,6 +133,18 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         { status: 400 },
       );
     }
+    if (message.includes("status 404")) {
+      return NextResponse.json(
+        { error: "API 端点不存在（404），请检查模型提供商的 API Base URL 是否正确。" },
+        { status: 502 },
+      );
+    }
+    if (message.includes("status 401") || message.includes("status 403")) {
+      return NextResponse.json(
+        { error: "API 认证失败，请检查模型提供商的 API Key 是否正确。" },
+        { status: 502 },
+      );
+    }
     return NextResponse.json({ error: `模型请求失败：${message}` }, { status: 502 });
   }
 
