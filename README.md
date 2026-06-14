@@ -1,36 +1,69 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AI Project Docs
 
-## Getting Started
+AI Project Docs 是一个本地优先的开源项目设计文档工作台，面向小型外包项目和个人开发流程。
 
-First, run the development server:
+## 功能
+
+- 创建本地项目
+- 按 12 个固定流程节点设计项目
+- 每个节点支持 Agent 对话、追问和 Markdown 编辑
+- 汇总生成 `PROJECT_DESIGN.md`
+- 导出正式 Word 文档 `项目开发设计文档.docx`
+- 生成 AI 开发上下文包：`SPEC.md`、`TASKS.md`、`AGENTS.md`
+
+## 本地启动
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+打开：
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 模型配置
 
-## Learn More
+第一版使用 OpenAI-compatible Chat Completions API。可以使用 OpenAI、DeepSeek、通义千问、硅基流动或其他兼容服务。
 
-To learn more about Next.js, take a look at the following resources:
+复制环境变量示例：
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+cp .env.example .env.local
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+然后填写：
 
-## Deploy on Vercel
+```env
+OPENAI_COMPATIBLE_API_BASE_URL=https://api.example.com/v1
+OPENAI_COMPATIBLE_API_KEY=your-key
+OPENAI_COMPATIBLE_MODEL=your-model
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## 本地文件结构
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```text
+projects/
+  <project-id>/
+    project.json
+    nodes/
+    chat/
+    exports/
+```
+
+## 设计流程节点
+
+1. 项目基本信息
+2. 需求背景与建设目标
+3. 用户角色与权限
+4. 业务流程设计
+5. 功能模块设计
+6. 页面与交互设计
+7. 数据结构设计
+8. 接口设计
+9. 技术架构与部署
+10. 开发任务拆分
+11. 待确认事项与风险
+12. 最终文档生成
