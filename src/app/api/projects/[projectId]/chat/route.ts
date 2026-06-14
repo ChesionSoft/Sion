@@ -19,6 +19,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     providerId?: string;
     model?: string;
     fileIds?: string[];
+    sessionId?: string;
   };
 
   if (!body.nodeId || !isWorkflowNodeId(body.nodeId)) {
@@ -107,12 +108,24 @@ export async function POST(request: Request, context: { params: Promise<{ projec
 
   const systemPrompt = systemPromptParts.join("\n");
 
+  let sessionId = body.sessionId;
+  if (sessionId) {
+    try {
+      await projectStore.getChatMessages(projectId, body.nodeId, sessionId);
+    } catch {
+      return NextResponse.json({ error: "会话不存在" }, { status: 404 });
+    }
+  } else {
+    const session = await projectStore.createSession(projectId, body.nodeId);
+    sessionId = session.id;
+  }
+
   await projectStore.appendChatMessage(projectId, body.nodeId, {
     id: randomUUID(),
     role: "user",
     content: body.message.trim(),
     createdAt: new Date().toISOString(),
-  });
+  }, sessionId);
 
   let assistantContent: string;
   try {
@@ -153,7 +166,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     role: "assistant",
     content: assistantContent,
     createdAt: new Date().toISOString(),
-  });
+  }, sessionId);
 
-  return NextResponse.json({ messages, assistantContent });
+  return NextResponse.json({ messages, assistantContent, sessionId });
 }

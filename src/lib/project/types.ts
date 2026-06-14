@@ -33,6 +33,15 @@ export type ChatMessage = {
   createdAt: string;
 };
 
+export type ChatSession = {
+  id: string;
+  nodeId: WorkflowNodeId;
+  name: string;
+  messageCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ProjectNode = {
   id: WorkflowNodeId;
   status: NodeStatus;

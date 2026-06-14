@@ -1,16 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FileIcon, SendIcon, XIcon } from "lucide-react";
+import { FileIcon, PlusIcon, SendIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import type { ChatMessage, ModelProvider, ProjectFile, ProjectNode } from "@/lib/project/types";
+import type { ChatMessage, ChatSession, ModelProvider, ProjectFile, ProjectNode } from "@/lib/project/types";
 
 export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; projectId: string }) {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState("");
   const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
@@ -19,6 +21,39 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  async function loadSessionMessages(sessionId: string) {
+    const response = await fetch(
+      `/api/projects/${projectId}/chat/sessions/${sessionId}?nodeId=${activeNode.id}`,
+    );
+    const data = (await response.json()) as { messages?: ChatMessage[]; error?: string };
+
+    if (!response.ok) {
+      setError(data.error ?? "读取会话失败");
+      return;
+    }
+
+    setMessages(data.messages ?? []);
+  }
+
+  async function createSession() {
+    setError("");
+    const response = await fetch(`/api/projects/${projectId}/chat/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nodeId: activeNode.id }),
+    });
+    const data = (await response.json()) as { session?: ChatSession; error?: string };
+
+    if (!response.ok || !data.session) {
+      setError(data.error ?? "创建会话失败");
+      return;
+    }
+
+    setSessions((current) => [data.session as ChatSession, ...current].slice(0, 10));
+    setActiveSessionId(data.session.id);
+    setMessages([]);
+  }
 
   useEffect(() => {
     fetch("/api/settings/model-providers")
@@ -40,6 +75,45 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
       .then((d: { files: ProjectFile[] }) => setProjectFiles(d.files))
       .catch(() => {});
   }, [projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch(`/api/projects/${projectId}/chat/sessions?nodeId=${activeNode.id}`)
+      .then(async (response) => {
+        const data = (await response.json()) as { sessions?: ChatSession[]; error?: string };
+        return { data, ok: response.ok };
+      })
+      .then(({ data, ok }) => {
+        if (cancelled) return;
+
+        if (!ok) {
+          setError(data.error ?? "读取会话失败");
+          setSessions([]);
+          setActiveSessionId("");
+          setMessages([]);
+          return;
+        }
+
+        if (data.sessions?.length) {
+          setSessions(data.sessions);
+          setActiveSessionId(data.sessions[0].id);
+          loadSessionMessages(data.sessions[0].id);
+          return;
+        }
+
+        createSession();
+      })
+      .catch(() => {
+        if (!cancelled) setError("读取会话失败");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // createSession/loadSessionMessages intentionally use current node state for this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, activeNode.id]);
 
   const selectedProvider = providers.find((p) => p.id === selectedProviderId);
   const selectedFiles = projectFiles.filter((f) => selectedFileIds.includes(f.id));
@@ -66,11 +140,13 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
           providerId: selectedProviderId,
           model: selectedModel,
           fileIds: selectedFileIds,
+          sessionId: activeSessionId || undefined,
         }),
       });
       const data = (await res.json()) as {
         messages?: ChatMessage[];
         assistantContent?: string;
+        sessionId?: string;
         error?: string;
       };
 
@@ -80,6 +156,16 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
       }
 
       setMessages(data.messages);
+      if (data.sessionId) {
+        setActiveSessionId(data.sessionId);
+        setSessions((current) =>
+          current.map((session) =>
+            session.id === data.sessionId
+              ? { ...session, messageCount: data.messages?.length ?? session.messageCount, updatedAt: new Date().toISOString() }
+              : session,
+          ),
+        );
+      }
       setMessage("");
     } catch {
       setError("请求失败，请检查网络连接");
@@ -96,12 +182,96 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
 
   return (
     <section className="flex min-h-0 flex-col border-r">
-      <div className="border-b px-4 py-3">
-        <p className="text-xs font-medium text-muted-foreground">节点 Agent</p>
-        <h2 className="text-sm font-semibold">{activeNode.id}</h2>
+      <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-muted-foreground">节点 Agent</p>
+          <h2 className="truncate text-sm font-semibold">{activeNode.id}</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="sr-only" htmlFor={`chat-session-${activeNode.id}`}>
+            会话
+          </label>
+          <select
+            className="h-8 max-w-44 rounded-md border bg-background px-2 text-xs"
+            id={`chat-session-${activeNode.id}`}
+            onChange={(event) => {
+              const nextSessionId = event.target.value;
+              setActiveSessionId(nextSessionId);
+              loadSessionMessages(nextSessionId);
+            }}
+            value={activeSessionId}
+          >
+            {sessions.map((session) => (
+              <option key={session.id} value={session.id}>
+                {session.name} · {session.messageCount} 条
+              </option>
+            ))}
+          </select>
+          <Button onClick={createSession} size="sm" type="button" variant="outline">
+            <PlusIcon data-icon="inline-start" />
+            新会话
+          </Button>
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+        {/* Chat messages */}
+        <ScrollArea className="min-h-0 flex-1" ref={scrollRef}>
+          {messages.length === 0 ? (
+            <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
+              当前会话会围绕本节点内容推进。项目 ID：{projectId}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {messages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={`rounded-lg p-3 text-sm ${
+                    msg.role === "user"
+                      ? "bg-primary/10 ml-8"
+                      : msg.role === "assistant"
+                        ? "bg-muted/30 mr-8"
+                        : "bg-muted/10 mx-4 text-xs"
+                  }`}
+                >
+                  <p className="text-xs font-medium text-muted-foreground mb-1">
+                    {msg.role === "user" ? "你" : msg.role === "assistant" ? "Agent" : "系统"}
+                  </p>
+                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </ScrollArea>
+
+        {/* Error */}
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
+        {/* Input */}
+        <div className="flex flex-col gap-2">
+          <Textarea
+            className="min-h-28 resize-none"
+            onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+              }
+            }}
+            placeholder="和当前节点 Agent 讨论... (Enter 发送，Shift+Enter 换行)"
+            value={message}
+          />
+          <Button
+            className="self-end"
+            disabled={!message.trim() || sending || !selectedProviderId || !selectedModel || !activeSessionId}
+            onClick={sendMessage}
+            type="button"
+          >
+            <SendIcon data-icon="inline-start" />
+            {sending ? "发送中..." : "发送"}
+          </Button>
+        </div>
+
         {/* Model selector */}
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-medium text-muted-foreground">模型选择</label>
@@ -184,72 +354,13 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                 );
               })}
             </div>
-            {readableFiles.some(
-              (f) => f.characterCount && f.characterCount > 50000,
-            ) ? (
+            {readableFiles.some((f) => f.characterCount && f.characterCount > 50000) ? (
               <p className="text-xs text-amber-600">
                 部分选中文件较大，可能消耗较多 Token 并增加响应时间。
               </p>
             ) : null}
           </div>
         ) : null}
-
-        {/* Chat messages */}
-        <ScrollArea className="min-h-0 flex-1" ref={scrollRef}>
-          {messages.length === 0 ? (
-            <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
-              当前会话会围绕本节点内容推进。项目 ID：{projectId}
-            </div>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`rounded-lg p-3 text-sm ${
-                    msg.role === "user"
-                      ? "bg-primary/10 ml-8"
-                      : msg.role === "assistant"
-                        ? "bg-muted/30 mr-8"
-                        : "bg-muted/10 mx-4 text-xs"
-                  }`}
-                >
-                  <p className="text-xs font-medium text-muted-foreground mb-1">
-                    {msg.role === "user" ? "你" : msg.role === "assistant" ? "Agent" : "系统"}
-                  </p>
-                  <div className="whitespace-pre-wrap">{msg.content}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </ScrollArea>
-
-        {/* Error */}
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
-
-        {/* Input */}
-        <div className="flex flex-col gap-2">
-          <Textarea
-            className="min-h-28 resize-none"
-            onChange={(event) => setMessage(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                sendMessage();
-              }
-            }}
-            placeholder="和当前节点 Agent 讨论... (Enter 发送，Shift+Enter 换行)"
-            value={message}
-          />
-          <Button
-            className="self-end"
-            disabled={!message.trim() || sending || !selectedProviderId || !selectedModel}
-            onClick={sendMessage}
-            type="button"
-          >
-            <SendIcon data-icon="inline-start" />
-            {sending ? "发送中..." : "发送"}
-          </Button>
-        </div>
       </div>
     </section>
   );

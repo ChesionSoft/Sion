@@ -2,6 +2,7 @@ import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ProjectStore } from "@/lib/project/store";
 import { POST } from "./route";
 
 let tmpDir: string;
@@ -155,8 +156,56 @@ describe("chat API", () => {
     const data = (await response.json()) as {
       messages: Array<{ role: string; content: string }>;
       assistantContent: string;
+      sessionId: string;
     };
     expect(data.assistantContent).toBe("已更新功能设计。");
     expect(data.messages).toHaveLength(2);
+    expect(data.sessionId).toBeTruthy();
+  });
+
+  it("appends messages to the provided chat session", async () => {
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "继续优化功能模块设计",
+          providerId: "mp-1",
+          model: "test-model",
+          sessionId: session.id,
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    expect(response.status).toBe(200);
+    const data = (await response.json()) as {
+      messages: Array<{ role: string; content: string }>;
+      sessionId: string;
+    };
+    expect(data.sessionId).toBe(session.id);
+    expect(data.messages).toHaveLength(2);
+  });
+
+  it("returns 404 for an invalid chat session", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "测试消息",
+          providerId: "mp-1",
+          model: "test-model",
+          sessionId: "missing-session",
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "会话不存在" });
   });
 });

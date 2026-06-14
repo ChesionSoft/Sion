@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -63,5 +63,103 @@ describe("ProjectStore", () => {
     const messages = await store.getChatMessages(project.id, "feature-design");
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toBe("把客户管理拆细一点");
+  });
+
+  it("creates and lists named chat sessions per node", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+    const sessions = await store.listSessions(project.id, "feature-design");
+
+    expect(session).toMatchObject({
+      nodeId: "feature-design",
+      messageCount: 0,
+      createdAt: "2026-06-14T11:00:00.000Z",
+      updatedAt: "2026-06-14T11:00:00.000Z",
+    });
+    expect(session.name).toContain("6月14日");
+    expect(sessions.map((item) => item.id)).toEqual([session.id]);
+  });
+
+  it("appends messages to a selected chat session", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    await store.appendChatMessage(
+      project.id,
+      "feature-design",
+      {
+        id: "m-1",
+        role: "user",
+        content: "把客户管理拆细一点",
+        createdAt: "2026-06-14T11:01:00.000Z",
+      },
+      session.id,
+    );
+
+    const messages = await store.getChatMessages(project.id, "feature-design", session.id);
+    const sessions = await store.listSessions(project.id, "feature-design");
+
+    expect(messages).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      id: session.id,
+      messageCount: 1,
+      updatedAt: "2026-06-14T11:01:00.000Z",
+    });
+  });
+
+  it("keeps only the latest 10 chat sessions per node", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+
+    for (let index = 0; index < 11; index += 1) {
+      await store.createSession(project.id, "feature-design", `2026-06-14T11:${String(index).padStart(2, "0")}:00.000Z`);
+    }
+
+    const sessions = await store.listSessions(project.id, "feature-design");
+    expect(sessions).toHaveLength(10);
+    expect(sessions.at(-1)?.createdAt).toBe("2026-06-14T11:01:00.000Z");
+  });
+
+  it("deletes a chat session by id", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    await store.deleteSession(project.id, session.id);
+
+    await expect(store.getChatMessages(project.id, "feature-design", session.id)).rejects.toThrow("会话不存在");
+    expect(await store.listSessions(project.id, "feature-design")).toEqual([]);
+  });
+
+  it("migrates legacy flat chat files into the first session", async () => {
+    const projectId = "legacy-project";
+    const projectDir = path.join(rootDir, projectId);
+    await mkdir(path.join(projectDir, "chat"), { recursive: true });
+    await writeFile(
+      path.join(projectDir, "chat", "feature-design.json"),
+      JSON.stringify([
+        {
+          id: "m-1",
+          role: "user",
+          content: "旧会话消息",
+          createdAt: "2026-06-14T11:00:00.000Z",
+        },
+      ]),
+      "utf8",
+    );
+    const store = new ProjectStore(rootDir);
+
+    const sessions = await store.listSessions(projectId, "feature-design");
+    const messages = await store.getChatMessages(projectId, "feature-design", sessions[0].id);
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      nodeId: "feature-design",
+      messageCount: 1,
+    });
+    expect(messages[0].content).toBe("旧会话消息");
   });
 });
