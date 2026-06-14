@@ -232,12 +232,12 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
             className="min-h-28 resize-none"
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 sendMessage();
               }
             }}
-            placeholder="和当前节点 Agent 讨论... (Cmd+Enter 发送)"
+            placeholder="和当前节点 Agent 讨论... (Enter 发送，Shift+Enter 换行)"
             value={message}
           />
           <Button
