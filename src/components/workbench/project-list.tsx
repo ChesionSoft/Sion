@@ -8,6 +8,7 @@ import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle }
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Project } from "@/lib/project/types";
+import { ModelConfigPanel } from "./model-config-panel";
 
 export function ProjectList() {
   const router = useRouter();
@@ -93,6 +94,7 @@ export function ProjectList() {
             ))}
           </div>
         </section>
+        <ModelConfigPanel />
       </div>
     </main>
   );

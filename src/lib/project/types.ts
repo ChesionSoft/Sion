@@ -58,3 +58,37 @@ export type Project = {
   updatedAt: string;
   modelConfig?: Partial<ModelConfig>;
 };
+
+export type ModelProvider = {
+  id: string;
+  name: string;
+  apiBaseUrl: string;
+  apiKey: string;
+  models: string[];
+  defaultModel: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProjectFile = {
+  id: string;
+  originalName: string;
+  storedName: string;
+  extension: string;
+  mimeType: string;
+  byteSize: number;
+  uploadedAt: string;
+  status: "available" | "unsupported" | "read_failed";
+  textPath?: string;
+  characterCount?: number;
+};
+
+export type AgentRuleMode = "default" | "custom";
+
+export type AgentOverrideSetting = {
+  nodeId: WorkflowNodeId;
+  mode: AgentRuleMode;
+  customRulePath?: string;
+  updatedAt: string;
+};

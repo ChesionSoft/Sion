@@ -20,6 +20,9 @@
 /projects/*
 !/projects/.gitkeep
 
+# local settings data
+/settings/*
+
 # next.js
 /.next/
 /out/
