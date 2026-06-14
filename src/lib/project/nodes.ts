@@ -1,0 +1,132 @@
+import type { WorkflowNodeDefinition, WorkflowNodeId } from "./types";
+
+export const WORKFLOW_NODES: WorkflowNodeDefinition[] = [
+  {
+    id: "basic-info",
+    order: 1,
+    title: "项目基本信息",
+    documentHeading: "1. 项目基本信息",
+    requiredForInitialization: true,
+    dependsOn: [],
+    agentRuleFile: "01-basic-info.md",
+  },
+  {
+    id: "goals",
+    order: 2,
+    title: "需求背景与建设目标",
+    documentHeading: "2. 需求背景与建设目标",
+    requiredForInitialization: true,
+    dependsOn: ["basic-info"],
+    agentRuleFile: "02-goals.md",
+  },
+  {
+    id: "roles-permissions",
+    order: 3,
+    title: "用户角色与权限",
+    documentHeading: "3. 用户角色与权限",
+    requiredForInitialization: false,
+    dependsOn: ["basic-info", "goals"],
+    agentRuleFile: "03-roles-permissions.md",
+  },
+  {
+    id: "business-flow",
+    order: 4,
+    title: "业务流程设计",
+    documentHeading: "4. 业务流程设计",
+    requiredForInitialization: false,
+    dependsOn: ["basic-info", "goals", "roles-permissions"],
+    agentRuleFile: "04-business-flow.md",
+  },
+  {
+    id: "feature-design",
+    order: 5,
+    title: "功能模块设计",
+    documentHeading: "5. 功能模块设计",
+    requiredForInitialization: false,
+    dependsOn: ["basic-info", "goals", "roles-permissions", "business-flow"],
+    agentRuleFile: "05-feature-design.md",
+  },
+  {
+    id: "page-interaction",
+    order: 6,
+    title: "页面与交互设计",
+    documentHeading: "6. 页面与交互设计",
+    requiredForInitialization: false,
+    dependsOn: ["feature-design", "roles-permissions"],
+    agentRuleFile: "06-page-interaction.md",
+  },
+  {
+    id: "data-structure",
+    order: 7,
+    title: "数据结构设计",
+    documentHeading: "7. 数据结构设计",
+    requiredForInitialization: false,
+    dependsOn: ["feature-design", "page-interaction"],
+    agentRuleFile: "07-data-structure.md",
+  },
+  {
+    id: "api-design",
+    order: 8,
+    title: "接口设计",
+    documentHeading: "8. 接口设计",
+    requiredForInitialization: false,
+    dependsOn: ["feature-design", "data-structure"],
+    agentRuleFile: "08-api-design.md",
+  },
+  {
+    id: "architecture-deployment",
+    order: 9,
+    title: "技术架构与部署",
+    documentHeading: "9. 技术架构与部署",
+    requiredForInitialization: false,
+    dependsOn: ["basic-info", "goals", "feature-design"],
+    agentRuleFile: "09-architecture-deployment.md",
+  },
+  {
+    id: "development-tasks",
+    order: 10,
+    title: "开发任务拆分",
+    documentHeading: "10. 开发任务拆分",
+    requiredForInitialization: false,
+    dependsOn: ["feature-design", "api-design", "data-structure", "architecture-deployment"],
+    agentRuleFile: "10-development-tasks.md",
+  },
+  {
+    id: "risks-open-questions",
+    order: 11,
+    title: "待确认事项与风险",
+    documentHeading: "11. 待确认事项与风险",
+    requiredForInitialization: false,
+    dependsOn: ["basic-info", "goals", "feature-design", "development-tasks"],
+    agentRuleFile: "11-risks-open-questions.md",
+  },
+  {
+    id: "final-export",
+    order: 12,
+    title: "最终文档生成",
+    documentHeading: "12. 最终文档生成",
+    requiredForInitialization: false,
+    dependsOn: [
+      "basic-info",
+      "goals",
+      "roles-permissions",
+      "business-flow",
+      "feature-design",
+      "page-interaction",
+      "data-structure",
+      "api-design",
+      "architecture-deployment",
+      "development-tasks",
+      "risks-open-questions",
+    ],
+    agentRuleFile: "12-final-export.md",
+  },
+];
+
+export function getNodeDefinition(nodeId: string): WorkflowNodeDefinition | undefined {
+  return WORKFLOW_NODES.find((node) => node.id === nodeId);
+}
+
+export function isWorkflowNodeId(nodeId: string): nodeId is WorkflowNodeId {
+  return WORKFLOW_NODES.some((node) => node.id === nodeId);
+}
