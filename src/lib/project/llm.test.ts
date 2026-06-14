@@ -12,7 +12,7 @@ describe("callOpenAICompatibleChat", () => {
 
     const content = await callOpenAICompatibleChat({
       fetchImpl: fetchMock,
-      apiBaseUrl: "https://api.example.com/v1",
+      apiBaseUrl: "https://api.example.com",
       apiKey: "secret",
       model: "example-chat",
       messages: [

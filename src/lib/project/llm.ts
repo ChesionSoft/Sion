@@ -13,7 +13,7 @@ export type CallOpenAICompatibleChatInput = {
 
 export async function callOpenAICompatibleChat(input: CallOpenAICompatibleChatInput): Promise<string> {
   const fetchImpl = input.fetchImpl ?? fetch;
-  const response = await fetchImpl(`${input.apiBaseUrl.replace(/\/$/, "")}/chat/completions`, {
+  const response = await fetchImpl(`${input.apiBaseUrl.replace(/\/$/, "")}/v1/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${input.apiKey}`,
