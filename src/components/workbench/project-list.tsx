@@ -46,7 +46,7 @@ export function ProjectList() {
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
         <header className="flex items-end justify-between border-b pb-4">
           <div>
-            <p className="text-xs font-medium text-muted-foreground">AI Project Docs</p>
+            <p className="text-xs font-medium text-muted-foreground">Sion</p>
             <h1 className="text-2xl font-semibold">项目设计文档工作台</h1>
           </div>
         </header>

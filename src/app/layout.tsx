@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Project Docs",
+  title: "Sion",
   description: "本地优先的 AI 项目设计文档工作台",
 };
 

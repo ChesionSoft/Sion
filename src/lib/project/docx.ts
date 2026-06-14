@@ -30,7 +30,7 @@ export async function createProjectDesignDocx(project: Project, markdown: string
   });
 
   const document = new Document({
-    creator: project.authorName || "AI Project Docs",
+    creator: project.authorName || "Sion",
     title: `${project.name}项目开发设计文档`,
     description: "小型外包项目开发设计文档",
     sections: [
