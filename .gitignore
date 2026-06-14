@@ -34,6 +34,11 @@
 .DS_Store
 *.pem
 
+# dotfiles (local config)
+.*
+!.env.example
+!.gitignore
+
 # debug
 npm-debug.log*
 yarn-debug.log*
