@@ -44,3 +44,66 @@ export async function callOpenAICompatibleChat(input: CallOpenAICompatibleChatIn
 
   return content;
 }
+
+export type StreamOpenAICompatibleChatInput = CallOpenAICompatibleChatInput & {
+  signal?: AbortSignal;
+};
+
+export async function* streamOpenAICompatibleChat(
+  input: StreamOpenAICompatibleChatInput,
+): AsyncGenerator<string, void, void> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${input.apiBaseUrl.replace(/\/$/, "")}/v1/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${input.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: input.model,
+      messages: input.messages,
+      ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
+      temperature: 0.2,
+      stream: true,
+    }),
+    signal: input.signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`LLM request failed with status ${response.status}`);
+  }
+
+  if (!response.body) {
+    throw new Error("LLM response did not include a streaming body");
+  }
+
+  const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop()!;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) continue;
+      const data = trimmed.slice(6);
+      if (data === "[DONE]") return;
+
+      try {
+        const parsed = JSON.parse(data) as {
+          choices?: Array<{ delta?: { content?: string } }>;
+        };
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) yield content;
+      } catch {
+        // skip malformed chunks
+      }
+    }
+  }
+}
