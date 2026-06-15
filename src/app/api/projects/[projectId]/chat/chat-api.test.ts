@@ -1,6 +1,7 @@
 import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { ReadableStream } from "node:stream/web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectStore } from "@/lib/project/store";
 import { POST } from "./route";
@@ -74,8 +75,7 @@ beforeEach(async () => {
       name: "TestProvider",
       apiBaseUrl: "https://api.test.com/v1",
       apiKey: "sk-test",
-      models: ["test-model"],
-      defaultModel: "test-model",
+      models: [{ name: "test-model", isDefault: true }],
       isDefault: true,
       createdAt: "2026-06-14T10:00:00.000Z",
       updatedAt: "2026-06-14T10:00:00.000Z",
@@ -87,12 +87,19 @@ beforeEach(async () => {
     "utf8",
   );
 
-  // Mock fetch for LLM call
+  // Mock fetch for LLM call — returns SSE stream
+  const encoder = new TextEncoder();
+  const sseBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"已更新功能设计。"}}]}\n\n'));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
-    json: async () => ({
-      choices: [{ message: { content: "已更新功能设计。" } }],
-    }),
+    body: sseBody,
   });
 });
 
@@ -153,14 +160,35 @@ describe("chat API", () => {
     );
 
     expect(response.status).toBe(200);
-    const data = (await response.json()) as {
-      messages: Array<{ role: string; content: string }>;
-      assistantContent: string;
-      sessionId: string;
-    };
-    expect(data.assistantContent).toBe("已更新功能设计。");
-    expect(data.messages).toHaveLength(2);
-    expect(data.sessionId).toBeTruthy();
+    expect(response.headers.get("Content-Type")).toBe("text/event-stream");
+
+    // Read SSE stream
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const tokens: string[] = [];
+    let doneSessionId = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) continue;
+        const payload = trimmed.slice(6);
+        try {
+          const event = JSON.parse(payload) as { type: string; content?: string; sessionId?: string };
+          if (event.type === "token" && event.content) tokens.push(event.content);
+          if (event.type === "done" && event.sessionId) doneSessionId = event.sessionId;
+        } catch { /* skip */ }
+      }
+    }
+
+    expect(tokens.join("")).toBe("已更新功能设计。");
+    expect(doneSessionId).toBeTruthy();
   });
 
   it("appends messages to the provided chat session", async () => {
@@ -182,12 +210,20 @@ describe("chat API", () => {
     );
 
     expect(response.status).toBe(200);
-    const data = (await response.json()) as {
-      messages: Array<{ role: string; content: string }>;
-      sessionId: string;
-    };
-    expect(data.sessionId).toBe(session.id);
-    expect(data.messages).toHaveLength(2);
+
+    // Consume the stream
+    const reader = response.body!.getReader();
+    while (true) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+
+    // Verify messages were persisted
+    const messages = await store.getChatMessages("test-project", "feature-design", session.id);
+    expect(messages).toHaveLength(2);
+    expect(messages[0].role).toBe("user");
+    expect(messages[1].role).toBe("assistant");
+    expect(messages[1].content).toBe("已更新功能设计。");
   });
 
   it("returns 404 for an invalid chat session", async () => {

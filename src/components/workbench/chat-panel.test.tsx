@@ -41,7 +41,34 @@ beforeEach(() => {
     }
 
     if (url.includes("/files")) {
-      return new Response(JSON.stringify({ files: [] }));
+      return new Response(
+        JSON.stringify({
+          files: [
+            {
+              id: "f-1",
+              originalName: "需求文档.md",
+              storedName: "req.md",
+              extension: ".md",
+              mimeType: "text/markdown",
+              byteSize: 1024,
+              uploadedAt: "2026-06-14T10:00:00.000Z",
+              status: "available",
+              characterCount: 500,
+            },
+            {
+              id: "f-2",
+              originalName: "数据.csv",
+              storedName: "data.csv",
+              extension: ".csv",
+              mimeType: "text/csv",
+              byteSize: 2048,
+              uploadedAt: "2026-06-14T10:00:00.000Z",
+              status: "available",
+              characterCount: 1200,
+            },
+          ],
+        }),
+      );
     }
 
     if (url.includes("/chat/sessions")) {
@@ -78,7 +105,7 @@ describe("ChatPanel", () => {
     const user = userEvent.setup();
     render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
 
-    const trigger = await screen.findByRole("button", { name: "模型 GPT-5.5，推理 中" });
+    const trigger = await screen.findByRole("button", { name: /模型 GPT-5.5/ });
     expect(trigger).toBeInTheDocument();
 
     await user.click(trigger);
@@ -89,5 +116,12 @@ describe("ChatPanel", () => {
     await user.hover(screen.getByRole("button", { name: "GPT-5.5" }));
     expect(screen.getByText("模型")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "GPT-5.4" })).toBeInTheDocument();
+  });
+
+  it("renders send button and file attachment button in toolbar", async () => {
+    render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
+
+    expect(await screen.findByRole("button", { name: /发送/ })).toBeInTheDocument();
+    expect(screen.getByTitle("添加文件附件")).toBeInTheDocument();
   });
 });

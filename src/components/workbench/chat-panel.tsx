@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, FileIcon, PlusIcon, SendIcon, XIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, FileIcon, PaperclipIcon, PlusIcon, SendIcon, StopCircleIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, ChatSession, ModelProvider, ProjectFile, ProjectNode, ReasoningEffort } from "@/lib/project/types";
 
@@ -33,6 +32,9 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
   const [error, setError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const [filePopoverOpen, setFilePopoverOpen] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const filePopoverRef = useRef<HTMLDivElement>(null);
 
   async function loadSessionMessages(sessionId: string) {
     const response = await fetch(
@@ -88,12 +90,16 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
         setModelMenuOpen(false);
         setModelSubmenuOpen(false);
       }
+      if (!filePopoverRef.current?.contains(event.target as Node)) {
+        setFilePopoverOpen(false);
+      }
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setModelMenuOpen(false);
         setModelSubmenuOpen(false);
+        setFilePopoverOpen(false);
       }
     }
 
@@ -155,7 +161,6 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
   const selectedProvider = providers.find((p) => p.id === selectedProviderId);
   const selectedReasoning = REASONING_OPTIONS.find((option) => option.value === reasoningEffort) ?? REASONING_OPTIONS[1];
   const selectedFiles = projectFiles.filter((f) => selectedFileIds.includes(f.id));
-  const readableFiles = selectedFiles.filter((f) => f.status === "available");
 
   function selectModel(provider: ModelProvider, model: string) {
     setSelectedProviderId(provider.id);
@@ -175,6 +180,9 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
     setError("");
     setSending(true);
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     try {
       const res = await fetch(`/api/projects/${projectId}/chat`, {
         method: "POST",
@@ -188,36 +196,84 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
           fileIds: selectedFileIds,
           sessionId: activeSessionId || undefined,
         }),
+        signal: controller.signal,
       });
-      const data = (await res.json()) as {
-        messages?: ChatMessage[];
-        assistantContent?: string;
-        sessionId?: string;
-        error?: string;
-      };
 
-      if (!res.ok || !data.messages) {
+      if (!res.ok) {
+        const data = (await res.json()) as { error?: string };
         setError(data.error ?? "发送失败");
         return;
       }
 
-      setMessages(data.messages);
-      if (data.sessionId) {
-        setActiveSessionId(data.sessionId);
-        setSessions((current) =>
-          current.map((session) =>
-            session.id === data.sessionId
-              ? { ...session, messageCount: data.messages?.length ?? session.messageCount, updatedAt: new Date().toISOString() }
-              : session,
-          ),
-        );
-      }
       setMessage("");
-    } catch {
+
+      const assistantId = crypto.randomUUID();
+      setMessages((prev) => [
+        ...prev,
+        { id: assistantId, role: "assistant" as const, content: "", createdAt: new Date().toISOString() },
+      ]);
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullContent = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop()!;
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data: ")) continue;
+          const payload = trimmed.slice(6);
+
+          try {
+            const event = JSON.parse(payload) as {
+              type: string;
+              content?: string;
+              sessionId?: string;
+              error?: string;
+            };
+
+            if (event.type === "token" && event.content) {
+              fullContent += event.content;
+              setMessages((prev) =>
+                prev.map((m) => (m.id === assistantId ? { ...m, content: fullContent } : m)),
+              );
+            } else if (event.type === "done" && event.sessionId) {
+              setActiveSessionId(event.sessionId);
+              setSessions((current) =>
+                current.map((session) =>
+                  session.id === event.sessionId
+                    ? { ...session, messageCount: session.messageCount + 2, updatedAt: new Date().toISOString() }
+                    : session,
+                ),
+              );
+            } else if (event.type === "error" && event.error) {
+              setError(event.error);
+            }
+          } catch {
+            // skip malformed events
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
       setError("请求失败，请检查网络连接");
     } finally {
       setSending(false);
+      abortControllerRef.current = null;
     }
+  }
+
+  function abortSendMessage() {
+    abortControllerRef.current?.abort();
   }
 
   useEffect(() => {
@@ -261,7 +317,6 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-        {/* Chat messages */}
         <ScrollArea className="min-h-0 flex-1" ref={scrollRef}>
           {messages.length === 0 ? (
             <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
@@ -290,13 +345,9 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
           )}
         </ScrollArea>
 
-        {/* Error */}
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
-
-        {/* Input */}
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col rounded-lg border">
           <Textarea
-            className="min-h-28 resize-none"
+            className="min-h-28 resize-none border-0 shadow-none focus-visible:ring-0"
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -307,153 +358,161 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
             placeholder="和当前节点 Agent 讨论... (Enter 发送，Shift+Enter 换行)"
             value={message}
           />
-          <Button
-            className="self-end"
-            disabled={!message.trim() || sending || !selectedProviderId || !selectedModel || !activeSessionId}
-            onClick={sendMessage}
-            type="button"
-          >
-            <SendIcon data-icon="inline-start" />
-            {sending ? "发送中..." : "发送"}
-          </Button>
-        </div>
-
-        {/* Model selector */}
-        <div className="relative flex items-center gap-2" ref={modelMenuRef}>
-          {providers.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              暂无配置的模型提供商，请先在主菜单配置。
-            </p>
-          ) : (
-            <>
+          {error ? <p className="px-3 py-1 text-sm text-destructive">{error}</p> : null}
+          <div className="flex items-center justify-between gap-2 border-t px-3 py-2">
+            <div className="flex items-center gap-1 min-w-0 flex-1 flex-wrap" ref={filePopoverRef}>
               <button
-                aria-label={`模型 ${selectedModel || selectedProvider?.models.find((m) => m.isDefault)?.name || selectedProvider?.models[0]?.name || "未选择"}，推理 ${selectedReasoning.label}`}
-                aria-expanded={modelMenuOpen}
-                aria-haspopup="menu"
-                className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-full border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted/60"
-                onClick={() => {
-                  setModelMenuOpen((open) => !open);
-                  setModelSubmenuOpen(false);
-                }}
+                className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-muted"
+                onClick={() => setFilePopoverOpen((open) => !open)}
+                title="添加文件附件"
                 type="button"
               >
-                <span className="truncate">{selectedModel || selectedProvider?.models.find((m) => m.isDefault)?.name || selectedProvider?.models[0]?.name || "选择模型"}</span>
-                <span className="text-muted-foreground">{selectedReasoning.label}</span>
-                <ChevronDownIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                <PaperclipIcon className="h-4 w-4" />
               </button>
-
-              {modelMenuOpen ? (
-                <div className="absolute bottom-10 left-0 z-30 w-52 rounded-xl border bg-popover p-1.5 text-sm shadow-xl">
-                  <p className="px-2 py-1 text-xs text-muted-foreground">推理</p>
-                  {REASONING_OPTIONS.map((option) => (
-                    <button
-                      key={option.value}
-                      className="flex h-8 w-full items-center justify-between rounded-md px-2 text-left text-sm hover:bg-muted"
-                      onClick={() => setReasoningEffort(option.value)}
-                      type="button"
-                    >
-                      <span>{option.label}</span>
-                      {reasoningEffort === option.value ? <CheckIcon className="h-4 w-4" /> : null}
-                    </button>
-                  ))}
-
-                  <div className="my-1 h-px bg-border" />
-
+              {selectedFiles.map((file) => (
+                <span
+                  key={file.id}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-xs"
+                >
+                  <FileIcon className="h-3 w-3" />
+                  {file.originalName}
                   <button
-                    className={cn(
-                      "flex h-8 w-full items-center justify-between rounded-md px-2 text-left text-sm hover:bg-muted",
-                      modelSubmenuOpen && "bg-muted",
-                    )}
-                    onClick={() => setModelSubmenuOpen((open) => !open)}
-                    onMouseEnter={() => setModelSubmenuOpen(true)}
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() => toggleFile(file.id)}
                     type="button"
                   >
-                    <span className="truncate">{selectedModel || "模型"}</span>
-                    <ChevronRightIcon className="h-4 w-4 text-muted-foreground" />
+                    <XIcon className="h-3 w-3" />
                   </button>
-
-                  {modelSubmenuOpen ? (
-                    <div className="absolute bottom-0 left-[calc(100%+6px)] z-40 max-h-72 w-56 overflow-auto rounded-xl border bg-popover p-1.5 shadow-xl">
-                      <p className="px-2 py-1 text-xs text-muted-foreground">模型</p>
-                      {providers.map((provider) => (
-                        <div key={provider.id}>
-                          {providers.length > 1 ? (
-                            <p className="px-2 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
-                              {provider.name}
-                            </p>
+                </span>
+              ))}
+              {filePopoverOpen ? (
+                <div className="absolute bottom-10 left-0 z-30 w-56 rounded-xl border bg-popover p-1.5 shadow-xl">
+                  {projectFiles.filter((f) => f.status === "available").length === 0 ? (
+                    <p className="px-2 py-1.5 text-xs text-muted-foreground">暂无可添加的文件</p>
+                  ) : (
+                    projectFiles
+                      .filter((f) => f.status === "available")
+                      .map((file) => (
+                        <label
+                          key={file.id}
+                          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted cursor-pointer"
+                        >
+                          <input
+                            checked={selectedFileIds.includes(file.id)}
+                            onChange={() => toggleFile(file.id)}
+                            type="checkbox"
+                          />
+                          <FileIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="truncate flex-1">{file.originalName}</span>
+                          {file.characterCount ? (
+                            <span className="text-xs text-muted-foreground shrink-0">
+                              {file.characterCount > 50000 ? "⚠️ " : ""}
+                              {file.characterCount.toLocaleString()}字
+                            </span>
                           ) : null}
-                          {provider.models.map((model) => {
-                            const active = provider.id === selectedProviderId && model.name === selectedModel;
-                            return (
-                              <button
-                                key={`${provider.id}-${model.name}`}
-                                className="flex h-8 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-sm hover:bg-muted"
-                                onClick={() => selectModel(provider, model.name)}
-                                type="button"
-                              >
-                                <span className="truncate">{model.name}</span>
-                                {active ? <CheckIcon className="h-4 w-4 shrink-0" /> : null}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
+                        </label>
+                      ))
+                  )}
                 </div>
               ) : null}
-            </>
-          )}
-        </div>
-
-        {/* File selector */}
-        {projectFiles.length > 0 ? (
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-muted-foreground">引用文件</label>
-            <div className="flex flex-wrap gap-1">
-              {projectFiles.map((file) => {
-                const selected = selectedFileIds.includes(file.id);
-                const canAttach = file.status === "available";
-                return (
+            </div>
+            <div className="flex items-center gap-2 shrink-0" ref={modelMenuRef}>
+              {providers.length > 0 ? (
+                <>
                   <button
-                    key={file.id}
-                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs ${
-                      selected
-                        ? "bg-primary/10 border-primary/30 text-primary"
-                        : canAttach
-                          ? "bg-background hover:bg-muted/50"
-                          : "bg-background opacity-50 cursor-not-allowed"
-                    }`}
-                    disabled={!canAttach}
-                    onClick={() => toggleFile(file.id)}
-                    title={
-                      !canAttach
-                        ? "此文件不支持读取"
-                        : file.characterCount && file.characterCount > 50000
-                          ? `文件较大（${file.characterCount.toLocaleString()} 字符），可能消耗较多 Token`
-                          : undefined
-                    }
+                    aria-label={`模型 ${selectedModel || selectedProvider?.models.find((m) => m.isDefault)?.name || selectedProvider?.models[0]?.name || "未选择"}，推理 ${selectedReasoning.label}`}
+                    aria-expanded={modelMenuOpen}
+                    aria-haspopup="menu"
+                    className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-full border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted/60"
+                    onClick={() => {
+                      setModelMenuOpen((open) => !open);
+                      setModelSubmenuOpen(false);
+                    }}
                     type="button"
                   >
-                    <FileIcon className="h-3 w-3" />
-                    {file.originalName}
-                    {!canAttach ? (
-                      <Badge className="text-[10px] px-1 py-0" variant="outline">
-                        不支持
-                      </Badge>
-                    ) : null}
-                    {selected ? <XIcon className="h-3 w-3" /> : null}
+                    <span className="truncate">{selectedModel || selectedProvider?.models.find((m) => m.isDefault)?.name || selectedProvider?.models[0]?.name || "选择模型"}</span>
+                    <span className="text-muted-foreground">{selectedReasoning.label}</span>
+                    <ChevronDownIcon className="h-3.5 w-3.5 text-muted-foreground" />
                   </button>
-                );
-              })}
+
+                  {modelMenuOpen ? (
+                    <div className="absolute bottom-10 right-0 z-30 w-52 rounded-xl border bg-popover p-1.5 text-sm shadow-xl">
+                      <p className="px-2 py-1 text-xs text-muted-foreground">推理</p>
+                      {REASONING_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          className="flex h-8 w-full items-center justify-between rounded-md px-2 text-left text-sm hover:bg-muted"
+                          onClick={() => setReasoningEffort(option.value)}
+                          type="button"
+                        >
+                          <span>{option.label}</span>
+                          {reasoningEffort === option.value ? <CheckIcon className="h-4 w-4" /> : null}
+                        </button>
+                      ))}
+
+                      <div className="my-1 h-px bg-border" />
+
+                      <button
+                        className={cn(
+                          "flex h-8 w-full items-center justify-between rounded-md px-2 text-left text-sm hover:bg-muted",
+                          modelSubmenuOpen && "bg-muted",
+                        )}
+                        onClick={() => setModelSubmenuOpen((open) => !open)}
+                        onMouseEnter={() => setModelSubmenuOpen(true)}
+                        type="button"
+                      >
+                        <span className="truncate">{selectedModel || "模型"}</span>
+                        <ChevronRightIcon className="h-4 w-4 text-muted-foreground" />
+                      </button>
+
+                      {modelSubmenuOpen ? (
+                        <div className="absolute bottom-0 left-[calc(100%+6px)] z-40 max-h-72 w-56 overflow-auto rounded-xl border bg-popover p-1.5 shadow-xl">
+                          <p className="px-2 py-1 text-xs text-muted-foreground">模型</p>
+                          {providers.map((provider) => (
+                            <div key={provider.id}>
+                              {providers.length > 1 ? (
+                                <p className="px-2 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
+                                  {provider.name}
+                                </p>
+                              ) : null}
+                              {provider.models.map((model) => {
+                                const active = provider.id === selectedProviderId && model.name === selectedModel;
+                                return (
+                                  <button
+                                    key={`${provider.id}-${model.name}`}
+                                    className="flex h-8 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-sm hover:bg-muted"
+                                    onClick={() => selectModel(provider, model.name)}
+                                    type="button"
+                                  >
+                                    <span className="truncate">{model.name}</span>
+                                    {active ? <CheckIcon className="h-4 w-4 shrink-0" /> : null}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  暂无配置的模型提供商，请先在主菜单配置。
+                </p>
+              )}
+              <Button
+                className={sending ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : ""}
+                disabled={!message.trim() || !selectedProviderId || !selectedModel || !activeSessionId}
+                onClick={sending ? abortSendMessage : sendMessage}
+                type="button"
+              >
+                {sending ? <StopCircleIcon data-icon="inline-start" /> : <SendIcon data-icon="inline-start" />}
+                {sending ? "中断" : "发送"}
+              </Button>
             </div>
-            {readableFiles.some((f) => f.characterCount && f.characterCount > 50000) ? (
-              <p className="text-xs text-amber-600">
-                部分选中文件较大，可能消耗较多 Token 并增加响应时间。
-              </p>
-            ) : null}
           </div>
-        ) : null}
+        </div>
       </div>
     </section>
   );
