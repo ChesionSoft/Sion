@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
+import type { ModelEntry } from "@/lib/project/types";
 
 const store = new ModelProviderStore();
 
@@ -9,8 +10,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ provi
     name?: string;
     apiBaseUrl?: string;
     apiKey?: string;
-    models?: string[];
-    defaultModel?: string;
+    models?: ModelEntry[];
     isDefault?: boolean;
   };
 
