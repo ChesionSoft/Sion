@@ -1,14 +1,26 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { PlusIcon, Trash2Icon, Edit3Icon, CheckIcon, XIcon } from "lucide-react";
+import { PlusIcon, Trash2Icon, Edit3Icon, CheckIcon, XIcon, StarIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import type { ModelProvider } from "@/lib/project/types";
+import type { ContextLength, ModelEntry, ModelProvider } from "@/lib/project/types";
+
+const CONTEXT_LENGTH_OPTIONS: Array<{ value: ContextLength | undefined; label: string }> = [
+  { value: undefined, label: "不填" },
+  { value: 4096, label: "4K" },
+  { value: 8192, label: "8K" },
+  { value: 16384, label: "16K" },
+  { value: 32768, label: "32K" },
+  { value: 65536, label: "64K" },
+  { value: 131072, label: "128K" },
+  { value: 200000, label: "200K" },
+  { value: 1000000, label: "1M" },
+];
 
 export function ModelConfigPanel() {
   const [providers, setProviders] = useState<ModelProvider[]>([]);
@@ -50,8 +62,7 @@ export function ModelConfigPanel() {
     name: string;
     apiBaseUrl: string;
     apiKey: string;
-    models: string[];
-    defaultModel: string;
+    models: ModelEntry[];
   }) {
     setError("");
     const res = await fetch("/api/settings/model-providers", {
@@ -105,12 +116,12 @@ export function ModelConfigPanel() {
                     ) : null}
                   </div>
                   <p className="truncate text-xs text-muted-foreground">
-                    {provider.apiBaseUrl} · {provider.models.length} 个模型
+                    {provider.apiBaseUrl} &middot; {provider.models.length} 个模型
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <Button
-                    onClick={() => setEditingProvider({ ...provider })}
+                    onClick={() => setEditingProvider({ ...provider, models: provider.models.map((m) => ({ ...m })) })}
                     size="sm"
                     type="button"
                     variant="ghost"
@@ -157,6 +168,88 @@ export function ModelConfigPanel() {
   );
 }
 
+function ModelEntryEditor({
+  models,
+  onChange,
+}: {
+  models: ModelEntry[];
+  onChange: (models: ModelEntry[]) => void;
+}) {
+  function updateModel(index: number, patch: Partial<ModelEntry>) {
+    const next = models.map((m, i) => (i === index ? { ...m, ...patch } : m));
+    if (patch.isDefault) {
+      next.forEach((m, i) => {
+        m.isDefault = i === index;
+      });
+    }
+    onChange(next);
+  }
+
+  function addModel() {
+    onChange([...models, { name: "", isDefault: models.length === 0 }]);
+  }
+
+  function removeModel(index: number) {
+    if (models.length <= 1) return;
+    const next = models.filter((_, i) => i !== index);
+    if (!next.some((m) => m.isDefault) && next.length > 0) {
+      next[0].isDefault = true;
+    }
+    onChange(next);
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Label>模型列表</Label>
+      {models.map((model, index) => (
+        <div key={index} className="flex items-center gap-2">
+          <Input
+            className="flex-1"
+            onChange={(e) => updateModel(index, { name: e.target.value })}
+            placeholder="模型名称"
+            value={model.name}
+          />
+          <select
+            className="h-9 w-20 rounded-md border bg-background px-2 text-sm"
+            onChange={(e) => {
+              const val = e.target.value;
+              updateModel(index, { contextLength: val ? (Number(val) as ContextLength) : undefined });
+            }}
+            value={model.contextLength ?? ""}
+          >
+            {CONTEXT_LENGTH_OPTIONS.map((opt) => (
+              <option key={opt.label} value={opt.value ?? ""}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <button
+            className={`shrink-0 rounded p-1 ${model.isDefault ? "text-amber-500" : "text-muted-foreground hover:text-amber-500"}`}
+            onClick={() => updateModel(index, { isDefault: true })}
+            title="设为默认模型"
+            type="button"
+          >
+            <StarIcon className="h-4 w-4" fill={model.isDefault ? "currentColor" : "none"} />
+          </button>
+          <button
+            className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive"
+            disabled={models.length <= 1}
+            onClick={() => removeModel(index)}
+            title="删除模型"
+            type="button"
+          >
+            <Trash2Icon className="h-4 w-4" />
+          </button>
+        </div>
+      ))}
+      <Button onClick={addModel} size="sm" type="button" variant="outline">
+        <PlusIcon data-icon="inline-start" />
+        添加模型
+      </Button>
+    </div>
+  );
+}
+
 function AddProviderDialog({
   open,
   onClose,
@@ -164,26 +257,22 @@ function AddProviderDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  onSave: (input: { name: string; apiBaseUrl: string; apiKey: string; models: string[]; defaultModel: string }) => void;
+  onSave: (input: { name: string; apiBaseUrl: string; apiKey: string; models: ModelEntry[] }) => void;
 }) {
   const [name, setName] = useState("");
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [modelsText, setModelsText] = useState("");
-  const [defaultModel, setDefaultModel] = useState("");
+  const [models, setModels] = useState<ModelEntry[]>([{ name: "", isDefault: true }]);
   const [error, setError] = useState("");
 
   function handleSave() {
     setError("");
-    const models = modelsText
-      .split(/[\n,]+/)
-      .map((m) => m.trim())
-      .filter(Boolean);
     if (!name.trim()) { setError("名称不能为空"); return; }
     if (!apiBaseUrl.trim()) { setError("API Base URL 不能为空"); return; }
     if (!apiKey.trim()) { setError("API Key 不能为空"); return; }
-    if (!models.length) { setError("至少需要一个模型名称"); return; }
-    onSave({ name, apiBaseUrl, apiKey, models, defaultModel: defaultModel || models[0] });
+    if (models.length === 0 || models.every((m) => !m.name.trim())) { setError("至少需要一个模型名称"); return; }
+    if (models.some((m) => m.name.trim() === "")) { setError("模型名称不能为空"); return; }
+    onSave({ name, apiBaseUrl, apiKey, models });
   }
 
   if (!open) return null;
@@ -208,14 +297,7 @@ function AddProviderDialog({
             <Label htmlFor="mp-key">API Key</Label>
             <Input id="mp-key" onChange={(e) => setApiKey(e.target.value)} type="password" value={apiKey} />
           </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="mp-models">模型列表（每行一个或用逗号分隔）</Label>
-            <Input id="mp-models" onChange={(e) => setModelsText(e.target.value)} value={modelsText} />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="mp-default">默认模型</Label>
-            <Input id="mp-default" onChange={(e) => setDefaultModel(e.target.value)} value={defaultModel} />
-          </div>
+          <ModelEntryEditor models={models} onChange={setModels} />
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
           <div className="flex justify-end gap-2">
             <Button onClick={onClose} type="button" variant="outline">
@@ -244,17 +326,19 @@ function EditProviderDialog({
   onClose: () => void;
   onSave: (p: ModelProvider) => void;
 }) {
-  const [modelsText, setModelsText] = useState(provider.models.join(", "));
   const [error, setError] = useState("");
 
   function handleSave() {
     setError("");
-    const models = modelsText
-      .split(/[\n,]+/)
-      .map((m) => m.trim())
-      .filter(Boolean);
-    if (!models.length) { setError("至少需要一个模型名称"); return; }
-    onSave({ ...provider, models, defaultModel: provider.defaultModel || models[0] });
+    if (!provider.models.length || provider.models.every((m) => !m.name.trim())) {
+      setError("至少需要一个模型名称");
+      return;
+    }
+    if (provider.models.some((m) => !m.name.trim())) {
+      setError("模型名称不能为空");
+      return;
+    }
+    onSave(provider);
   }
 
   return (
@@ -290,22 +374,10 @@ function EditProviderDialog({
               value={provider.apiKey}
             />
           </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="edit-models">模型列表（每行一个或用逗号分隔）</Label>
-            <Input
-              id="edit-models"
-              onChange={(e) => setModelsText(e.target.value)}
-              value={modelsText}
-            />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="edit-default">默认模型</Label>
-            <Input
-              id="edit-default"
-              onChange={(e) => setProvider({ ...provider, defaultModel: e.target.value })}
-              value={provider.defaultModel}
-            />
-          </div>
+          <ModelEntryEditor
+            models={provider.models}
+            onChange={(models) => setProvider({ ...provider, models })}
+          />
           <div className="flex items-center gap-2">
             <input
               checked={provider.isDefault}
