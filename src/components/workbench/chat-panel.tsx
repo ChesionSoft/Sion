@@ -538,7 +538,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
 
         <div className="flex flex-col rounded-lg border bg-background">
           <Textarea
-            className="min-h-[120px] resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-1 focus-visible:ring-ring"
+            className="min-h-[120px] resize-none rounded-t-lg border-0 bg-transparent px-4 py-3 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
