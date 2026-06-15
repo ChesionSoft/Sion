@@ -16,7 +16,7 @@ export const metadata: Metadata = {
   title: "Sion - AI 项目设计文档工作台",
   description: "本地优先的项目设计文档工作台，把需求讨论沉淀成可交付文档、开发上下文包和任务清单。",
   icons: {
-    icon: "/logo.svg",
+    icon: "/logo.png",
   },
 };
 

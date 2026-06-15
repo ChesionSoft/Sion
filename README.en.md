@@ -1,6 +1,6 @@
 <div align="center">
 
-![Sion logo](public/logo.svg)
+![Sion logo](public/logo.png)
 
 # Sion
 
