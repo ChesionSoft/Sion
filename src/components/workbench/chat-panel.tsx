@@ -459,7 +459,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
 
   return (
     <section className="flex min-h-0 flex-col border-r">
-      <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+      <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
         <div className="min-w-0">
           <p className="text-xs font-medium text-muted-foreground">节点 Agent</p>
           <h2 className="truncate text-sm font-semibold">{activeNode.id}</h2>
@@ -517,7 +517,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 p-5">
         <ScrollArea className="min-h-0 flex-1" ref={scrollRef}>
           {messages.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center text-center">
