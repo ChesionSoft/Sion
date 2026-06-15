@@ -503,9 +503,9 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
           )}
         </ScrollArea>
 
-        <div className="flex flex-col rounded-lg border">
+        <div className="flex flex-col rounded-lg border bg-background">
           <Textarea
-            className="min-h-28 resize-none border-0 shadow-none focus-visible:ring-0"
+            className="min-h-[120px] resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-1 focus-visible:ring-ring"
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -516,11 +516,16 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
             placeholder="和当前节点 Agent 讨论... (Enter 发送，Shift+Enter 换行)"
             value={message}
           />
-          {error ? <p className="px-3 py-1 text-sm text-destructive">{error}</p> : null}
+          {error ? (
+            <p className="flex items-center gap-1.5 px-4 py-2 text-sm text-destructive">
+              <AlertCircleIcon className="h-4 w-4" />
+              {error}
+            </p>
+          ) : null}
           <div className="flex items-center justify-between gap-2 border-t px-3 py-2">
-            <div className="relative flex min-w-0 flex-1 flex-wrap items-center gap-1" ref={filePopoverRef}>
+            <div className="relative flex min-w-0 flex-1 flex-wrap items-center gap-1.5" ref={filePopoverRef}>
               <button
-                className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-muted"
+                className="shrink-0 rounded-full p-2 text-muted-foreground transition-colors hover:bg-muted"
                 onClick={() => setFilePopoverOpen((open) => !open)}
                 title="添加文件附件"
                 type="button"
@@ -530,12 +535,12 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
               {selectedFiles.map((file) => (
                 <span
                   key={file.id}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-xs"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md border bg-muted/40 px-2 py-0.5 text-xs"
                 >
-                  <FileIcon className="h-3 w-3" />
-                  {file.originalName}
+                  <FileIcon className="h-3 w-3 text-muted-foreground" />
+                  <span className="max-w-[120px] truncate">{file.originalName}</span>
                   <button
-                    className="text-muted-foreground hover:text-destructive"
+                    className="text-muted-foreground transition-colors hover:text-destructive"
                     onClick={() => toggleFile(file.id)}
                     type="button"
                   >
@@ -544,7 +549,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                 </span>
               ))}
               {filePopoverOpen ? (
-                <div className="absolute bottom-10 left-0 z-30 w-56 rounded-xl border bg-popover p-1.5 shadow-xl">
+                <div className="absolute bottom-12 left-0 z-30 w-56 rounded-xl border bg-popover p-1.5 shadow-xl">
                   {projectFiles.filter((f) => f.status === "available").length === 0 ? (
                     <p className="px-2 py-1.5 text-xs text-muted-foreground">暂无可添加的文件</p>
                   ) : (
@@ -553,7 +558,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                       .map((file) => (
                         <label
                           key={file.id}
-                          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted cursor-pointer"
+                          className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted"
                         >
                           <input
                             checked={selectedFileIds.includes(file.id)}
@@ -561,9 +566,9 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                             type="checkbox"
                           />
                           <FileIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="truncate flex-1">{file.originalName}</span>
+                          <span className="flex-1 truncate">{file.originalName}</span>
                           {file.characterCount ? (
-                            <span className="text-xs text-muted-foreground shrink-0">
+                            <span className="shrink-0 text-xs text-muted-foreground">
                               {file.characterCount > 50000 ? "⚠️ " : ""}
                               {file.characterCount.toLocaleString()}字
                             </span>
