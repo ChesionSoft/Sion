@@ -128,9 +128,8 @@ export function ProjectList() {
         <div className="mx-auto flex max-w-4xl flex-col gap-8 pt-24">
           <header className="text-center">
             <div className="mb-5 flex justify-center">
-              <Image alt="Sion" className="h-auto w-48" height={88} priority src="/logo.png" width={192} />
+              <Image alt="Sion" className="h-auto w-28" height={850} priority src="/logo.png" width={620} />
             </div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Sion</p>
             <h1 className="mb-3 text-4xl font-semibold tracking-tight">AI 项目设计文档工作台</h1>
             <p className="mx-auto max-w-2xl text-base text-muted-foreground">
               按 12 个节点把需求讨论、Agent 对话、文件上下文和 Markdown 编辑沉淀成可交付的项目设计文档。
@@ -189,9 +188,8 @@ export function ProjectList() {
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
         <header className="border-b pb-4">
           <div className="flex items-center gap-3">
-            <Image alt="Sion" className="h-auto w-28 shrink-0" height={51} priority src="/logo.png" width={112} />
+            <Image alt="Sion" className="h-auto w-12 shrink-0" height={850} priority src="/logo.png" width={620} />
             <div>
-              <p className="mb-1 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Sion</p>
               <h1 className="text-2xl font-semibold">AI 项目设计文档工作台</h1>
               <p className="mt-1 text-sm text-muted-foreground">
                 管理本地项目，把需求、文档和开发上下文保留在同一条交付路径里。

@@ -1,6 +1,6 @@
 <div align="center">
 
-![Sion logo](public/logo.png)
+<img src="public/logo.png" alt="Sion logo" width="180" />
 
 # Sion
 
