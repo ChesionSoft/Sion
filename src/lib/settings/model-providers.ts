@@ -1,14 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ModelProvider } from "@/lib/project/types";
+import type { ModelEntry, ModelProvider } from "@/lib/project/types";
 
 export type CreateModelProviderInput = {
   name: string;
   apiBaseUrl: string;
   apiKey: string;
-  models: string[];
-  defaultModel: string;
+  models: ModelEntry[];
   isDefault?: boolean;
 };
 
@@ -27,7 +26,8 @@ export class ModelProviderStore {
 
   async listProviders(): Promise<ModelProvider[]> {
     try {
-      return await readJson<ModelProvider[]>(this.filePath());
+      const raw = await readJson<unknown[]>(this.filePath());
+      return raw.map((item) => migrateProvider(item as Record<string, unknown>));
     } catch {
       return [];
     }
@@ -38,17 +38,26 @@ export class ModelProviderStore {
     if (!input.apiBaseUrl?.trim()) throw new ValidationError("API Base URL 不能为空");
     if (!input.apiKey?.trim()) throw new ValidationError("API Key 不能为空");
     if (!input.models.length) throw new ValidationError("至少需要一个模型名称");
+    if (input.models.some((m) => !m.name.trim())) throw new ValidationError("模型名称不能为空");
 
     const providers = await this.listProviders();
     const now = new Date().toISOString();
+
+    const models = input.models.map((m, i) => ({
+      ...m,
+      name: m.name.trim(),
+      isDefault: i === 0 ? true : m.isDefault ?? false,
+    }));
+    const defaultIndex = models.findIndex((m) => m.isDefault);
+    if (defaultIndex === -1) models[0].isDefault = true;
+    else models.forEach((m, i) => { m.isDefault = i === defaultIndex; });
 
     const provider: ModelProvider = {
       id: randomUUID(),
       name: input.name.trim(),
       apiBaseUrl: input.apiBaseUrl.trim(),
       apiKey: input.apiKey.trim(),
-      models: input.models,
-      defaultModel: input.defaultModel || input.models[0],
+      models,
       isDefault: input.isDefault ?? (providers.length === 0),
       createdAt: now,
       updatedAt: now,
@@ -77,9 +86,14 @@ export class ModelProviderStore {
       apiBaseUrl: input.apiBaseUrl?.trim() ?? current.apiBaseUrl,
       apiKey: input.apiKey?.trim() ?? current.apiKey,
       models: input.models ?? current.models,
-      defaultModel: input.defaultModel ?? current.defaultModel,
       updatedAt: new Date().toISOString(),
     };
+
+    if (input.models) {
+      const defaultIdx = next.models.findIndex((m) => m.isDefault);
+      if (defaultIdx === -1 && next.models.length > 0) next.models[0].isDefault = true;
+      else next.models.forEach((m, i) => { m.isDefault = i === defaultIdx; });
+    }
 
     if (input.isDefault === true) {
       next.isDefault = true;
@@ -118,6 +132,10 @@ export class ModelProviderStore {
     return providers.find((p) => p.isDefault) ?? null;
   }
 
+  getDefaultModelName(provider: ModelProvider): string {
+    return provider.models.find((m) => m.isDefault)?.name ?? provider.models[0]?.name ?? "";
+  }
+
   private async writeProviders(providers: ModelProvider[]): Promise<void> {
     await mkdir(this.settingsDir, { recursive: true });
     await writeJson(this.filePath(), providers);
@@ -144,4 +162,21 @@ async function readJson<T>(filePath: string): Promise<T> {
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function migrateProvider(raw: Record<string, unknown>): ModelProvider {
+  const models = raw.models;
+  if (Array.isArray(models) && models.length > 0 && typeof models[0] === "string") {
+    raw.models = (models as string[]).map((name: string, i: number) => ({
+      name,
+      isDefault: i === 0,
+    }));
+    if (raw.defaultModel && typeof raw.defaultModel === "string") {
+      (raw.models as ModelEntry[]).forEach((m: ModelEntry) => {
+        m.isDefault = m.name === raw.defaultModel;
+      });
+      delete raw.defaultModel;
+    }
+  }
+  return raw as unknown as ModelProvider;
 }

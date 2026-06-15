@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -15,19 +15,39 @@ afterEach(async () => {
 });
 
 describe("ModelProviderStore", () => {
-  it("creates a provider with defaults", async () => {
+  it("creates a provider with ModelEntry objects", async () => {
     const store = new ModelProviderStore(settingsDir);
     const provider = await store.createProvider({
       name: "OpenAI",
       apiBaseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test",
-      models: ["gpt-4o", "gpt-4o-mini"],
-      defaultModel: "gpt-4o",
+      models: [
+        { name: "gpt-4o", contextLength: 128000, isDefault: true },
+        { name: "gpt-4o-mini", contextLength: 128000 },
+      ],
     });
 
     expect(provider.name).toBe("OpenAI");
     expect(provider.isDefault).toBe(true);
-    expect(provider.models).toEqual(["gpt-4o", "gpt-4o-mini"]);
+    expect(provider.models).toHaveLength(2);
+    expect(provider.models[0]).toEqual({ name: "gpt-4o", contextLength: 128000, isDefault: true });
+    expect(provider.models[1]).toEqual({ name: "gpt-4o-mini", contextLength: 128000, isDefault: false });
+  });
+
+  it("ensures exactly one model is marked default", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    const provider = await store.createProvider({
+      name: "OpenAI",
+      apiBaseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [
+        { name: "gpt-4o" },
+        { name: "gpt-4o-mini" },
+      ],
+    });
+
+    expect(provider.models[0].isDefault).toBe(true);
+    expect(provider.models[1].isDefault).toBe(false);
   });
 
   it("lists created providers", async () => {
@@ -36,8 +56,7 @@ describe("ModelProviderStore", () => {
       name: "OpenAI",
       apiBaseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test",
-      models: ["gpt-4o"],
-      defaultModel: "gpt-4o",
+      models: [{ name: "gpt-4o", isDefault: true }],
     });
 
     const providers = await store.listProviders();
@@ -50,8 +69,7 @@ describe("ModelProviderStore", () => {
       name: "OpenAI",
       apiBaseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test",
-      models: ["gpt-4o"],
-      defaultModel: "gpt-4o",
+      models: [{ name: "gpt-4o", isDefault: true }],
     });
 
     const updated = await store.updateProvider(created.id, { name: "OpenAI Updated" });
@@ -64,15 +82,13 @@ describe("ModelProviderStore", () => {
       name: "OpenAI",
       apiBaseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test",
-      models: ["gpt-4o"],
-      defaultModel: "gpt-4o",
+      models: [{ name: "gpt-4o", isDefault: true }],
     });
     const second = await store.createProvider({
       name: "DeepSeek",
       apiBaseUrl: "https://api.deepseek.com/v1",
       apiKey: "sk-test",
-      models: ["deepseek-chat"],
-      defaultModel: "deepseek-chat",
+      models: [{ name: "deepseek-chat", isDefault: true }],
     });
 
     expect(first.isDefault).toBe(true);
@@ -91,8 +107,7 @@ describe("ModelProviderStore", () => {
       name: "OpenAI",
       apiBaseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test",
-      models: ["gpt-4o"],
-      defaultModel: "gpt-4o",
+      models: [{ name: "gpt-4o", isDefault: true }],
     });
 
     const def = await store.getDefaultProvider();
@@ -102,7 +117,71 @@ describe("ModelProviderStore", () => {
   it("validates required fields on create", async () => {
     const store = new ModelProviderStore(settingsDir);
     await expect(
-      store.createProvider({ name: "", apiBaseUrl: "", apiKey: "", models: [], defaultModel: "" }),
+      store.createProvider({ name: "", apiBaseUrl: "", apiKey: "", models: [] }),
     ).rejects.toThrow("提供商名称不能为空");
+  });
+
+  it("validates model names are not empty", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    await expect(
+      store.createProvider({
+        name: "OpenAI",
+        apiBaseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test",
+        models: [{ name: "" }],
+      }),
+    ).rejects.toThrow("模型名称不能为空");
+  });
+
+  it("getDefaultModelName returns the model with isDefault", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    const provider = await store.createProvider({
+      name: "OpenAI",
+      apiBaseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [
+        { name: "gpt-4o", isDefault: true },
+        { name: "gpt-4o-mini" },
+      ],
+    });
+    expect(store.getDefaultModelName(provider)).toBe("gpt-4o");
+  });
+
+  it("getDefaultModelName falls back to first model", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    const provider = await store.createProvider({
+      name: "OpenAI",
+      apiBaseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [{ name: "gpt-4o" }, { name: "gpt-4o-mini" }],
+    });
+    expect(store.getDefaultModelName(provider)).toBe("gpt-4o");
+  });
+
+  it("migrates legacy string[] models to ModelEntry[]", async () => {
+    const filePath = path.join(settingsDir, "model-providers.json");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(settingsDir, { recursive: true });
+    await writeFile(filePath, JSON.stringify([
+      {
+        id: "legacy-id",
+        name: "Legacy",
+        apiBaseUrl: "https://api.legacy.com/v1",
+        apiKey: "sk-legacy",
+        models: ["gpt-4o", "gpt-4o-mini"],
+        defaultModel: "gpt-4o-mini",
+        isDefault: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]));
+
+    const store = new ModelProviderStore(settingsDir);
+    const providers = await store.listProviders();
+    expect(providers).toHaveLength(1);
+    expect(providers[0].models).toEqual([
+      { name: "gpt-4o", isDefault: false },
+      { name: "gpt-4o-mini", isDefault: true },
+    ]);
   });
 });
