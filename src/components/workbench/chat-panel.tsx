@@ -178,6 +178,8 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
   const [filePopoverOpen, setFilePopoverOpen] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const filePopoverRef = useRef<HTMLDivElement>(null);
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+  const sessionMenuRef = useRef<HTMLDivElement>(null);
 
   async function loadSessionMessages(sessionId: string) {
     const response = await fetch(
@@ -235,6 +237,9 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
       }
       if (!filePopoverRef.current?.contains(event.target as Node)) {
         setFilePopoverOpen(false);
+      }
+      if (!sessionMenuRef.current?.contains(event.target as Node)) {
+        setSessionMenuOpen(false);
       }
     }
 
@@ -460,25 +465,51 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
           <h2 className="truncate text-sm font-semibold">{activeNode.id}</h2>
         </div>
         <div className="flex items-center gap-2">
-          <label className="sr-only" htmlFor={`chat-session-${activeNode.id}`}>
-            会话
-          </label>
-          <select
-            className="h-8 max-w-44 rounded-md border bg-background px-2 text-xs"
-            id={`chat-session-${activeNode.id}`}
-            onChange={(event) => {
-              const nextSessionId = event.target.value;
-              setActiveSessionId(nextSessionId);
-              loadSessionMessages(nextSessionId);
-            }}
-            value={activeSessionId}
-          >
-            {sessions.map((session) => (
-              <option key={session.id} value={session.id}>
-                {session.name} · {session.messageCount} 条
-              </option>
-            ))}
-          </select>
+          <div className="relative" ref={sessionMenuRef}>
+            <button
+              aria-expanded={sessionMenuOpen}
+              aria-haspopup="menu"
+              className="inline-flex h-8 max-w-44 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium shadow-sm transition hover:bg-muted/60"
+              onClick={() => setSessionMenuOpen((open) => !open)}
+              type="button"
+            >
+              <span className="truncate">
+                {sessions.find((s) => s.id === activeSessionId)?.name ?? "会话"}
+              </span>
+              <span className="text-muted-foreground">
+                · {sessions.find((s) => s.id === activeSessionId)?.messageCount ?? 0} 条
+              </span>
+              <ChevronDownIcon className="h-3.5 w-3.5 text-muted-foreground" />
+            </button>
+            {sessionMenuOpen ? (
+              <div className="absolute right-0 top-[calc(100%+6px)] z-30 w-56 rounded-xl border bg-popover p-1.5 text-sm shadow-xl">
+                <p className="px-2 py-1 text-xs text-muted-foreground">会话</p>
+                <div className="flex max-h-60 flex-col gap-0.5 overflow-auto">
+                  {sessions.map((session) => {
+                    const active = session.id === activeSessionId;
+                    return (
+                      <button
+                        key={session.id}
+                        className={cn(
+                          "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted",
+                          active && "bg-muted"
+                        )}
+                        onClick={() => {
+                          setActiveSessionId(session.id);
+                          loadSessionMessages(session.id);
+                          setSessionMenuOpen(false);
+                        }}
+                        type="button"
+                      >
+                        <span className="truncate">{session.name}</span>
+                        <span className="text-xs text-muted-foreground">{session.messageCount} 条</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+          </div>
           <Button onClick={createSession} size="sm" type="button" variant="outline">
             <PlusIcon data-icon="inline-start" />
             新会话

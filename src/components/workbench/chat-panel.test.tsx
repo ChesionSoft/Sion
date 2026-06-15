@@ -148,9 +148,12 @@ describe("ChatPanel", () => {
   it("renders a session selector and new session button", async () => {
     render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
 
-    expect(await screen.findByLabelText("会话")).toBeInTheDocument();
+    const sessionTrigger = await screen.findByRole("button", { name: /6月14日/ });
+    expect(sessionTrigger).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "新会话" })).toBeInTheDocument();
-    expect(screen.getByText("6月14日 23:30 · 2 条")).toBeInTheDocument();
+    expect(sessionTrigger.textContent?.replace(/\s+/g, " ").trim()).toMatch(
+      /6月14日 23:30\s*·?\s*2 条/
+    );
   });
 
   it("renders the compact model menu with reasoning effort and nested models", async () => {
