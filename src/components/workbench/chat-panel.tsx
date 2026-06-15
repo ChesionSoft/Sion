@@ -1,7 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, FileIcon, PaperclipIcon, PlusIcon, SendIcon, StopCircleIcon, XIcon } from "lucide-react";
+import {
+  AlertCircleIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  FileIcon,
+  PaperclipIcon,
+  PlusIcon,
+  SendIcon,
+  StopCircleIcon,
+  XIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
@@ -107,6 +118,44 @@ export function createStreamingTextBuffer(
       resolveIdleIfNeeded();
     },
   };
+}
+
+function MessageBubble({ msg }: { msg: ChatMessage }) {
+  if (msg.role === "system") {
+    return (
+      <div className="mx-auto max-w-[90%] rounded-lg bg-muted/20 px-3 py-2 text-center text-xs text-muted-foreground">
+        {msg.content}
+      </div>
+    );
+  }
+
+  const isUser = msg.role === "user";
+
+  return (
+    <div
+      className={cn(
+        "flex max-w-[85%] flex-col gap-1 rounded-xl p-3.5 text-sm",
+        isUser ? "self-end bg-foreground text-background" : "self-start border bg-muted/40 text-foreground"
+      )}
+    >
+      <span className={cn("text-xs", isUser ? "text-background/70" : "text-muted-foreground")}>
+        {isUser ? "你" : "Agent"}
+      </span>
+      {msg.reasoningContent ? (
+        <details className="group mb-2 rounded-md border bg-background/60 px-2 py-1.5" open={false}>
+          <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground">
+            <ChevronRightIcon className="h-3 w-3 group-open:hidden" />
+            <ChevronDownIcon className="hidden h-3 w-3 group-open:block" />
+            思考过程
+          </summary>
+          <div className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+            {msg.reasoningContent}
+          </div>
+        </details>
+      ) : null}
+      <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+    </div>
+  );
 }
 
 export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; projectId: string }) {
@@ -440,37 +489,15 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
         <ScrollArea className="min-h-0 flex-1" ref={scrollRef}>
           {messages.length === 0 ? (
-            <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
-              当前会话会围绕本节点内容推进。项目 ID：{projectId}
+            <div className="flex flex-1 flex-col items-center justify-center text-center">
+              <div className="max-w-xs rounded-lg border bg-muted/20 p-4 text-sm text-muted-foreground">
+                当前会话会围绕“{activeNode.title}”节点内容推进。
+              </div>
             </div>
           ) : (
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-4">
               {messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`rounded-lg p-3 text-sm ${
-                    msg.role === "user"
-                      ? "bg-primary/10 ml-8"
-                      : msg.role === "assistant"
-                        ? "bg-muted/30 mr-8"
-                        : "bg-muted/10 mx-4 text-xs"
-                  }`}
-                >
-                  <p className="text-xs font-medium text-muted-foreground mb-1">
-                    {msg.role === "user" ? "你" : msg.role === "assistant" ? "Agent" : "系统"}
-                  </p>
-                  {msg.reasoningContent ? (
-                    <details className="mb-2 rounded-md border bg-background/60 px-2 py-1.5" open>
-                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                        思考过程
-                      </summary>
-                      <div className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-                        {msg.reasoningContent}
-                      </div>
-                    </details>
-                  ) : null}
-                  <div className="whitespace-pre-wrap">{msg.content}</div>
-                </div>
+                <MessageBubble key={msg.id} msg={msg} />
               ))}
             </div>
           )}
