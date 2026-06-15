@@ -146,13 +146,13 @@ export function MarkdownPanel({
   return (
     <section className="flex min-h-0 flex-col bg-background">
       <div className="border-b px-5 py-4">
-        <p className="text-xs font-medium text-muted-foreground">Markdown 源文档</p>
+        <p className="text-xs font-medium text-muted-foreground">节点交付稿</p>
         <h2 className="text-sm font-semibold">{node.id}</h2>
       </div>
       <Tabs className="min-h-0 flex-1 p-5" defaultValue="edit">
         <TabsList variant="line">
-          <TabsTrigger className="text-xs" value="edit">编辑</TabsTrigger>
-          <TabsTrigger className="text-xs" value="preview">预览</TabsTrigger>
+          <TabsTrigger className="text-xs" value="edit">编辑 Markdown</TabsTrigger>
+          <TabsTrigger className="text-xs" value="preview">预览交付稿</TabsTrigger>
           <TabsTrigger className="text-xs" onClick={loadAgentRule} value="agent">
             Agent 规则
           </TabsTrigger>
@@ -174,7 +174,7 @@ export function MarkdownPanel({
             )}
             <Button disabled={savingMarkdown} onClick={saveMarkdown} type="button">
               <CheckIcon data-icon="inline-start" />
-              {savingMarkdown ? "保存中..." : "保存当前节点文档"}
+              {savingMarkdown ? "正在保存..." : "保存当前节点交付稿"}
             </Button>
           </div>
         </TabsContent>
@@ -187,7 +187,7 @@ export function MarkdownPanel({
 
         <TabsContent className="min-h-0 flex flex-1 flex-col gap-3" value="agent">
           <div className="flex shrink-0 items-center gap-3">
-            <label className="text-xs font-medium text-muted-foreground">规则模式</label>
+            <label className="text-xs font-medium text-muted-foreground">Agent 规则来源</label>
             <select
               className="h-8 rounded-md border bg-background px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               onChange={(e) => switchAgentMode(e.target.value as AgentRuleMode)}
@@ -200,14 +200,14 @@ export function MarkdownPanel({
 
           {agentMode === "default" ? (
             <div className="flex min-h-0 flex-1 flex-col gap-2">
-              <p className="text-xs text-muted-foreground">内置默认规则（只读）</p>
+              <p className="text-xs text-muted-foreground">内置默认规则（只读，适合大多数项目）</p>
               <div className="min-h-0 flex-1 overflow-auto rounded-lg border bg-muted/10 p-4">
                 <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed">{defaultRuleContent}</pre>
               </div>
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-2">
-              <p className="text-xs text-muted-foreground">自定义规则（可编辑）</p>
+              <p className="text-xs text-muted-foreground">项目自定义规则（会永久保存在当前项目）</p>
               <div className="min-h-0 flex-1 rounded-lg border bg-muted/20 p-1">
                 <Textarea
                   className="h-full min-h-[240px] resize-none border-0 bg-transparent font-mono text-xs leading-relaxed shadow-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -227,12 +227,12 @@ export function MarkdownPanel({
                     variant="outline"
                   >
                     <RefreshCwIcon data-icon="inline-start" />
-                    从默认规则重新复制
+                    重新复制默认规则
                   </Button>
                 </div>
                 <Button disabled={savingAgent} onClick={saveAgentRule} type="button">
                   <CheckIcon data-icon="inline-start" />
-                  {savingAgent ? "保存中..." : "保存 Agent 规则"}
+                  {savingAgent ? "正在保存..." : "保存项目 Agent 规则"}
                 </Button>
               </div>
             </div>

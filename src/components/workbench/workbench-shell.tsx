@@ -45,13 +45,13 @@ export function WorkbenchShell({ project, nodes }: { project: Project; nodes: Pr
           </Link>
           <div className="min-w-0">
             <h1 className="truncate text-base font-semibold leading-tight">{project.name}</h1>
-            <p className="text-xs text-muted-foreground">本地项目设计文档工作台</p>
+            <p className="text-xs text-muted-foreground">本地优先的项目设计文档工作台</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <Button onClick={() => setShowFilePool(true)} size="sm" type="button" variant="outline">
             <FolderOpenIcon data-icon="inline-start" />
-            文件池
+            项目文件池
           </Button>
           <ExportPanel projectId={project.id} />
         </div>

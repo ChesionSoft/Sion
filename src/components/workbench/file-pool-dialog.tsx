@@ -119,12 +119,14 @@ export function FilePoolDialog({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>项目文件池</DialogTitle>
-          <DialogDescription>上传和管理项目文件，可读取的文件将作为模型上下文引用。</DialogDescription>
+          <DialogDescription>
+            上传项目相关 Markdown 文档，在聊天时勾选后会随当前节点一起交给模型阅读。
+          </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-2">
             <input
-              accept="*/*"
+              accept=".md,text/markdown"
               className="hidden"
               onChange={handleUpload}
               ref={fileInputRef}
@@ -137,14 +139,16 @@ export function FilePoolDialog({
               variant="outline"
             >
               <UploadIcon data-icon="inline-start" />
-              {uploading ? "上传中..." : "上传文件"}
+              {uploading ? "正在读取文件..." : "上传 Markdown 文件"}
             </Button>
           </div>
 
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
           {files.length === 0 ? (
-            <p className="text-sm text-muted-foreground">暂无文件。</p>
+            <p className="text-sm text-muted-foreground">
+              暂无文件。可以上传需求说明、会议纪要或补充资料，之后在聊天框里按需引用。
+            </p>
           ) : (
             <ScrollArea className="max-h-80">
               <div className="flex flex-col gap-2">

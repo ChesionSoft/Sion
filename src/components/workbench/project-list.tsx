@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { ArrowRightIcon, PlusIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -66,7 +67,7 @@ function CreateProjectForm({
         <Input
           id="project-name"
           onChange={(event) => setName(event.target.value)}
-          placeholder="输入项目名称"
+          placeholder="例如：库存管理系统"
           value={name}
         />
       </div>
@@ -77,7 +78,7 @@ function CreateProjectForm({
         <Input
           id="customer-name"
           onChange={(event) => setCustomerName(event.target.value)}
-          placeholder="输入客户名称"
+          placeholder="例如：某某科技有限公司"
           value={customerName}
         />
       </div>
@@ -88,14 +89,14 @@ function CreateProjectForm({
         <Input
           id="author-name"
           onChange={(event) => setAuthorName(event.target.value)}
-          placeholder="输入编制方"
+          placeholder="例如：ChesionSoft / 项目负责人"
           value={authorName}
         />
       </div>
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
       <Button disabled={!name.trim() || submitting} onClick={createProject} type="button">
         <PlusIcon data-icon="inline-start" />
-        {submitting ? "创建中..." : "创建项目"}
+        {submitting ? "正在创建项目..." : "创建项目工作台"}
       </Button>
     </div>
   );
@@ -126,9 +127,14 @@ export function ProjectList() {
       <main className="min-h-screen bg-background p-6 text-foreground">
         <div className="mx-auto flex max-w-4xl flex-col gap-8 pt-24">
           <header className="text-center">
-            <p className="mb-2 text-xs font-medium text-muted-foreground">Sion</p>
-            <h1 className="mb-3 text-4xl font-semibold tracking-tight">项目设计文档工作台</h1>
-            <p className="text-base text-muted-foreground">本地优先的 AI 辅助设计文档工具</p>
+            <div className="mb-5 flex justify-center">
+              <Image alt="Sion" height={64} priority src="/logo.svg" width={64} />
+            </div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Sion</p>
+            <h1 className="mb-3 text-4xl font-semibold tracking-tight">AI 项目设计文档工作台</h1>
+            <p className="mx-auto max-w-2xl text-base text-muted-foreground">
+              按 12 个节点把需求讨论、Agent 对话、文件上下文和 Markdown 编辑沉淀成可交付的项目设计文档。
+            </p>
           </header>
 
           <div className="flex justify-center">
@@ -147,7 +153,7 @@ export function ProjectList() {
 
           {projects.length > 0 ? (
             <section className="flex flex-col gap-3">
-              <h2 className="text-sm font-medium text-muted-foreground">已有项目</h2>
+              <h2 className="text-sm font-medium text-muted-foreground">继续已有项目</h2>
               <div className="flex flex-col gap-2">
                 {projects.map((project) => (
                   <Card key={project.id} className="border shadow-none" size="sm">
@@ -162,7 +168,7 @@ export function ProjectList() {
                           variant="outline"
                         >
                           <ArrowRightIcon data-icon="inline-start" />
-                          打开
+                          进入工作台
                         </Button>
                       </CardAction>
                     </CardHeader>
@@ -182,9 +188,16 @@ export function ProjectList() {
     <main className="min-h-screen bg-background p-6 text-foreground">
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
         <header className="border-b pb-4">
-          <p className="mb-1 text-xs font-medium text-muted-foreground">Sion</p>
-          <h1 className="text-2xl font-semibold">项目设计文档工作台</h1>
-          <p className="mt-1 text-sm text-muted-foreground">管理和继续你的本地设计文档项目</p>
+          <div className="flex items-center gap-3">
+            <Image alt="Sion" height={40} priority src="/logo.svg" width={40} />
+            <div>
+              <p className="mb-1 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Sion</p>
+              <h1 className="text-2xl font-semibold">AI 项目设计文档工作台</h1>
+              <p className="mt-1 text-sm text-muted-foreground">
+                管理本地项目，把需求、文档和开发上下文保留在同一条交付路径里。
+              </p>
+            </div>
+          </div>
         </header>
 
         <section className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -196,13 +209,13 @@ export function ProjectList() {
           </Card>
           <Card className="border shadow-none">
             <CardHeader className="pb-2">
-              <CardDescription>已完成节点</CardDescription>
+              <CardDescription>已确认节点</CardDescription>
               <CardTitle className="text-2xl">—</CardTitle>
             </CardHeader>
           </Card>
           <Card className="border shadow-none">
             <CardHeader className="pb-2">
-              <CardDescription>最近活跃</CardDescription>
+              <CardDescription>最近更新</CardDescription>
               <CardTitle className="text-2xl">—</CardTitle>
             </CardHeader>
           </Card>
@@ -212,7 +225,7 @@ export function ProjectList() {
           <Card className="border shadow-none">
             <CardHeader>
               <CardTitle>新建项目</CardTitle>
-              <CardDescription>创建本地项目后进入 12 节点设计流程。</CardDescription>
+              <CardDescription>创建本地项目后进入 12 节点设计路径，逐步补齐交付文档。</CardDescription>
             </CardHeader>
             <CardContent>
               <CreateProjectForm
@@ -242,7 +255,7 @@ export function ProjectList() {
                       variant="outline"
                     >
                       <ArrowRightIcon data-icon="inline-start" />
-                      打开
+                      进入工作台
                     </Button>
                   </CardAction>
                 </CardHeader>

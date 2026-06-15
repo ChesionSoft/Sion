@@ -94,13 +94,17 @@ export function ModelConfigPanel() {
     <Card>
       <CardHeader>
         <CardTitle>模型配置</CardTitle>
-        <CardDescription>管理全局大模型 API 连接，所有项目共享使用。</CardDescription>
+        <CardDescription>
+          配置 OpenAI 兼容的大模型 API。全局提供商会作为默认连接，每个聊天框仍可选择具体模型和推理强度。
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
         {providers.length === 0 ? (
-          <p className="text-sm text-muted-foreground">暂无配置的模型提供商。</p>
+          <p className="text-sm text-muted-foreground">
+            暂无模型提供商。添加后即可在项目节点聊天框中选择模型推进文档。
+          </p>
         ) : (
           <div className="flex flex-col gap-2">
             {providers.map((provider) => (
@@ -146,7 +150,7 @@ export function ModelConfigPanel() {
 
         <Button onClick={() => setShowAddDialog(true)} type="button" variant="outline">
           <PlusIcon data-icon="inline-start" />
-          添加提供商
+          添加模型提供商
         </Button>
 
         <AddProviderDialog
@@ -200,13 +204,13 @@ function ModelEntryEditor({
 
   return (
     <div className="flex flex-col gap-2">
-      <Label>模型列表</Label>
+        <Label>模型列表与上下文长度</Label>
       {models.map((model, index) => (
         <div key={index} className="flex items-center gap-2">
           <Input
             className="flex-1"
             onChange={(e) => updateModel(index, { name: e.target.value })}
-            placeholder="模型名称"
+            placeholder="例如：gpt-4.1、deepseek-chat"
             value={model.name}
           />
           <select
@@ -244,7 +248,7 @@ function ModelEntryEditor({
       ))}
       <Button onClick={addModel} size="sm" type="button" variant="outline">
         <PlusIcon data-icon="inline-start" />
-        添加模型
+          添加一个模型
       </Button>
     </div>
   );
@@ -282,11 +286,13 @@ function AddProviderDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>添加模型提供商</DialogTitle>
-          <DialogDescription>配置 OpenAI 兼容的大模型 API 连接。</DialogDescription>
+          <DialogDescription>
+            填写服务商名称、API Base URL、API Key，并登记可在聊天框中选择的模型。
+          </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
-            <Label htmlFor="mp-name">名称</Label>
+            <Label htmlFor="mp-name">提供商名称</Label>
             <Input id="mp-name" onChange={(e) => setName(e.target.value)} value={name} />
           </div>
           <div className="flex flex-col gap-2">
@@ -350,7 +356,7 @@ function EditProviderDialog({
         </DialogHeader>
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
-            <Label htmlFor="edit-name">名称</Label>
+            <Label htmlFor="edit-name">提供商名称</Label>
             <Input
               id="edit-name"
               onChange={(e) => setProvider({ ...provider, name: e.target.value })}

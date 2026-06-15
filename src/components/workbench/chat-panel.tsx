@@ -463,7 +463,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
     <section className="flex min-h-0 flex-col border-r">
       <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
         <div className="min-w-0">
-          <p className="text-xs font-medium text-muted-foreground">节点 Agent</p>
+          <p className="text-xs font-medium text-muted-foreground">当前节点 Agent</p>
           <h2 className="truncate text-sm font-semibold">{activeNode.id}</h2>
         </div>
         <div className="flex items-center gap-2">
@@ -524,7 +524,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
           {messages.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center text-center">
               <div className="max-w-xs rounded-lg border bg-muted/20 p-4 text-sm text-muted-foreground">
-                当前会话会围绕“{activeNodeTitle}”节点内容推进。
+                围绕“{activeNodeTitle}”补充需求、澄清边界，或让 Agent 帮你整理可写入交付稿的内容。
               </div>
             </div>
           ) : (
@@ -538,7 +538,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
 
         <div className="flex flex-col rounded-lg border bg-background">
           <Textarea
-            className="min-h-[120px] resize-none rounded-t-lg border-0 bg-transparent px-4 py-3 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+            className="min-h-[120px] resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-0"
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -546,7 +546,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                 sendMessage();
               }
             }}
-            placeholder="和当前节点 Agent 讨论... (Enter 发送，Shift+Enter 换行)"
+            placeholder="补充需求、追问边界，或让当前节点 Agent 帮你整理这一节..."
             value={message}
           />
           {error ? (
@@ -633,7 +633,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
 
                   {modelMenuOpen ? (
                     <div className="absolute bottom-10 right-0 z-30 w-52 rounded-xl border bg-popover p-1.5 text-sm shadow-xl">
-                      <p className="px-2 py-1 text-xs text-muted-foreground">推理</p>
+                    <p className="px-2 py-1 text-xs text-muted-foreground">推理强度</p>
                       {REASONING_OPTIONS.map((option) => (
                         <button
                           key={option.value}
@@ -663,7 +663,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
 
                       {modelSubmenuOpen ? (
                         <div className="absolute bottom-0 left-[calc(100%+6px)] z-40 max-h-72 w-56 overflow-auto rounded-xl border bg-popover p-1.5 shadow-xl">
-                          <p className="px-2 py-1 text-xs text-muted-foreground">模型</p>
+                        <p className="px-2 py-1 text-xs text-muted-foreground">选择模型</p>
                           {providers.map((provider) => (
                             <div key={provider.id}>
                               {providers.length > 1 ? (
@@ -694,7 +694,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                 </>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  暂无配置的模型提供商，请先在主菜单配置。
+                  先在主菜单配置模型提供商，再开始节点对话。
                 </p>
               )}
               <Button

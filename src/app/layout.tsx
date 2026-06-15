@@ -13,8 +13,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Sion",
-  description: "本地优先的 AI 项目设计文档工作台",
+  title: "Sion - AI 项目设计文档工作台",
+  description: "本地优先的项目设计文档工作台，把需求讨论沉淀成可交付文档、开发上下文包和任务清单。",
+  icons: {
+    icon: "/logo.svg",
+  },
 };
 
 export default function RootLayout({
@@ -24,7 +27,7 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang="zh-CN"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>

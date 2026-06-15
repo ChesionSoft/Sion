@@ -10,10 +10,10 @@ export function ExportPanel({ projectId }: { projectId: string }) {
   async function exportDocuments() {
     const response = await fetch(`/api/projects/${projectId}/exports`, { method: "POST" });
     if (!response.ok) {
-      setMessage("导出失败");
+      setMessage("导出失败，请检查项目节点内容后重试");
       return;
     }
-    setMessage("已生成导出文件");
+    setMessage("已生成 Word 文档和 AI 开发上下文包");
   }
 
   return (
@@ -21,7 +21,7 @@ export function ExportPanel({ projectId }: { projectId: string }) {
       {message ? <span className="text-xs text-muted-foreground">{message}</span> : null}
       <Button onClick={exportDocuments} type="button" variant="outline">
         <DownloadIcon data-icon="inline-start" />
-        导出文档
+        生成交付文档
       </Button>
     </div>
   );

@@ -1,15 +1,50 @@
 # Sion
 
-Sion 是一个本地优先的开源项目设计文档工作台，面向小型外包项目和个人开发流程。
+![Sion logo](public/logo.svg)
 
-## 功能
+Sion 是一个本地优先的 AI 项目设计文档工作台。它面向小型外包项目、个人开发项目和轻量团队协作，把零散需求、补充资料、节点 Agent 对话和 Markdown 编辑组织成一条可交付的项目设计路径。
 
-- 创建本地项目
-- 按 12 个固定流程节点设计项目
-- 每个节点支持 Agent 对话、追问和 Markdown 编辑
-- 汇总生成 `PROJECT_DESIGN.md`
-- 导出正式 Word 文档 `项目开发设计文档.docx`
-- 生成 AI 开发上下文包：`SPEC.md`、`TASKS.md`、`AGENTS.md`
+它的目标不是替代项目负责人，而是帮助你把“聊出来的需求”沉淀成更稳定的设计文档、开发上下文包和任务清单。
+
+## 适用场景
+
+- 接到一个新项目，需要快速形成《项目开发设计文档》。
+- 已有零散需求、会议纪要或客户说明，需要拆成结构化章节。
+- 希望每个设计阶段都有对应 Agent 协助追问、整理和补全。
+- 希望把最终文档导出给客户，同时生成给 AI 开发工具读取的上下文包。
+- 希望项目资料和模型配置尽量保留在本地机器上。
+
+## 核心能力
+
+- **12 节点设计路径**：从项目基本信息、目标、角色权限，到功能、页面、数据、接口、架构、任务和风险。
+- **节点 Agent 对话**：每个节点有独立规则、会话和上下文，围绕当前章节推进。
+- **模型提供商配置**：支持 OpenAI-compatible Chat Completions API，可配置多个提供商和多个模型。
+- **推理强度选择**：在聊天框中选择模型和推理强度，适配不同节点的思考深度。
+- **项目文件池**：上传项目 Markdown 资料，在对话时按需勾选给模型阅读。
+- **Markdown 交付稿**：每个节点都可编辑、预览和保存 Markdown 内容。
+- **Agent 规则覆盖**：默认规则只读，项目内可复制并保存自定义规则。
+- **导出交付物**：生成正式 Word 文档和 AI 开发上下文包。
+
+## 工作流程
+
+1. 在主菜单配置模型提供商。
+2. 创建项目，填写项目名称、客户名称和编制方。
+3. 进入工作台，按左侧 12 个节点逐步推进。
+4. 在中间聊天框与当前节点 Agent 讨论需求、边界和假设。
+5. 如有资料，在项目文件池上传 Markdown 文件，并在聊天框中选择引用。
+6. 在右侧编辑和保存当前节点交付稿。
+7. 必要时进入 Agent 规则页，为单个节点保存项目自定义规则。
+8. 所有章节基本完成后，生成交付文档和 AI 开发上下文包。
+
+## 导出产物
+
+点击工作台右上角的“生成交付文档”后，Sion 会在项目导出目录中生成：
+
+- `PROJECT_DESIGN.md`：汇总后的项目设计 Markdown。
+- `项目开发设计文档.docx`：正式 Word 交付文档。
+- `SPEC.md`：适合 AI 开发工具读取的需求与设计上下文。
+- `TASKS.md`：开发任务拆分。
+- `AGENTS.md`：面向 AI coding agent 的项目规则上下文。
 
 ## 本地启动
 
@@ -24,25 +59,42 @@ npm run dev
 http://localhost:3000
 ```
 
-## 模型配置
-
-第一版使用 OpenAI-compatible Chat Completions API。可以使用 OpenAI、DeepSeek、通义千问、硅基流动或其他兼容服务。
-
-复制环境变量示例：
+常用检查命令：
 
 ```bash
-cp .env.example .env.local
+npm run test
+npm run lint
+npm run build
 ```
 
-然后填写：
+## 模型配置
 
-```env
-OPENAI_COMPATIBLE_API_BASE_URL=https://api.example.com/v1
-OPENAI_COMPATIBLE_API_KEY=your-key
-OPENAI_COMPATIBLE_MODEL=your-model
+Sion 使用 OpenAI-compatible Chat Completions API。你可以配置 OpenAI、DeepSeek、通义千问、硅基流动或其他兼容服务。
+
+在主菜单的“模型配置”中添加：
+
+- 提供商名称
+- API Base URL
+- API Key
+- 模型列表
+- 默认模型
+- 可选上下文长度
+
+如果你的服务商文档写的是完整地址，例如：
+
+```text
+https://api.example.com/v1/chat/completions
 ```
 
-## 本地文件结构
+通常在 Sion 中填写 Base URL：
+
+```text
+https://api.example.com
+```
+
+## 本地数据目录
+
+Sion 是本地优先工具，项目数据默认写入仓库工作目录下：
 
 ```text
 projects/
@@ -50,8 +102,15 @@ projects/
     project.json
     nodes/
     chat/
+    agent-overrides/
+    files/
     exports/
+
+settings/
+  model-providers.json
 ```
+
+这些目录包含项目内容、模型配置和可能的私密资料，默认不应提交到远端仓库。
 
 ## 设计流程节点
 
@@ -67,3 +126,15 @@ projects/
 10. 开发任务拆分
 11. 待确认事项与风险
 12. 最终文档生成
+
+## 使用建议
+
+- 每个节点先让 Agent 追问关键问题，再把确认内容写入右侧交付稿。
+- 不确定的信息写入“设计假设”或“待确认问题”，不要混进已确认内容。
+- 大文档进入模型前先拆成 Markdown，按需选择引用，避免上下文过长。
+- 不同节点可以使用不同模型和推理强度，例如架构、接口、任务拆分可以使用更高推理强度。
+- 如果默认 Agent 规则不适合某个项目，复制为项目自定义规则后再调整。
+
+## 用户手册
+
+完整操作步骤见 [USER_GUIDE.md](USER_GUIDE.md)。

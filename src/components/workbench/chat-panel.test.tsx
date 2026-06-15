@@ -164,12 +164,12 @@ describe("ChatPanel", () => {
     expect(trigger).toBeInTheDocument();
 
     await user.click(trigger);
-    expect(screen.getByText("推理")).toBeInTheDocument();
+    expect(screen.getByText("推理强度")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "低" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "高" })).toBeInTheDocument();
 
     await user.hover(screen.getByRole("button", { name: "GPT-5.5" }));
-    expect(screen.getByText("模型")).toBeInTheDocument();
+    expect(screen.getByText("选择模型")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "GPT-5.4" })).toBeInTheDocument();
   });
 
@@ -200,7 +200,7 @@ describe("ChatPanel", () => {
     Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 320 });
     viewport!.scrollTop = 0;
 
-    await user.type(screen.getByPlaceholderText(/和当前节点 Agent 讨论/), "请继续");
+    await user.type(screen.getByPlaceholderText(/补充需求、追问边界/), "请继续");
     await user.click(screen.getByRole("button", { name: /发送/ }));
 
     await screen.findByText("这是最终回复。");
@@ -215,7 +215,7 @@ describe("ChatPanel", () => {
     render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
 
     await screen.findByRole("button", { name: /发送/ });
-    await user.type(screen.getByPlaceholderText(/和当前节点 Agent 讨论/), "请分析");
+    await user.type(screen.getByPlaceholderText(/补充需求、追问边界/), "请分析");
     await user.click(screen.getByRole("button", { name: /发送/ }));
 
     expect(await screen.findByText("思考过程")).toBeInTheDocument();

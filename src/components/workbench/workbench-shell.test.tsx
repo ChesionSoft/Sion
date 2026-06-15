@@ -34,7 +34,8 @@ describe("WorkbenchShell", () => {
     render(<WorkbenchShell project={project} nodes={nodes} />);
     expect(screen.getByText("库存管理系统")).toBeInTheDocument();
     expect(screen.getByText("项目基本信息")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("和当前节点 Agent 讨论... (Enter 发送，Shift+Enter 换行)")).toBeInTheDocument();
+    expect(screen.getByText("本地优先的项目设计文档工作台")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("补充需求、追问边界，或让当前节点 Agent 帮你整理这一节...")).toBeInTheDocument();
     expect(screen.getByDisplayValue("# 项目基本信息")).toBeInTheDocument();
   });
 });
