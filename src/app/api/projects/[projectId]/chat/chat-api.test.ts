@@ -91,6 +91,7 @@ beforeEach(async () => {
   const encoder = new TextEncoder();
   const sseBody = new ReadableStream({
     start(controller) {
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"先判断节点目标。"}}]}\n\n'));
       controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"已更新功能设计。"}}]}\n\n'));
       controller.enqueue(encoder.encode("data: [DONE]\n\n"));
       controller.close();
@@ -166,6 +167,7 @@ describe("chat API", () => {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    const reasoning: string[] = [];
     const tokens: string[] = [];
     let doneSessionId = "";
 
@@ -181,14 +183,19 @@ describe("chat API", () => {
         const payload = trimmed.slice(6);
         try {
           const event = JSON.parse(payload) as { type: string; content?: string; sessionId?: string };
+          if (event.type === "reasoning" && event.content) reasoning.push(event.content);
           if (event.type === "token" && event.content) tokens.push(event.content);
           if (event.type === "done" && event.sessionId) doneSessionId = event.sessionId;
         } catch { /* skip */ }
       }
     }
 
+    expect(reasoning.join("")).toBe("先判断节点目标。");
     expect(tokens.join("")).toBe("已更新功能设计。");
     expect(doneSessionId).toBeTruthy();
+    const [, requestInit] = vi.mocked(globalThis.fetch).mock.calls[0];
+    const requestBody = JSON.parse(String(requestInit?.body)) as { reasoning_effort?: string };
+    expect(requestBody.reasoning_effort).toBe("medium");
   });
 
   it("appends messages to the provided chat session", async () => {
@@ -224,6 +231,7 @@ describe("chat API", () => {
     expect(messages[0].role).toBe("user");
     expect(messages[1].role).toBe("assistant");
     expect(messages[1].content).toBe("已更新功能设计。");
+    expect(messages[1].reasoningContent).toBe("先判断节点目标。");
   });
 
   it("returns 404 for an invalid chat session", async () => {

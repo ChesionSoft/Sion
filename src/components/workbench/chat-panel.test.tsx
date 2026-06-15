@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatPanel } from "./chat-panel";
@@ -14,7 +14,7 @@ const activeNode: ProjectNode = {
 };
 
 beforeEach(() => {
-  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
 
     if (url.includes("/api/settings/model-providers")) {
@@ -71,6 +71,25 @@ beforeEach(() => {
       );
     }
 
+    if (url.includes("/chat") && init?.method === "POST") {
+      const encoder = new TextEncoder();
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"type":"reasoning","content":"先理解节点上下文。"}\n\n'));
+            controller.enqueue(encoder.encode('data: {"type":"token","content":"这是最终回复。"}\n\n'));
+            controller.enqueue(encoder.encode('data: {"type":"done","sessionId":"s-1"}\n\n'));
+            controller.close();
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    }
+
+    if (url.includes("/chat/sessions/s-1")) {
+      return new Response(JSON.stringify({ messages: [] }));
+    }
+
     if (url.includes("/chat/sessions")) {
       return new Response(
         JSON.stringify({
@@ -123,5 +142,38 @@ describe("ChatPanel", () => {
 
     expect(await screen.findByRole("button", { name: /发送/ })).toBeInTheDocument();
     expect(screen.getByTitle("添加文件附件")).toBeInTheDocument();
+  });
+
+  it("auto-scrolls the chat viewport as streamed content arrives", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
+
+    await screen.findByRole("button", { name: /发送/ });
+    const viewport = container.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+    expect(viewport).not.toBeNull();
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 320 });
+    viewport!.scrollTop = 0;
+
+    await user.type(screen.getByPlaceholderText(/和当前节点 Agent 讨论/), "请继续");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    await screen.findByText("这是最终回复。");
+
+    await waitFor(() => {
+      expect(viewport!.scrollTop).toBe(320);
+    });
+  });
+
+  it("renders streamed reasoning separately from final assistant output", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/和当前节点 Agent 讨论/), "请分析");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    expect(await screen.findByText("思考过程")).toBeInTheDocument();
+    expect(screen.getByText("先理解节点上下文。")).toBeInTheDocument();
+    expect(screen.getByText("这是最终回复。")).toBeInTheDocument();
   });
 });

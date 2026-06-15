@@ -178,8 +178,18 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
   async function sendMessage() {
     if (!message.trim() || sending) return;
     setError("");
-    setSending(true);
 
+    const userContent = message.trim();
+
+    // Show user message immediately and clear input
+    const userMessageId = crypto.randomUUID();
+    setMessages((prev) => [
+      ...prev,
+      { id: userMessageId, role: "user" as const, content: userContent, createdAt: new Date().toISOString() },
+    ]);
+    setMessage("");
+
+    setSending(true);
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
@@ -189,7 +199,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           nodeId: activeNode.id,
-          message: message.trim(),
+          message: userContent,
           providerId: selectedProviderId,
           model: selectedModel,
           reasoningEffort,
@@ -204,8 +214,6 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
         setError(data.error ?? "发送失败");
         return;
       }
-
-      setMessage("");
 
       const assistantId = crypto.randomUUID();
       setMessages((prev) => [
@@ -239,7 +247,15 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
               error?: string;
             };
 
-            if (event.type === "token" && event.content) {
+            if (event.type === "reasoning" && event.content) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, reasoningContent: `${m.reasoningContent ?? ""}${event.content}` }
+                    : m,
+                ),
+              );
+            } else if (event.type === "token" && event.content) {
               fullContent += event.content;
               setMessages((prev) =>
                 prev.map((m) => (m.id === assistantId ? { ...m, content: fullContent } : m)),
@@ -277,9 +293,14 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
   }
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    const frame = requestAnimationFrame(() => {
+      const viewport = scrollRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+      if (viewport) {
+        viewport.scrollTop = viewport.scrollHeight;
+      }
+    });
+
+    return () => cancelAnimationFrame(frame);
   }, [messages]);
 
   return (
@@ -338,6 +359,16 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                   <p className="text-xs font-medium text-muted-foreground mb-1">
                     {msg.role === "user" ? "你" : msg.role === "assistant" ? "Agent" : "系统"}
                   </p>
+                  {msg.reasoningContent ? (
+                    <details className="mb-2 rounded-md border bg-background/60 px-2 py-1.5" open>
+                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                        思考过程
+                      </summary>
+                      <div className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+                        {msg.reasoningContent}
+                      </div>
+                    </details>
+                  ) : null}
                   <div className="whitespace-pre-wrap">{msg.content}</div>
                 </div>
               ))}

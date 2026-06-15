@@ -139,13 +139,14 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   request.signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
   let assistantContent = "";
+  let assistantReasoningContent = "";
 
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
 
       try {
-        for await (const token of streamOpenAICompatibleChat({
+        for await (const part of streamOpenAICompatibleChat({
           apiBaseUrl: provider.apiBaseUrl,
           apiKey: provider.apiKey,
           model: body.model!,
@@ -156,24 +157,32 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           ],
           signal: abortController.signal,
         })) {
-          assistantContent += token;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "token", content: token })}\n\n`));
+          if (part.type === "reasoning") {
+            assistantReasoningContent += part.content;
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "reasoning", content: part.content })}\n\n`));
+            continue;
+          }
+
+          assistantContent += part.content;
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "token", content: part.content })}\n\n`));
         }
 
         await projectStore.appendChatMessage(projectId, nodeId, {
           id: randomUUID(),
           role: "assistant",
           content: assistantContent,
+          ...(assistantReasoningContent ? { reasoningContent: assistantReasoningContent } : {}),
           createdAt: new Date().toISOString(),
         }, sessionId);
 
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", sessionId })}\n\n`));
       } catch (error) {
-        if (assistantContent) {
+        if (assistantContent || assistantReasoningContent) {
           await projectStore.appendChatMessage(projectId, nodeId, {
             id: randomUUID(),
             role: "assistant",
             content: assistantContent,
+            ...(assistantReasoningContent ? { reasoningContent: assistantReasoningContent } : {}),
             createdAt: new Date().toISOString(),
           }, sessionId);
         }
@@ -204,6 +213,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
+      "X-Accel-Buffering": "no",
     },
   });
 }

@@ -59,7 +59,7 @@ function createMockStreamBody(chunks: string[]): ReadableStream<Uint8Array> {
 }
 
 describe("streamOpenAICompatibleChat", () => {
-  it("yields tokens from streaming LLM response", async () => {
+  it("yields content parts from streaming LLM response", async () => {
     const mockBody = createMockStreamBody([
       'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
       'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
@@ -71,18 +71,21 @@ describe("streamOpenAICompatibleChat", () => {
       body: mockBody,
     });
 
-    const tokens: string[] = [];
-    for await (const token of streamOpenAICompatibleChat({
+    const parts = [];
+    for await (const part of streamOpenAICompatibleChat({
       fetchImpl: fetchMock,
       apiBaseUrl: "https://api.example.com",
       apiKey: "secret",
       model: "example-chat",
       messages: [{ role: "user", content: "Hi" }],
     })) {
-      tokens.push(token);
+      parts.push(part);
     }
 
-    expect(tokens).toEqual(["Hello", " world"]);
+    expect(parts).toEqual([
+      { type: "content", content: "Hello" },
+      { type: "content", content: " world" },
+    ]);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v1/chat/completions",
       expect.objectContaining({
@@ -94,6 +97,35 @@ describe("streamOpenAICompatibleChat", () => {
         }),
       }),
     );
+  });
+
+  it("yields reasoning parts separately from answer content", async () => {
+    const mockBody = createMockStreamBody([
+      'data: {"choices":[{"delta":{"reasoning_content":"先分析需求。"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"最终输出。"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      body: mockBody,
+    });
+
+    const parts = [];
+    for await (const part of streamOpenAICompatibleChat({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "example-chat",
+      messages: [{ role: "user", content: "Hi" }],
+    })) {
+      parts.push(part);
+    }
+
+    expect(parts).toEqual([
+      { type: "reasoning", content: "先分析需求。" },
+      { type: "content", content: "最终输出。" },
+    ]);
   });
 
   it("throws on non-ok response", async () => {
@@ -126,17 +158,20 @@ describe("streamOpenAICompatibleChat", () => {
       body: mockBody,
     });
 
-    const tokens: string[] = [];
-    for await (const token of streamOpenAICompatibleChat({
+    const parts = [];
+    for await (const part of streamOpenAICompatibleChat({
       fetchImpl: fetchMock,
       apiBaseUrl: "https://api.example.com",
       apiKey: "secret",
       model: "example-chat",
       messages: [{ role: "user", content: "Hi" }],
     })) {
-      tokens.push(token);
+      parts.push(part);
     }
 
-    expect(tokens).toEqual(["ok", "!"]);
+    expect(parts).toEqual([
+      { type: "content", content: "ok" },
+      { type: "content", content: "!" },
+    ]);
   });
 });

@@ -49,9 +49,14 @@ export type StreamOpenAICompatibleChatInput = CallOpenAICompatibleChatInput & {
   signal?: AbortSignal;
 };
 
+export type LlmStreamPart = {
+  type: "content" | "reasoning";
+  content: string;
+};
+
 export async function* streamOpenAICompatibleChat(
   input: StreamOpenAICompatibleChatInput,
-): AsyncGenerator<string, void, void> {
+): AsyncGenerator<LlmStreamPart, void, void> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const response = await fetchImpl(`${input.apiBaseUrl.replace(/\/$/, "")}/v1/chat/completions`, {
     method: "POST",
@@ -97,10 +102,19 @@ export async function* streamOpenAICompatibleChat(
 
       try {
         const parsed = JSON.parse(data) as {
-          choices?: Array<{ delta?: { content?: string } }>;
+          choices?: Array<{
+            delta?: {
+              content?: string;
+              reasoning?: string;
+              reasoning_content?: string;
+              reasoningContent?: string;
+            };
+          }>;
         };
-        const content = parsed.choices?.[0]?.delta?.content;
-        if (content) yield content;
+        const delta = parsed.choices?.[0]?.delta;
+        const reasoning = delta?.reasoning_content ?? delta?.reasoningContent ?? delta?.reasoning;
+        if (reasoning) yield { type: "reasoning", content: reasoning };
+        if (delta?.content) yield { type: "content", content: delta.content };
       } catch {
         // skip malformed chunks
       }
