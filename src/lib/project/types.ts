@@ -57,6 +57,8 @@ export type ModelConfig = {
   model: string;
 };
 
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+
 export type Project = {
   id: string;
   name: string;

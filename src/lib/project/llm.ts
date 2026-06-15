@@ -7,6 +7,7 @@ export type CallOpenAICompatibleChatInput = {
   apiBaseUrl: string;
   apiKey: string;
   model: string;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
   messages: LlmMessage[];
   fetchImpl?: typeof fetch;
 };
@@ -22,6 +23,7 @@ export async function callOpenAICompatibleChat(input: CallOpenAICompatibleChatIn
     body: JSON.stringify({
       model: input.model,
       messages: input.messages,
+      ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
       temperature: 0.2,
     }),
   });

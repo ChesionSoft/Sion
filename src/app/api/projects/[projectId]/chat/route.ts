@@ -5,7 +5,10 @@ import { FileStore } from "@/lib/project/files";
 import { callOpenAICompatibleChat } from "@/lib/project/llm";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
 import { ProjectStore } from "@/lib/project/store";
+import type { ReasoningEffort } from "@/lib/project/types";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
+
+const REASONING_EFFORTS = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 
 export async function POST(request: Request, context: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await context.params;
@@ -18,6 +21,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     message?: string;
     providerId?: string;
     model?: string;
+    reasoningEffort?: ReasoningEffort;
     fileIds?: string[];
     sessionId?: string;
   };
@@ -37,6 +41,10 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   if (!body.model) {
     return NextResponse.json({ error: "请选择模型" }, { status: 400 });
   }
+
+  const reasoningEffort = body.reasoningEffort && REASONING_EFFORTS.has(body.reasoningEffort)
+    ? body.reasoningEffort
+    : "medium";
 
   const provider = await modelProviderStore.getProvider(body.providerId);
   if (!provider) {
@@ -133,6 +141,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
       apiBaseUrl: provider.apiBaseUrl,
       apiKey: provider.apiKey,
       model: body.model,
+      reasoningEffort,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: body.message.trim() },

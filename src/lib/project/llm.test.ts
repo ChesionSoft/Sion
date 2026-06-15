@@ -15,6 +15,7 @@ describe("callOpenAICompatibleChat", () => {
       apiBaseUrl: "https://api.example.com",
       apiKey: "secret",
       model: "example-chat",
+      reasoningEffort: "high",
       messages: [
         { role: "system", content: "系统提示" },
         { role: "user", content: "生成文档" },
@@ -29,6 +30,15 @@ describe("callOpenAICompatibleChat", () => {
         headers: expect.objectContaining({
           Authorization: "Bearer secret",
           "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({
+          model: "example-chat",
+          messages: [
+            { role: "system", content: "系统提示" },
+            { role: "user", content: "生成文档" },
+          ],
+          reasoning_effort: "high",
+          temperature: 0.2,
         }),
       }),
     );
