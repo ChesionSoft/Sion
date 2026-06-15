@@ -1,3 +1,7 @@
+<div align="center">
+
+![Sion logo](public/logo.svg)
+
 # Sion
 
 [中文](./README.md)
@@ -6,6 +10,8 @@
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)
 ![License](https://img.shields.io/badge/License-MIT-808080)
+
+</div>
 
 > A local-first AI project design document workspace.
 >
