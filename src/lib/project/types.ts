@@ -70,13 +70,20 @@ export type Project = {
   modelConfig?: Partial<ModelConfig>;
 };
 
+export type ContextLength = 4096 | 8192 | 16384 | 32768 | 65536 | 131072 | 200000 | 1000000;
+
+export type ModelEntry = {
+  name: string;
+  contextLength?: ContextLength;
+  isDefault?: boolean;
+};
+
 export type ModelProvider = {
   id: string;
   name: string;
   apiBaseUrl: string;
   apiKey: string;
-  models: string[];
-  defaultModel: string;
+  models: ModelEntry[];
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
