@@ -391,7 +391,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
           />
           {error ? <p className="px-3 py-1 text-sm text-destructive">{error}</p> : null}
           <div className="flex items-center justify-between gap-2 border-t px-3 py-2">
-            <div className="flex items-center gap-1 min-w-0 flex-1 flex-wrap" ref={filePopoverRef}>
+            <div className="relative flex min-w-0 flex-1 flex-wrap items-center gap-1" ref={filePopoverRef}>
               <button
                 className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-muted"
                 onClick={() => setFilePopoverOpen((open) => !open)}
@@ -447,7 +447,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                 </div>
               ) : null}
             </div>
-            <div className="flex items-center gap-2 shrink-0" ref={modelMenuRef}>
+            <div className="relative flex shrink-0 items-center gap-2" ref={modelMenuRef}>
               {providers.length > 0 ? (
                 <>
                   <button

@@ -144,6 +144,16 @@ describe("ChatPanel", () => {
     expect(screen.getByTitle("添加文件附件")).toBeInTheDocument();
   });
 
+  it("anchors file and model popovers to their toolbar controls", async () => {
+    render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
+
+    const fileButton = screen.getByTitle("添加文件附件");
+    const modelButton = await screen.findByRole("button", { name: /模型 GPT-5.5/ });
+
+    expect(fileButton.parentElement).toHaveClass("relative");
+    expect(modelButton.parentElement).toHaveClass("relative");
+  });
+
   it("auto-scrolls the chat viewport as streamed content arrives", async () => {
     const user = userEvent.setup();
     const { container } = render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
