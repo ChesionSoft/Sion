@@ -26,8 +26,11 @@ beforeEach(() => {
               name: "OpenAI",
               apiBaseUrl: "https://api.example.com",
               apiKey: "secret",
-              models: ["GPT-5.5", "GPT-5.4", "GPT-5.4-Mini"],
-              defaultModel: "GPT-5.5",
+              models: [
+                { name: "GPT-5.5", isDefault: true },
+                { name: "GPT-5.4" },
+                { name: "GPT-5.4-Mini" },
+              ],
               isDefault: true,
               createdAt: "2026-06-14T10:00:00.000Z",
               updatedAt: "2026-06-14T10:00:00.000Z",

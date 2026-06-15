@@ -75,7 +75,8 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
         const def = d.providers.find((p) => p.isDefault);
         if (def) {
           setSelectedProviderId(def.id);
-          setSelectedModel(def.defaultModel);
+          const defaultModelName = def.models.find((m) => m.isDefault)?.name ?? def.models[0]?.name ?? "";
+          setSelectedModel(defaultModelName);
         }
       })
       .catch(() => setError("读取模型配置失败"));
@@ -326,7 +327,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
           ) : (
             <>
               <button
-                aria-label={`模型 ${selectedModel || selectedProvider?.defaultModel || "未选择"}，推理 ${selectedReasoning.label}`}
+                aria-label={`模型 ${selectedModel || selectedProvider?.models.find((m) => m.isDefault)?.name || selectedProvider?.models[0]?.name || "未选择"}，推理 ${selectedReasoning.label}`}
                 aria-expanded={modelMenuOpen}
                 aria-haspopup="menu"
                 className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-full border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted/60"
@@ -336,7 +337,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                 }}
                 type="button"
               >
-                <span className="truncate">{selectedModel || selectedProvider?.defaultModel || "选择模型"}</span>
+                <span className="truncate">{selectedModel || selectedProvider?.models.find((m) => m.isDefault)?.name || selectedProvider?.models[0]?.name || "选择模型"}</span>
                 <span className="text-muted-foreground">{selectedReasoning.label}</span>
                 <ChevronDownIcon className="h-3.5 w-3.5 text-muted-foreground" />
               </button>
@@ -382,15 +383,15 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                             </p>
                           ) : null}
                           {provider.models.map((model) => {
-                            const active = provider.id === selectedProviderId && model === selectedModel;
+                            const active = provider.id === selectedProviderId && model.name === selectedModel;
                             return (
                               <button
-                                key={`${provider.id}-${model}`}
+                                key={`${provider.id}-${model.name}`}
                                 className="flex h-8 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-sm hover:bg-muted"
-                                onClick={() => selectModel(provider, model)}
+                                onClick={() => selectModel(provider, model.name)}
                                 type="button"
                               >
-                                <span className="truncate">{model}</span>
+                                <span className="truncate">{model.name}</span>
                                 {active ? <CheckIcon className="h-4 w-4 shrink-0" /> : null}
                               </button>
                             );
