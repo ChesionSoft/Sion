@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatPanel } from "./chat-panel";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ChatPanel, createStreamingTextBuffer } from "./chat-panel";
 import type { ProjectNode } from "@/lib/project/types";
 
 const activeNode: ProjectNode = {
@@ -14,6 +14,7 @@ const activeNode: ProjectNode = {
 };
 
 beforeEach(() => {
+  vi.useRealTimers();
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
 
@@ -111,6 +112,38 @@ beforeEach(() => {
   }) as typeof fetch;
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("createStreamingTextBuffer", () => {
+  it("decouples incoming chunks from visible output and drains smoothly", async () => {
+    vi.useFakeTimers();
+    const updates: Array<{ content: string; reasoningContent: string }> = [];
+    const buffer = createStreamingTextBuffer((state) => updates.push(state), {
+      intervalMs: 20,
+      minChunkSize: 2,
+      maxChunkSize: 4,
+    });
+
+    buffer.push("content", "一二三四五六七八九十");
+
+    expect(updates).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(20);
+    expect(updates[0].content.length).toBeLessThan("一二三四五六七八九十".length);
+
+    const idle = buffer.waitUntilIdle();
+    await vi.advanceTimersByTimeAsync(200);
+    await idle;
+
+    expect(updates.at(-1)).toEqual({
+      content: "一二三四五六七八九十",
+      reasoningContent: "",
+    });
+  });
+});
+
 describe("ChatPanel", () => {
   it("renders a session selector and new session button", async () => {
     render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
@@ -183,7 +216,7 @@ describe("ChatPanel", () => {
     await user.click(screen.getByRole("button", { name: /发送/ }));
 
     expect(await screen.findByText("思考过程")).toBeInTheDocument();
-    expect(screen.getByText("先理解节点上下文。")).toBeInTheDocument();
-    expect(screen.getByText("这是最终回复。")).toBeInTheDocument();
+    expect(await screen.findByText("先理解节点上下文。")).toBeInTheDocument();
+    expect(await screen.findByText("这是最终回复。")).toBeInTheDocument();
   });
 });

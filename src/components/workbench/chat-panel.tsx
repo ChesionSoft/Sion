@@ -15,6 +15,100 @@ const REASONING_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
   { value: "xhigh", label: "超高" },
 ];
 
+type StreamingTextBufferState = {
+  content: string;
+  reasoningContent: string;
+};
+
+type StreamingTextBufferOptions = {
+  intervalMs?: number;
+  minChunkSize?: number;
+  maxChunkSize?: number;
+};
+
+export function createStreamingTextBuffer(
+  onUpdate: (state: StreamingTextBufferState) => void,
+  options: StreamingTextBufferOptions = {},
+) {
+  const intervalMs = options.intervalMs ?? 18;
+  const minChunkSize = options.minChunkSize ?? 2;
+  const maxChunkSize = options.maxChunkSize ?? 14;
+  let pendingContent = "";
+  let pendingReasoning = "";
+  let visibleContent = "";
+  let visibleReasoning = "";
+  let timerId: ReturnType<typeof setTimeout> | null = null;
+  let idleResolvers: Array<() => void> = [];
+
+  function resolveIdleIfNeeded() {
+    if (timerId !== null || pendingContent || pendingReasoning) return;
+    const resolvers = idleResolvers;
+    idleResolvers = [];
+    resolvers.forEach((resolve) => resolve());
+  }
+
+  function nextChunkSize(length: number) {
+    if (length <= minChunkSize) return length;
+    return Math.min(maxChunkSize, Math.max(minChunkSize, Math.ceil(length / 12)));
+  }
+
+  function emitNextChunk() {
+    timerId = null;
+
+    if (pendingReasoning) {
+      const size = nextChunkSize(pendingReasoning.length);
+      visibleReasoning += pendingReasoning.slice(0, size);
+      pendingReasoning = pendingReasoning.slice(size);
+    } else if (pendingContent) {
+      const size = nextChunkSize(pendingContent.length);
+      visibleContent += pendingContent.slice(0, size);
+      pendingContent = pendingContent.slice(size);
+    }
+
+    onUpdate({ content: visibleContent, reasoningContent: visibleReasoning });
+
+    if (pendingReasoning || pendingContent) {
+      schedule();
+      return;
+    }
+
+    resolveIdleIfNeeded();
+  }
+
+  function schedule() {
+    if (timerId !== null) return;
+    timerId = setTimeout(emitNextChunk, intervalMs);
+  }
+
+  return {
+    push(type: "content" | "reasoning", chunk: string) {
+      if (!chunk) return;
+      if (type === "reasoning") {
+        pendingReasoning += chunk;
+      } else {
+        pendingContent += chunk;
+      }
+      schedule();
+    },
+    waitUntilIdle() {
+      if (timerId === null && !pendingContent && !pendingReasoning) {
+        return Promise.resolve();
+      }
+
+      return new Promise<void>((resolve) => idleResolvers.push(resolve));
+    },
+    stop() {
+      if (timerId !== null) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+      pendingContent = "";
+      pendingReasoning = "";
+      resolveIdleIfNeeded();
+    },
+  };
+}
+
 export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; projectId: string }) {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -192,6 +286,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
     setSending(true);
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    let textBuffer: ReturnType<typeof createStreamingTextBuffer> | null = null;
 
     try {
       const res = await fetch(`/api/projects/${projectId}/chat`, {
@@ -224,7 +319,18 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let fullContent = "";
+      textBuffer = createStreamingTextBuffer(({ content, reasoningContent }) => {
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== assistantId) return m;
+            return {
+              ...m,
+              content,
+              ...(reasoningContent ? { reasoningContent } : {}),
+            };
+          }),
+        );
+      });
 
       while (true) {
         const { done, value } = await reader.read();
@@ -248,18 +354,9 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
             };
 
             if (event.type === "reasoning" && event.content) {
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId
-                    ? { ...m, reasoningContent: `${m.reasoningContent ?? ""}${event.content}` }
-                    : m,
-                ),
-              );
+              textBuffer.push("reasoning", event.content);
             } else if (event.type === "token" && event.content) {
-              fullContent += event.content;
-              setMessages((prev) =>
-                prev.map((m) => (m.id === assistantId ? { ...m, content: fullContent } : m)),
-              );
+              textBuffer.push("content", event.content);
             } else if (event.type === "done" && event.sessionId) {
               setActiveSessionId(event.sessionId);
               setSessions((current) =>
@@ -277,7 +374,10 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
           }
         }
       }
+
+      await textBuffer.waitUntilIdle();
     } catch (error) {
+      textBuffer?.stop();
       if (error instanceof DOMException && error.name === "AbortError") {
         return;
       }
