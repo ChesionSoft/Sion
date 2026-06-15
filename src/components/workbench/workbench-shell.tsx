@@ -34,22 +34,22 @@ export function WorkbenchShell({ project, nodes }: { project: Project; nodes: Pr
 
   return (
     <main className="flex h-screen min-h-[720px] flex-col bg-background text-foreground">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b px-4">
+      <header className="flex h-14 shrink-0 items-center justify-between border-b px-4 bg-background">
         <div className="flex items-center gap-3 min-w-0">
           <Link
-            className="shrink-0 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            className="shrink-0 inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
             href="/"
           >
             <ArrowLeftIcon className="h-3.5 w-3.5" />
             返回主菜单
           </Link>
           <div className="min-w-0">
-            <h1 className="truncate text-base font-semibold">{project.name}</h1>
+            <h1 className="truncate text-base font-semibold leading-tight">{project.name}</h1>
             <p className="text-xs text-muted-foreground">本地项目设计文档工作台</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button onClick={() => setShowFilePool(true)} type="button" variant="outline">
+          <Button onClick={() => setShowFilePool(true)} size="sm" type="button" variant="outline">
             <FolderOpenIcon data-icon="inline-start" />
             文件池
           </Button>
