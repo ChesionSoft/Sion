@@ -128,3 +128,57 @@
     @apply font-sans;
   }
 }
+
+@layer components {
+  .markdown-preview h1,
+  .markdown-preview h2,
+  .markdown-preview h3 {
+    font-weight: 600;
+    color: var(--foreground);
+    margin-top: 1.25em;
+    margin-bottom: 0.5em;
+  }
+  .markdown-preview h1 {
+    font-size: 1.25rem;
+  }
+  .markdown-preview h2 {
+    font-size: 1.125rem;
+  }
+  .markdown-preview h3 {
+    font-size: 1rem;
+  }
+  .markdown-preview p {
+    margin-bottom: 0.75em;
+  }
+  .markdown-preview ul,
+  .markdown-preview ol {
+    margin-left: 1.25em;
+    margin-bottom: 0.75em;
+  }
+  .markdown-preview li {
+    margin-bottom: 0.25em;
+  }
+  .markdown-preview code {
+    background: var(--muted);
+    padding: 0.125em 0.375em;
+    border-radius: 0.25rem;
+    font-size: 0.875em;
+  }
+  .markdown-preview pre {
+    background: var(--muted);
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    margin-bottom: 0.75em;
+  }
+  .markdown-preview pre code {
+    background: transparent;
+    padding: 0;
+  }
+  .markdown-preview blockquote {
+    border-left: 3px solid var(--border);
+    padding-left: 0.75rem;
+    color: var(--muted-foreground);
+    margin-bottom: 0.75em;
+  }
+}
