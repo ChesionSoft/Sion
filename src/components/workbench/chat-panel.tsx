@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { WORKFLOW_NODES } from "@/lib/project/nodes";
 import type { ChatMessage, ChatSession, ModelProvider, ProjectFile, ProjectNode, ReasoningEffort } from "@/lib/project/types";
 
 const REASONING_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
@@ -159,6 +160,7 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
 }
 
 export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; projectId: string }) {
+  const activeNodeTitle = WORKFLOW_NODES.find((node) => node.id === activeNode.id)?.title ?? activeNode.id;
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -522,7 +524,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
           {messages.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center text-center">
               <div className="max-w-xs rounded-lg border bg-muted/20 p-4 text-sm text-muted-foreground">
-                当前会话会围绕“{activeNode.title}”节点内容推进。
+                当前会话会围绕“{activeNodeTitle}”节点内容推进。
               </div>
             </div>
           ) : (
