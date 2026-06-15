@@ -1,8 +1,7 @@
 <div align="center">
 
-<img src="public/logo.png" alt="Sion logo" width="180" />
+<img src="public/logo.png" alt="Sion logo" width="90" />
 
-# Sion
 
 [English](./README.en.md)
 
