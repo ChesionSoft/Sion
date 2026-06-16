@@ -159,7 +159,15 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
   );
 }
 
-export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; projectId: string }) {
+export function ChatPanel({
+  activeNode,
+  onNodeUpdated,
+  projectId,
+}: {
+  activeNode: ProjectNode;
+  onNodeUpdated?: (node: ProjectNode) => void;
+  projectId: string;
+}) {
   const activeNodeTitle = WORKFLOW_NODES.find((node) => node.id === activeNode.id)?.title ?? activeNode.id;
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -406,6 +414,7 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
               type: string;
               content?: string;
               sessionId?: string;
+              updatedNode?: ProjectNode | null;
               error?: string;
             };
 
@@ -414,6 +423,9 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
             } else if (event.type === "token" && event.content) {
               textBuffer.push("content", event.content);
             } else if (event.type === "done" && event.sessionId) {
+              if (event.updatedNode) {
+                onNodeUpdated?.(event.updatedNode);
+              }
               setActiveSessionId(event.sessionId);
               setSessions((current) =>
                 current.map((session) =>
@@ -422,6 +434,8 @@ export function ChatPanel({ activeNode, projectId }: { activeNode: ProjectNode; 
                     : session,
                 ),
               );
+            } else if (event.type === "node_update_error" && event.error) {
+              setError(`Agent 回复已保存，但 Markdown 自动保存失败：${event.error}`);
             } else if (event.type === "error" && event.error) {
               setError(event.error);
             }

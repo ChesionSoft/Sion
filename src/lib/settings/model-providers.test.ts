@@ -29,9 +29,23 @@ describe("ModelProviderStore", () => {
 
     expect(provider.name).toBe("OpenAI");
     expect(provider.isDefault).toBe(true);
+    expect(provider.apiUrlMode).toBe("base");
     expect(provider.models).toHaveLength(2);
     expect(provider.models[0]).toEqual({ name: "gpt-4o", contextLength: 128000, isDefault: true });
     expect(provider.models[1]).toEqual({ name: "gpt-4o-mini", contextLength: 128000, isDefault: false });
+  });
+
+  it("creates a provider with a full API URL mode", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    const provider = await store.createProvider({
+      name: "Proxy",
+      apiBaseUrl: "https://proxy.example.com/openai/chat/completions",
+      apiUrlMode: "full",
+      apiKey: "sk-test",
+      models: [{ name: "gpt-4o", isDefault: true }],
+    });
+
+    expect(provider.apiUrlMode).toBe("full");
   });
 
   it("ensures exactly one model is marked default", async () => {
@@ -72,8 +86,12 @@ describe("ModelProviderStore", () => {
       models: [{ name: "gpt-4o", isDefault: true }],
     });
 
-    const updated = await store.updateProvider(created.id, { name: "OpenAI Updated" });
+    const updated = await store.updateProvider(created.id, {
+      name: "OpenAI Updated",
+      apiUrlMode: "full",
+    });
     expect(updated.name).toBe("OpenAI Updated");
+    expect(updated.apiUrlMode).toBe("full");
   });
 
   it("deletes a provider and promotes another to default", async () => {
@@ -179,6 +197,7 @@ describe("ModelProviderStore", () => {
     const store = new ModelProviderStore(settingsDir);
     const providers = await store.listProviders();
     expect(providers).toHaveLength(1);
+    expect(providers[0].apiUrlMode).toBe("base");
     expect(providers[0].models).toEqual([
       { name: "gpt-4o", isDefault: false },
       { name: "gpt-4o-mini", isDefault: true },

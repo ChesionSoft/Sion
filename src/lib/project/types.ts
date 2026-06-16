@@ -73,6 +73,8 @@ export type Project = {
 
 export type ContextLength = 4096 | 8192 | 16384 | 32768 | 65536 | 131072 | 200000 | 1000000;
 
+export type ApiUrlMode = "base" | "full";
+
 export type ModelEntry = {
   name: string;
   contextLength?: ContextLength;
@@ -83,6 +85,7 @@ export type ModelProvider = {
   id: string;
   name: string;
   apiBaseUrl: string;
+  apiUrlMode?: ApiUrlMode;
   apiKey: string;
   models: ModelEntry[];
   isDefault: boolean;

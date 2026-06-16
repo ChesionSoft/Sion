@@ -79,7 +79,20 @@ beforeEach(() => {
           start(controller) {
             controller.enqueue(encoder.encode('data: {"type":"reasoning","content":"先理解节点上下文。"}\n\n'));
             controller.enqueue(encoder.encode('data: {"type":"token","content":"这是最终回复。"}\n\n'));
-            controller.enqueue(encoder.encode('data: {"type":"done","sessionId":"s-1"}\n\n'));
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  type: "done",
+                  sessionId: "s-1",
+                  updatedNode: {
+                    ...activeNode,
+                    markdown: "# feature-design\n\n- customer management",
+                    status: "generated",
+                    updatedAt: "2026-06-14T11:00:00.000Z",
+                  },
+                })}\n\n`,
+              ),
+            );
             controller.close();
           },
         }),
@@ -142,6 +155,7 @@ describe("createStreamingTextBuffer", () => {
       reasoningContent: "",
     });
   });
+
 });
 
 describe("ChatPanel", () => {
@@ -221,5 +235,24 @@ describe("ChatPanel", () => {
     expect(await screen.findByText("思考过程")).toBeInTheDocument();
     expect(await screen.findByText("先理解节点上下文。")).toBeInTheDocument();
     expect(await screen.findByText("这是最终回复。")).toBeInTheDocument();
+  });
+
+  it("notifies the shell when the server returns an updated node", async () => {
+    const user = userEvent.setup();
+    const onNodeUpdated = vi.fn();
+    render(<ChatPanel activeNode={activeNode} onNodeUpdated={onNodeUpdated} projectId="p-1" />);
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "update node");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    await waitFor(() => {
+      expect(onNodeUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "feature-design",
+          markdown: "# feature-design\n\n- customer management",
+        }),
+      );
+    });
   });
 });

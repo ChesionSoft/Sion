@@ -28,6 +28,10 @@ export function WorkbenchShell({ project, nodes }: { project: Project; nodes: Pr
     );
   }
 
+  function updateNodeFromAgent(node: ProjectNode) {
+    setDraftNodes((current) => current.map((item) => (item.id === node.id ? node : item)));
+  }
+
   if (!activeNode) {
     return null;
   }
@@ -63,7 +67,7 @@ export function WorkbenchShell({ project, nodes }: { project: Project; nodes: Pr
       </header>
       <section className="grid min-h-0 flex-1 grid-cols-[280px_minmax(360px,0.9fr)_minmax(420px,1.1fr)]">
         <NodeSidebar activeNodeId={activeNodeId} definitions={WORKFLOW_NODES} nodes={draftNodes} onSelect={setActiveNodeId} />
-        <ChatPanel activeNode={activeNode} key={activeNode.id} projectId={project.id} />
+        <ChatPanel activeNode={activeNode} key={activeNode.id} onNodeUpdated={updateNodeFromAgent} projectId={project.id} />
         <MarkdownPanel node={activeNode} onChange={updateActiveMarkdown} projectId={project.id} />
       </section>
     </main>
