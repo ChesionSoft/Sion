@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { AgentOverrideStore } from "@/lib/project/agent-overrides";
+import { generateUpdatedNodeMarkdown } from "@/lib/project/agent-markdown";
 import { FileStore } from "@/lib/project/files";
 import { streamOpenAICompatibleChat } from "@/lib/project/llm";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
 import { ProjectStore } from "@/lib/project/store";
-import type { ReasoningEffort, WorkflowNodeId } from "@/lib/project/types";
+import type { ProjectNode, ReasoningEffort, WorkflowNodeId } from "@/lib/project/types";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
 
 const REASONING_EFFORTS = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
@@ -148,6 +149,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
       try {
         for await (const part of streamOpenAICompatibleChat({
           apiBaseUrl: provider.apiBaseUrl,
+          apiUrlMode: provider.apiUrlMode,
           apiKey: provider.apiKey,
           model: body.model!,
           reasoningEffort,
@@ -175,7 +177,30 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           createdAt: new Date().toISOString(),
         }, sessionId);
 
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", sessionId })}\n\n`));
+        let updatedNode: ProjectNode | undefined;
+        try {
+          const updatedMarkdown = await generateUpdatedNodeMarkdown({
+            apiBaseUrl: provider.apiBaseUrl,
+            apiUrlMode: provider.apiUrlMode,
+            apiKey: provider.apiKey,
+            model: body.model!,
+            reasoningEffort,
+            nodeId,
+            currentMarkdown: currentNode.markdown,
+            contextMarkdown,
+            userMessage: body.message!.trim(),
+            assistantContent,
+          });
+          updatedNode = await projectStore.updateProjectNode(projectId, nodeId, {
+            markdown: updatedMarkdown,
+            status: "generated",
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Markdown auto-save failed";
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "node_update_error", error: message })}\n\n`));
+        }
+
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", sessionId, updatedNode })}\n\n`));
       } catch (error) {
         if (assistantContent || assistantReasoningContent) {
           await projectStore.appendChatMessage(projectId, nodeId, {

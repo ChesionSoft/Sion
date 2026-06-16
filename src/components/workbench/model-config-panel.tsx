@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import type { ContextLength, ModelEntry, ModelProvider } from "@/lib/project/types";
+import type { ApiUrlMode, ContextLength, ModelEntry, ModelProvider } from "@/lib/project/types";
 
 const CONTEXT_LENGTH_OPTIONS: Array<{ value: ContextLength | undefined; label: string }> = [
   { value: undefined, label: "不填" },
@@ -61,6 +61,7 @@ export function ModelConfigPanel() {
   async function createProvider(input: {
     name: string;
     apiBaseUrl: string;
+    apiUrlMode: ApiUrlMode;
     apiKey: string;
     models: ModelEntry[];
   }) {
@@ -120,7 +121,7 @@ export function ModelConfigPanel() {
                     ) : null}
                   </div>
                   <p className="truncate text-xs text-muted-foreground">
-                    {provider.apiBaseUrl} &middot; {provider.models.length} 个模型
+                    {provider.apiUrlMode === "full" ? "完整 API 链接" : "系统填充"} &middot; {provider.apiBaseUrl} &middot; {provider.models.length} 个模型
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
@@ -261,10 +262,11 @@ function AddProviderDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  onSave: (input: { name: string; apiBaseUrl: string; apiKey: string; models: ModelEntry[] }) => void;
+  onSave: (input: { name: string; apiBaseUrl: string; apiUrlMode: ApiUrlMode; apiKey: string; models: ModelEntry[] }) => void;
 }) {
   const [name, setName] = useState("");
   const [apiBaseUrl, setApiBaseUrl] = useState("");
+  const [apiUrlMode, setApiUrlMode] = useState<ApiUrlMode>("base");
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<ModelEntry[]>([{ name: "", isDefault: true }]);
   const [error, setError] = useState("");
@@ -276,7 +278,7 @@ function AddProviderDialog({
     if (!apiKey.trim()) { setError("API Key 不能为空"); return; }
     if (models.length === 0 || models.every((m) => !m.name.trim())) { setError("至少需要一个模型名称"); return; }
     if (models.some((m) => m.name.trim() === "")) { setError("模型名称不能为空"); return; }
-    onSave({ name, apiBaseUrl, apiKey, models });
+    onSave({ name, apiBaseUrl, apiUrlMode, apiKey, models });
   }
 
   if (!open) return null;
@@ -287,7 +289,7 @@ function AddProviderDialog({
         <DialogHeader>
           <DialogTitle>添加模型提供商</DialogTitle>
           <DialogDescription>
-            填写服务商名称、API Base URL、API Key，并登记可在聊天框中选择的模型。
+            填写服务商名称、API 链接、API Key，并登记可在聊天框中选择的模型。
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
@@ -296,8 +298,23 @@ function AddProviderDialog({
             <Input id="mp-name" onChange={(e) => setName(e.target.value)} value={name} />
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="mp-url">API Base URL</Label>
+            <Label htmlFor="mp-url-mode">API 链接模式</Label>
+            <select
+              className="h-9 rounded-md border bg-background px-2 text-sm"
+              id="mp-url-mode"
+              onChange={(e) => setApiUrlMode(e.target.value as ApiUrlMode)}
+              value={apiUrlMode}
+            >
+              <option value="base">系统填充</option>
+              <option value="full">完整 API 链接</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="mp-url">{apiUrlMode === "full" ? "完整 API URL" : "API Base URL"}</Label>
             <Input id="mp-url" onChange={(e) => setApiBaseUrl(e.target.value)} value={apiBaseUrl} />
+            <p className="text-xs text-muted-foreground">
+              {apiUrlMode === "full" ? "系统会直接请求这个完整接口。" : "系统会自动补全 /v1/chat/completions。"}
+            </p>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="mp-key">API Key</Label>
@@ -364,12 +381,27 @@ function EditProviderDialog({
             />
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="edit-url">API Base URL</Label>
+            <Label htmlFor="edit-url-mode">API 链接模式</Label>
+            <select
+              className="h-9 rounded-md border bg-background px-2 text-sm"
+              id="edit-url-mode"
+              onChange={(e) => setProvider({ ...provider, apiUrlMode: e.target.value as ApiUrlMode })}
+              value={provider.apiUrlMode ?? "base"}
+            >
+              <option value="base">系统填充</option>
+              <option value="full">完整 API 链接</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="edit-url">{provider.apiUrlMode === "full" ? "完整 API URL" : "API Base URL"}</Label>
             <Input
               id="edit-url"
               onChange={(e) => setProvider({ ...provider, apiBaseUrl: e.target.value })}
               value={provider.apiBaseUrl}
             />
+            <p className="text-xs text-muted-foreground">
+              {provider.apiUrlMode === "full" ? "系统会直接请求这个完整接口。" : "系统会自动补全 /v1/chat/completions。"}
+            </p>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="edit-key">API Key</Label>

@@ -1,3 +1,5 @@
+import type { ApiUrlMode } from "./types";
+
 export type LlmMessage = {
   role: "system" | "user" | "assistant";
   content: string;
@@ -5,6 +7,7 @@ export type LlmMessage = {
 
 export type CallOpenAICompatibleChatInput = {
   apiBaseUrl: string;
+  apiUrlMode?: ApiUrlMode;
   apiKey: string;
   model: string;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
@@ -14,7 +17,7 @@ export type CallOpenAICompatibleChatInput = {
 
 export async function callOpenAICompatibleChat(input: CallOpenAICompatibleChatInput): Promise<string> {
   const fetchImpl = input.fetchImpl ?? fetch;
-  const response = await fetchImpl(`${input.apiBaseUrl.replace(/\/$/, "")}/v1/chat/completions`, {
+  const response = await fetchImpl(resolveChatCompletionsUrl(input.apiBaseUrl, input.apiUrlMode), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${input.apiKey}`,
@@ -58,7 +61,7 @@ export async function* streamOpenAICompatibleChat(
   input: StreamOpenAICompatibleChatInput,
 ): AsyncGenerator<LlmStreamPart, void, void> {
   const fetchImpl = input.fetchImpl ?? fetch;
-  const response = await fetchImpl(`${input.apiBaseUrl.replace(/\/$/, "")}/v1/chat/completions`, {
+  const response = await fetchImpl(resolveChatCompletionsUrl(input.apiBaseUrl, input.apiUrlMode), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${input.apiKey}`,
@@ -120,4 +123,10 @@ export async function* streamOpenAICompatibleChat(
       }
     }
   }
+}
+
+export function resolveChatCompletionsUrl(apiBaseUrl: string, apiUrlMode: ApiUrlMode = "base"): string {
+  const trimmed = apiBaseUrl.trim();
+  if (apiUrlMode === "full") return trimmed;
+  return `${trimmed.replace(/\/+$/, "")}/v1/chat/completions`;
 }

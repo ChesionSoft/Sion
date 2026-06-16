@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ModelEntry, ModelProvider } from "@/lib/project/types";
+import type { ApiUrlMode, ModelEntry, ModelProvider } from "@/lib/project/types";
 
 export type CreateModelProviderInput = {
   name: string;
   apiBaseUrl: string;
+  apiUrlMode?: ApiUrlMode;
   apiKey: string;
   models: ModelEntry[];
   isDefault?: boolean;
@@ -56,6 +57,7 @@ export class ModelProviderStore {
       id: randomUUID(),
       name: input.name.trim(),
       apiBaseUrl: input.apiBaseUrl.trim(),
+      apiUrlMode: normalizeApiUrlMode(input.apiUrlMode),
       apiKey: input.apiKey.trim(),
       models,
       isDefault: input.isDefault ?? (providers.length === 0),
@@ -84,6 +86,7 @@ export class ModelProviderStore {
       ...current,
       name: input.name?.trim() ?? current.name,
       apiBaseUrl: input.apiBaseUrl?.trim() ?? current.apiBaseUrl,
+      apiUrlMode: normalizeApiUrlMode(input.apiUrlMode ?? current.apiUrlMode),
       apiKey: input.apiKey?.trim() ?? current.apiKey,
       models: input.models ?? current.models,
       updatedAt: new Date().toISOString(),
@@ -165,6 +168,7 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
 }
 
 function migrateProvider(raw: Record<string, unknown>): ModelProvider {
+  raw.apiUrlMode = normalizeApiUrlMode(raw.apiUrlMode);
   const models = raw.models;
   if (Array.isArray(models) && models.length > 0 && typeof models[0] === "string") {
     raw.models = (models as string[]).map((name: string, i: number) => ({
@@ -179,4 +183,8 @@ function migrateProvider(raw: Record<string, unknown>): ModelProvider {
     }
   }
   return raw as unknown as ModelProvider;
+}
+
+function normalizeApiUrlMode(value: unknown): ApiUrlMode {
+  return value === "full" ? "full" : "base";
 }

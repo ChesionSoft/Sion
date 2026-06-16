@@ -44,6 +44,29 @@ describe("callOpenAICompatibleChat", () => {
       }),
     );
   });
+
+  it("uses the configured URL directly in full API URL mode", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "ok" } }],
+      }),
+    });
+
+    await callOpenAICompatibleChat({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://proxy.example.com/openai/chat/completions",
+      apiUrlMode: "full",
+      apiKey: "secret",
+      model: "example-chat",
+      messages: [{ role: "user", content: "Hi" }],
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://proxy.example.com/openai/chat/completions",
+      expect.any(Object),
+    );
+  });
 });
 
 function createMockStreamBody(chunks: string[]): ReadableStream<Uint8Array> {
@@ -88,6 +111,43 @@ describe("streamOpenAICompatibleChat", () => {
     ]);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v1/chat/completions",
+      expect.objectContaining({
+        body: JSON.stringify({
+          model: "example-chat",
+          messages: [{ role: "user", content: "Hi" }],
+          temperature: 0.2,
+          stream: true,
+        }),
+      }),
+    );
+  });
+
+  it("streams from the configured URL directly in full API URL mode", async () => {
+    const mockBody = createMockStreamBody([
+      'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      body: mockBody,
+    });
+
+    const parts = [];
+    for await (const part of streamOpenAICompatibleChat({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://proxy.example.com/openai/chat/completions",
+      apiUrlMode: "full",
+      apiKey: "secret",
+      model: "example-chat",
+      messages: [{ role: "user", content: "Hi" }],
+    })) {
+      parts.push(part);
+    }
+
+    expect(parts).toEqual([{ type: "content", content: "ok" }]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://proxy.example.com/openai/chat/completions",
       expect.objectContaining({
         body: JSON.stringify({
           model: "example-chat",
