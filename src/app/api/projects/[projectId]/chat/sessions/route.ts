@@ -12,6 +12,10 @@ export async function GET(request: Request, context: { params: Promise<{ project
   }
 
   const store = new ProjectStore();
+  const project = await store.getProject(projectId);
+  if (!project) {
+    return NextResponse.json({ error: "项目不存在" }, { status: 404 });
+  }
   const sessions = await store.listSessions(projectId, nodeId);
   return NextResponse.json({ sessions });
 }
@@ -25,6 +29,10 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   }
 
   const store = new ProjectStore();
+  const project = await store.getProject(projectId);
+  if (!project) {
+    return NextResponse.json({ error: "项目不存在" }, { status: 404 });
+  }
   const session = await store.createSession(projectId, body.nodeId);
   return NextResponse.json({ session }, { status: 201 });
 }

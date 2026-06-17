@@ -15,6 +15,10 @@ export async function GET(
   }
 
   const store = new ProjectStore();
+  const project = await store.getProject(projectId);
+  if (!project) {
+    return NextResponse.json({ error: "项目不存在" }, { status: 404 });
+  }
 
   try {
     const messages = await store.getChatMessages(projectId, nodeId, sessionId);
@@ -30,6 +34,10 @@ export async function DELETE(
 ) {
   const { projectId, sessionId } = await context.params;
   const store = new ProjectStore();
+  const project = await store.getProject(projectId);
+  if (!project) {
+    return NextResponse.json({ error: "项目不存在" }, { status: 404 });
+  }
 
   try {
     await store.deleteSession(projectId, sessionId);

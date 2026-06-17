@@ -104,13 +104,53 @@ describe("chat sessions API", () => {
     expect(data.messages[0].content).toBe("历史消息");
   });
 
-  it("returns 404 when deleting a missing session", async () => {
+  it("returns 404 when deleting a missing session in an existing project", async () => {
+    const store = new ProjectStore();
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
     const response = await DELETE(
-      new Request("http://localhost/api/projects/p-1/chat/sessions/missing"),
-      { params: Promise.resolve({ projectId: "p-1", sessionId: "missing" }) },
+      new Request(`http://localhost/api/projects/${project.id}/chat/sessions/missing`),
+      { params: Promise.resolve({ projectId: project.id, sessionId: "missing" }) },
     );
-
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "会话不存在" });
+  });
+
+  it("returns 404 when the project does not exist (list sessions)", async () => {
+    const response = await GET(
+      new Request("http://localhost/api/projects/missing-proj/chat/sessions?nodeId=feature-design"),
+      { params: Promise.resolve({ projectId: "missing-proj" }) },
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "项目不存在" });
+  });
+
+  it("returns 404 when the project does not exist (create session)", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/projects/missing-proj/chat/sessions", {
+        method: "POST",
+        body: JSON.stringify({ nodeId: "feature-design" }),
+      }),
+      { params: Promise.resolve({ projectId: "missing-proj" }) },
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "项目不存在" });
+  });
+
+  it("returns 404 when the project does not exist (load messages)", async () => {
+    const response = await GET_SESSION(
+      new Request("http://localhost/api/projects/missing-proj/chat/sessions/sess?nodeId=feature-design"),
+      { params: Promise.resolve({ projectId: "missing-proj", sessionId: "sess" }) },
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "项目不存在" });
+  });
+
+  it("returns 404 when the project does not exist (delete session)", async () => {
+    const response = await DELETE(
+      new Request("http://localhost/api/projects/missing-proj/chat/sessions/sess"),
+      { params: Promise.resolve({ projectId: "missing-proj", sessionId: "sess" }) },
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "项目不存在" });
   });
 });
