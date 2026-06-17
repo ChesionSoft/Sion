@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createDefaultProject, createDefaultProjectNodes } from "./defaults";
 import { WORKFLOW_NODES, isWorkflowNodeId } from "./nodes";
+import { assertSafeProjectId } from "./paths";
 import type { ChatMessage, ChatSession, Project, ProjectNode, WorkflowNodeId } from "./types";
 
 export type CreateProjectInput = {
@@ -159,6 +160,7 @@ export class ProjectStore {
   }
 
   projectDir(projectId: string): string {
+    assertSafeProjectId(projectId);
     return path.join(this.rootDir, projectId);
   }
 

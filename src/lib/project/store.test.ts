@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ProjectStore } from "./store";
+import { ProjectIdError } from "./paths";
 
 let rootDir: string;
 
@@ -161,5 +162,14 @@ describe("ProjectStore", () => {
       messageCount: 1,
     });
     expect(messages[0].content).toBe("旧会话消息");
+  });
+
+  it("rejects path-traversal project ids before any filesystem access", async () => {
+    const store = new ProjectStore(rootDir);
+    await expect(store.getProjectNodes("../escape")).rejects.toThrow(ProjectIdError);
+    await expect(store.getProjectNodes("..")).rejects.toThrow(ProjectIdError);
+    await expect(
+      store.updateProjectNode("../escape", "feature-design", { markdown: "# x" }),
+    ).rejects.toThrow(ProjectIdError);
   });
 });
