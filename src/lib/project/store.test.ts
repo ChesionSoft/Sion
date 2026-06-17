@@ -172,4 +172,26 @@ describe("ProjectStore", () => {
       store.updateProjectNode("../escape", "feature-design", { markdown: "# x" }),
     ).rejects.toThrow(ProjectIdError);
   });
+
+  it("does not resurrect deleted sessions from the legacy file", async () => {
+    const projectId = "legacy-project";
+    const projectDir = path.join(rootDir, projectId);
+    await mkdir(path.join(projectDir, "chat"), { recursive: true });
+    await writeFile(
+      path.join(projectDir, "chat", "feature-design.json"),
+      JSON.stringify([
+        { id: "m-1", role: "user", content: "旧会话消息", createdAt: "2026-06-14T11:00:00.000Z" },
+      ]),
+      "utf8",
+    );
+    const store = new ProjectStore(rootDir);
+
+    const first = await store.listSessions(projectId, "feature-design");
+    expect(first).toHaveLength(1);
+
+    await store.deleteSession(projectId, first[0].id);
+
+    const second = await store.listSessions(projectId, "feature-design");
+    expect(second).toEqual([]);
+  });
 });

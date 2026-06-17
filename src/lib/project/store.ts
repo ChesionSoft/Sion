@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createDefaultProject, createDefaultProjectNodes } from "./defaults";
 import { WORKFLOW_NODES, isWorkflowNodeId } from "./nodes";
@@ -266,6 +266,9 @@ export class ProjectStore {
     await mkdir(this.chatNodeDir(projectId, nodeId), { recursive: true });
     await writeJson(this.sessionMessagesPath(projectId, nodeId, session.id), legacyMessages);
     await writeJson(this.sessionIndexPath(projectId, nodeId), [session]);
+    await unlink(legacyPath).catch(() => {
+      // legacy file already removed; migration is still complete
+    });
   }
 }
 
