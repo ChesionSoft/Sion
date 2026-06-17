@@ -246,7 +246,7 @@ describe("chat API", () => {
             controller.close();
           },
         }),
-      } as Response)
+      } as unknown as Response)
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -300,7 +300,7 @@ describe("chat API", () => {
             controller.close();
           },
         }),
-      } as Response)
+      } as unknown as Response)
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: " " } }] }), { status: 200 }));
 
     const store = new ProjectStore();

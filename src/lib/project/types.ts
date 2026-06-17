@@ -71,7 +71,7 @@ export type Project = {
   modelConfig?: Partial<ModelConfig>;
 };
 
-export type ContextLength = 4096 | 8192 | 16384 | 32768 | 65536 | 131072 | 200000 | 1000000;
+export type ContextLength = 4096 | 8192 | 16384 | 32768 | 65536 | 131072 | 128000 | 200000 | 1000000;
 
 export type ApiUrlMode = "base" | "full";
 
