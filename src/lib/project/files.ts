@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
+import { assertSafeProjectId } from "./paths";
 import type { ProjectFile } from "./types";
 
 const TEXT_EXTENSIONS = new Set([".txt", ".md", ".json", ".csv", ".log"]);
@@ -9,6 +10,7 @@ export class FileStore {
   constructor(private readonly rootDir = path.join(process.cwd(), "projects")) {}
 
   private filesDir(projectId: string): string {
+    assertSafeProjectId(projectId);
     return path.join(this.rootDir, projectId, "files");
   }
 

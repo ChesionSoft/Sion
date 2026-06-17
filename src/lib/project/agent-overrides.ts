@@ -2,12 +2,14 @@ import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { loadAgentRule } from "./agents";
 import { isWorkflowNodeId } from "./nodes";
+import { assertSafeProjectId } from "./paths";
 import type { AgentOverrideSetting, AgentRuleMode, WorkflowNodeId } from "./types";
 
 export class AgentOverrideStore {
   constructor(private readonly rootDir = path.join(process.cwd(), "projects")) {}
 
   private overridesDir(projectId: string): string {
+    assertSafeProjectId(projectId);
     return path.join(this.rootDir, projectId, "agent-overrides");
   }
 

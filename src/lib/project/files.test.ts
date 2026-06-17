@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FileStore } from "./files";
+import { ProjectIdError } from "./paths";
 
 let rootDir: string;
 
@@ -87,5 +88,12 @@ describe("FileStore", () => {
 
     const content = await store.readFileContent("test-project", record.id);
     expect(content).toBeNull();
+  });
+
+  it("rejects path-traversal project ids on upload", async () => {
+    const store = new FileStore(rootDir);
+    await expect(
+      store.uploadFile("../escape", { name: "a.txt", buffer: Buffer.from("a", "utf8") }),
+    ).rejects.toThrow(ProjectIdError);
   });
 });

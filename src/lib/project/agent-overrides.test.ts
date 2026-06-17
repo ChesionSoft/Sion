@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentOverrideStore } from "./agent-overrides";
+import { ProjectIdError } from "./paths";
 
 let rootDir: string;
 
@@ -77,5 +78,17 @@ describe("AgentOverrideStore", () => {
     const store = new AgentOverrideStore(rootDir);
     const content = await store.getActiveRuleContent("test-project", "feature-design");
     expect(content).toContain("你只负责功能模块设计");
+  });
+
+  it("rejects path-traversal project ids on writes", async () => {
+    const store = new AgentOverrideStore(rootDir);
+    await expect(store.setMode("../escape", "feature-design", "custom")).rejects.toThrow(ProjectIdError);
+  });
+
+  it("returns the default rule without escaping for a traversal id", async () => {
+    const store = new AgentOverrideStore(rootDir);
+    const result = await store.getOverride("../escape", "feature-design");
+    expect(result.setting.mode).toBe("default");
+    expect(result.customContent).toBeNull();
   });
 });
