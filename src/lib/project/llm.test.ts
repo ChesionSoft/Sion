@@ -67,6 +67,26 @@ describe("callOpenAICompatibleChat", () => {
       expect.any(Object),
     );
   });
+
+  it("forwards an abort signal to fetch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "ok" } }] }),
+    });
+    const controller = new AbortController();
+
+    await callOpenAICompatibleChat({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "k",
+      model: "m",
+      messages: [{ role: "user", content: "hi" }],
+      signal: controller.signal,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, { signal?: AbortSignal }];
+    expect(init?.signal).toBe(controller.signal);
+  });
 });
 
 function createMockStreamBody(chunks: string[]): ReadableStream<Uint8Array> {

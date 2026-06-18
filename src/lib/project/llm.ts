@@ -13,6 +13,7 @@ export type CallOpenAICompatibleChatInput = {
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
   messages: LlmMessage[];
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 };
 
 export async function callOpenAICompatibleChat(input: CallOpenAICompatibleChatInput): Promise<string> {
@@ -29,6 +30,7 @@ export async function callOpenAICompatibleChat(input: CallOpenAICompatibleChatIn
       ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
       temperature: 0.2,
     }),
+    signal: input.signal,
   });
 
   if (!response.ok) {

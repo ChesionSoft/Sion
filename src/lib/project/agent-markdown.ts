@@ -13,6 +13,7 @@ export type GenerateUpdatedNodeMarkdownInput = {
   userMessage: string;
   assistantContent: string;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 };
 
 export async function generateUpdatedNodeMarkdown(input: GenerateUpdatedNodeMarkdownInput): Promise<string> {
@@ -23,6 +24,7 @@ export async function generateUpdatedNodeMarkdown(input: GenerateUpdatedNodeMark
     model: input.model,
     reasoningEffort: input.reasoningEffort,
     fetchImpl: input.fetchImpl,
+    signal: input.signal,
     messages: [
       {
         role: "system",

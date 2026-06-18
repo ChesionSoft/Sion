@@ -90,4 +90,29 @@ describe("generateUpdatedNodeMarkdown", () => {
       }),
     ).rejects.toThrow("Updated Markdown is empty");
   });
+
+  it("forwards an abort signal to the underlying LLM call", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "# 功能模块设计" } }] }), {
+        status: 200,
+      }),
+    );
+    const controller = new AbortController();
+
+    await generateUpdatedNodeMarkdown({
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "sk-test",
+      model: "m",
+      nodeId: "feature-design",
+      currentMarkdown: "",
+      contextMarkdown: "",
+      userMessage: "u",
+      assistantContent: "a",
+      fetchImpl,
+      signal: controller.signal,
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(init?.signal).toBe(controller.signal);
+  });
 });

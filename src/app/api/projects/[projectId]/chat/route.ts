@@ -190,6 +190,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
             contextMarkdown,
             userMessage: body.message!.trim(),
             assistantContent,
+            signal: abortController.signal,
           });
           updatedNode = await projectStore.updateProjectNode(projectId, nodeId, {
             markdown: updatedMarkdown,
