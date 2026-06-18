@@ -128,5 +128,7 @@ export async function* streamOpenAICompatibleChat(
 export function resolveChatCompletionsUrl(apiBaseUrl: string, apiUrlMode: ApiUrlMode = "base"): string {
   const trimmed = apiBaseUrl.trim();
   if (apiUrlMode === "full") return trimmed;
-  return `${trimmed.replace(/\/+$/, "")}/v1/chat/completions`;
+  const withoutTrailingSlash = trimmed.replace(/\/+$/, "");
+  const withoutV1 = withoutTrailingSlash.replace(/\/v1$/i, "");
+  return `${withoutV1}/v1/chat/completions`;
 }

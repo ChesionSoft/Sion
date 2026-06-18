@@ -1,6 +1,6 @@
 import { ReadableStream } from "node:stream/web";
 import { describe, expect, it, vi } from "vitest";
-import { callOpenAICompatibleChat, streamOpenAICompatibleChat } from "./llm";
+import { callOpenAICompatibleChat, resolveChatCompletionsUrl, streamOpenAICompatibleChat } from "./llm";
 
 describe("callOpenAICompatibleChat", () => {
   it("sends OpenAI-compatible chat completions request", async () => {
@@ -233,5 +233,31 @@ describe("streamOpenAICompatibleChat", () => {
       { type: "content", content: "ok" },
       { type: "content", content: "!" },
     ]);
+  });
+});
+
+describe("resolveChatCompletionsUrl", () => {
+  it("appends /v1/chat/completions to a bare base url", () => {
+    expect(resolveChatCompletionsUrl("https://api.example.com")).toBe(
+      "https://api.example.com/v1/chat/completions",
+    );
+  });
+
+  it("does not double /v1 when the base url already ends with /v1", () => {
+    expect(resolveChatCompletionsUrl("https://api.openai.com/v1")).toBe(
+      "https://api.openai.com/v1/chat/completions",
+    );
+  });
+
+  it("strips a trailing slash before /v1", () => {
+    expect(resolveChatCompletionsUrl("https://api.openai.com/v1/")).toBe(
+      "https://api.openai.com/v1/chat/completions",
+    );
+  });
+
+  it("returns the url as-is in full mode", () => {
+    expect(
+      resolveChatCompletionsUrl("https://proxy.example.com/openai/chat/completions", "full"),
+    ).toBe("https://proxy.example.com/openai/chat/completions");
   });
 });
