@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rm, unlink, writeFile } from "node:fs/promise
 import path from "node:path";
 import { createDefaultProject, createDefaultProjectNodes } from "./defaults";
 import { WORKFLOW_NODES, isWorkflowNodeId } from "./nodes";
-import { assertSafeProjectId } from "./paths";
+import { assertSafeProjectId, ProjectIdError } from "./paths";
 import type { ChatMessage, ChatSession, Project, ProjectNode, WorkflowNodeId } from "./types";
 
 export type CreateProjectInput = {
@@ -56,12 +56,23 @@ export class ProjectStore {
   }
 
   async getProjectNodes(projectId: string): Promise<ProjectNode[]> {
-    const nodes = await Promise.all(WORKFLOW_NODES.map((node) => readJson<ProjectNode>(this.nodePath(projectId, node.id))));
-    return nodes.sort(
-      (a, b) =>
-        WORKFLOW_NODES.findIndex((node) => node.id === a.id) -
-        WORKFLOW_NODES.findIndex((node) => node.id === b.id),
+    const nodes = await Promise.all(
+      WORKFLOW_NODES.map(async (node) => {
+        try {
+          return await readJson<ProjectNode>(this.nodePath(projectId, node.id));
+        } catch (error) {
+          if (error instanceof ProjectIdError) throw error;
+          return null;
+        }
+      }),
     );
+    return nodes
+      .filter((node): node is ProjectNode => Boolean(node))
+      .sort(
+        (a, b) =>
+          WORKFLOW_NODES.findIndex((node) => node.id === a.id) -
+          WORKFLOW_NODES.findIndex((node) => node.id === b.id),
+      );
   }
 
   async updateProjectNode(projectId: string, nodeId: WorkflowNodeId, patch: Partial<ProjectNode>): Promise<ProjectNode> {

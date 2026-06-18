@@ -194,4 +194,14 @@ describe("ProjectStore", () => {
     const second = await store.listSessions(projectId, "feature-design");
     expect(second).toEqual([]);
   });
+
+  it("returns readable nodes even if one node file is missing", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    await rm(path.join(rootDir, project.id, "nodes", "feature-design.json"));
+
+    const nodes = await store.getProjectNodes(project.id);
+    expect(nodes).toHaveLength(11);
+    expect(nodes.find((node) => node.id === "feature-design")).toBeUndefined();
+  });
 });
