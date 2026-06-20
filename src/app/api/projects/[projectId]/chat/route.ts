@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { AgentOverrideStore } from "@/lib/project/agent-overrides";
-import { generateUpdatedNodeMarkdown } from "@/lib/project/agent-markdown";
 import { FileStore } from "@/lib/project/files";
 import { streamOpenAICompatibleChat } from "@/lib/project/llm";
+import { judgeNodeFacts } from "@/lib/project/node-fact-judge";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
 import { ProjectStore } from "@/lib/project/store";
-import type { ProjectNode, ReasoningEffort, WorkflowNodeId } from "@/lib/project/types";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
+import type { ReasoningEffort, WorkflowNodeId } from "@/lib/project/types";
 
 const REASONING_EFFORTS = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 
@@ -147,6 +147,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
       const encoder = new TextEncoder();
 
       try {
+        // 1. Stream conversation
         for await (const part of streamOpenAICompatibleChat({
           apiBaseUrl: provider.apiBaseUrl,
           apiUrlMode: provider.apiUrlMode,
@@ -169,6 +170,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "token", content: part.content })}\n\n`));
         }
 
+        // 2. Persist assistant message
         await projectStore.appendChatMessage(projectId, nodeId, {
           id: randomUUID(),
           role: "assistant",
@@ -177,31 +179,42 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           createdAt: new Date().toISOString(),
         }, sessionId);
 
-        let updatedNode: ProjectNode | undefined;
-        try {
-          const updatedMarkdown = await generateUpdatedNodeMarkdown({
-            apiBaseUrl: provider.apiBaseUrl,
-            apiUrlMode: provider.apiUrlMode,
-            apiKey: provider.apiKey,
-            model: body.model!,
-            reasoningEffort,
-            nodeId,
-            currentMarkdown: currentNode.markdown,
-            contextMarkdown,
-            userMessage: body.message!.trim(),
-            assistantContent,
-            signal: abortController.signal,
-          });
-          updatedNode = await projectStore.updateProjectNode(projectId, nodeId, {
-            markdown: updatedMarkdown,
-            status: "generated",
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Markdown auto-save failed";
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "node_update_error", error: message })}\n\n`));
+        // 3. Emit markdown_check_start
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "markdown_check_start" })}\n\n`));
+
+        // 4. Call judgeNodeFacts to decide if patches are needed
+        const result = await judgeNodeFacts({
+          apiBaseUrl: provider.apiBaseUrl,
+          apiUrlMode: provider.apiUrlMode,
+          apiKey: provider.apiKey,
+          model: body.model!,
+          nodeId,
+          userMessage: body.message!.trim(),
+          assistantContent,
+          signal: abortController.signal,
+        });
+
+        // 5. Branch on result
+        if (!result.ok) {
+          // Judge failure — emit warning
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "markdown_unchanged", warning: result.error })}\n\n`));
+        } else if (result.decision.changes.length === 0) {
+          // No changes needed
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "markdown_unchanged" })}\n\n`));
+        } else {
+          // Emit patch previews
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify({ type: "markdown_start", mode: "increment", baseRevision: currentNode.revision })}\n\n`,
+          ));
+          for (const patch of result.decision.changes) {
+            controller.enqueue(encoder.encode(
+              `data: ${JSON.stringify({ type: "markdown_patch_preview", patch })}\n\n`,
+            ));
+          }
         }
 
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", sessionId, updatedNode })}\n\n`));
+        // 6. Emit done with sessionId only (no updatedNode)
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", sessionId })}\n\n`));
       } catch (error) {
         if (assistantContent || assistantReasoningContent) {
           await projectStore.appendChatMessage(projectId, nodeId, {
@@ -214,8 +227,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         }
 
         if (abortController.signal.aborted) {
-          controller.close();
-          return;
+          return; // let finally close
         }
 
         const message = error instanceof Error ? error.message : "LLM 请求失败";
@@ -229,9 +241,9 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         }
 
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: errorMessage })}\n\n`));
+      } finally {
+        controller.close();
       }
-
-      controller.close();
     },
   });
 

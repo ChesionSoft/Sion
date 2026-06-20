@@ -139,3 +139,14 @@ export type RewriteStreamEvent =
   | { type: "markdown_done"; updatedNode: ProjectNode }
   | { type: "markdown_conflict"; latestNode: ProjectNode; candidateMarkdown: string }
   | { type: "markdown_error"; error: string };
+
+export type ChatStreamEvent =
+  | { type: "reasoning"; content: string }
+  | { type: "token"; content: string }
+  | { type: "markdown_check_start" }
+  | { type: "markdown_unchanged"; warning?: string }
+  | { type: "markdown_start"; mode: "increment"; baseRevision: number }
+  | { type: "markdown_patch_preview"; patch: NodeMarkdownPatch }
+  | { type: "markdown_error"; error: string }
+  | { type: "done"; sessionId: string }
+  | { type: "error"; error: string };

@@ -4,10 +4,16 @@ import path from "node:path";
 import { ReadableStream } from "node:stream/web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectStore } from "@/lib/project/store";
+import type { NodeMarkdownPatch } from "@/lib/project/types";
 import { POST } from "./route";
 
 let tmpDir: string;
 const originalCwd = process.cwd;
+
+// Mock judgeNodeFacts so we control its results without real LLM calls
+vi.mock("@/lib/project/node-fact-judge", () => ({
+  judgeNodeFacts: vi.fn(),
+}));
 
 beforeEach(async () => {
   tmpDir = await mkdtemp(path.join(os.tmpdir(), "Sion-chat-test-"));
@@ -101,12 +107,45 @@ beforeEach(async () => {
     ok: true,
     body: sseBody,
   });
+
+  // Reset judgeNodeFacts mock to default (no changes)
+  const { judgeNodeFacts } = await import("@/lib/project/node-fact-judge");
+  vi.mocked(judgeNodeFacts).mockReset();
+  vi.mocked(judgeNodeFacts).mockResolvedValue({ ok: true, decision: { changes: [] } });
 });
 
 afterEach(async () => {
   process.cwd = originalCwd;
   await rm(tmpDir, { recursive: true, force: true });
 });
+
+async function readSseEvents(response: Response): Promise<Array<Record<string, unknown>>> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const events: Array<Record<string, unknown>> = [];
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop()!;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) continue;
+      events.push(JSON.parse(trimmed.slice(6)) as Record<string, unknown>);
+    }
+  }
+
+  return events;
+}
+
+async function getNodeRevision(store: ProjectStore, projectId: string, nodeId: string): Promise<number> {
+  const nodes = await store.getProjectNodes(projectId);
+  const node = nodes.find((n) => n.id === nodeId);
+  return node?.revision ?? -1;
+}
 
 describe("chat API", () => {
   it("rejects when providerId is missing", async () => {
@@ -145,7 +184,7 @@ describe("chat API", () => {
     expect(data.error).toContain("请选择模型");
   });
 
-  it("resolves provider credentials server-side and returns assistant response", async () => {
+  it("resolves provider credentials server-side and returns assistant response with judge events", async () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/chat", {
         method: "POST",
@@ -197,7 +236,146 @@ describe("chat API", () => {
     expect(requestBody.reasoning_effort).toBe("medium");
   });
 
-  it("appends messages to the provided chat session", async () => {
+  it("emits correct event sequence when judge returns no changes", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "消息",
+          providerId: "mp-1",
+          model: "test-model",
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    const events = await readSseEvents(response);
+    const types = events.map((e) => e.type);
+
+    // token -> markdown_check_start -> markdown_unchanged -> done
+    expect(types).toContain("token");
+    expect(types).toContain("markdown_check_start");
+    expect(types).toContain("markdown_unchanged");
+    expect(types).toContain("done");
+
+    // No markdown_start or markdown_patch_preview
+    expect(types).not.toContain("markdown_start");
+    expect(types).not.toContain("markdown_patch_preview");
+
+    const doneEvent = events.find((e) => e.type === "done");
+    expect(doneEvent).toBeDefined();
+    expect(typeof doneEvent!.sessionId).toBe("string");
+    // done must NOT carry updatedNode
+    expect(doneEvent).not.toHaveProperty("updatedNode");
+
+    const unchangedEvent = events.find((e) => e.type === "markdown_unchanged");
+    expect(unchangedEvent).toBeDefined();
+    expect(unchangedEvent!.warning).toBeUndefined();
+
+    // Node must NOT be written (revision still 0)
+    const store = new ProjectStore();
+    const rev = await getNodeRevision(store, "test-project", "feature-design");
+    expect(rev).toBe(0);
+  });
+
+  it("emits patch preview events when judge returns changes", async () => {
+    const changesPatch: NodeMarkdownPatch = {
+      category: "confirmed_fact",
+      targetSectionKey: "confirmed",
+      patchKind: "append_bullet",
+      markdown: "- 客户管理功能包含 CRUD",
+      evidence: { source: "user", quote: "客户管理" },
+    };
+
+    const { judgeNodeFacts } = await import("@/lib/project/node-fact-judge");
+    vi.mocked(judgeNodeFacts).mockResolvedValueOnce({
+      ok: true,
+      decision: { changes: [changesPatch] },
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "加入客户管理",
+          providerId: "mp-1",
+          model: "test-model",
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    const events = await readSseEvents(response);
+    const types = events.map((e) => e.type);
+
+    // token -> markdown_check_start -> markdown_start -> markdown_patch_preview -> done
+    expect(types).toContain("token");
+    expect(types).toContain("markdown_check_start");
+    expect(types).toContain("markdown_start");
+    expect(types).toContain("markdown_patch_preview");
+    expect(types).toContain("done");
+
+    const startEvent = events.find((e) => e.type === "markdown_start");
+    expect(startEvent!.mode).toBe("increment");
+    expect(startEvent!.baseRevision).toBe(0); // matches fixture node revision
+
+    const previewEvent = events.find((e) => e.type === "markdown_patch_preview");
+    expect(previewEvent!.patch).toEqual(changesPatch);
+
+    const doneEvent = events.find((e) => e.type === "done");
+    expect(doneEvent).not.toHaveProperty("updatedNode");
+
+    // Node must NOT be written (chat route only previews)
+    const store = new ProjectStore();
+    const rev = await getNodeRevision(store, "test-project", "feature-design");
+    expect(rev).toBe(0);
+  });
+
+  it("emits markdown_unchanged with warning on judge failure", async () => {
+    const { judgeNodeFacts } = await import("@/lib/project/node-fact-judge");
+    vi.mocked(judgeNodeFacts).mockResolvedValueOnce({
+      ok: false,
+      error: "judge failed",
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "消息",
+          providerId: "mp-1",
+          model: "test-model",
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    const events = await readSseEvents(response);
+    const types = events.map((e) => e.type);
+
+    expect(types).toContain("token");
+    expect(types).toContain("markdown_check_start");
+    expect(types).toContain("markdown_unchanged");
+    expect(types).toContain("done");
+    expect(types).not.toContain("markdown_start");
+    expect(types).not.toContain("markdown_patch_preview");
+
+    const unchangedEvent = events.find((e) => e.type === "markdown_unchanged");
+    expect(unchangedEvent!.warning).toBe("judge failed");
+
+    const doneEvent = events.find((e) => e.type === "done");
+    expect(doneEvent).not.toHaveProperty("updatedNode");
+
+    // Node not written
+    const store = new ProjectStore();
+    const rev = await getNodeRevision(store, "test-project", "feature-design");
+    expect(rev).toBe(0);
+  });
+
+  it("appends messages to the provided chat session and does not write node", async () => {
     const store = new ProjectStore();
     const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
 
@@ -224,110 +402,18 @@ describe("chat API", () => {
       if (done) break;
     }
 
-    // Verify messages were persisted
+    // Verify messages were persisted and node was NOT written
     const messages = await store.getChatMessages("test-project", "feature-design", session.id);
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe("user");
     expect(messages[1].role).toBe("assistant");
     expect(messages[1].content).toBe("已更新功能设计。");
     expect(messages[1].reasoningContent).toBe("先判断节点目标。");
-  });
 
-  it("auto-saves updated Markdown only for the current node after assistant response", async () => {
-    const encoder = new TextEncoder();
-    vi.mocked(globalThis.fetch)
-      .mockResolvedValueOnce({
-        ok: true,
-        body: new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"已整理当前节点。"}}]}\n\n'));
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            controller.close();
-          },
-        }),
-      } as unknown as Response)
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  content: "# feature-design\n\n测试内容\n\n- 客户管理",
-                },
-              },
-            ],
-          }),
-          { status: 200 },
-        ),
-      );
-
-    const response = await POST(
-      new Request("http://localhost/api/projects/test-project/chat", {
-        method: "POST",
-        body: JSON.stringify({
-          nodeId: "feature-design",
-          message: "加入客户管理",
-          providerId: "mp-1",
-          model: "test-model",
-        }),
-      }),
-      { params: Promise.resolve({ projectId: "test-project" }) },
-    );
-
-    const events = await readSseEvents(response);
-    const done = events.find((event) => event.type === "done");
-    const updatedNode = done?.updatedNode as { id?: string; markdown?: string } | undefined;
-    expect(updatedNode?.id).toBe("feature-design");
-    expect(updatedNode?.markdown).toContain("- 客户管理");
-
-    const store = new ProjectStore();
+    // Node revision must still be 0 (chat route does NOT write nodes)
     const nodes = await store.getProjectNodes("test-project");
-    expect(nodes.find((node) => node.id === "feature-design")?.markdown).toContain("- 客户管理");
-    expect(nodes.find((node) => node.id === "basic-info")?.markdown).toContain("# basic-info");
-    expect(nodes.find((node) => node.id === "basic-info")?.markdown).not.toContain("- 客户管理");
-  });
-
-  it("keeps assistant chat when Markdown auto-save fails", async () => {
-    const encoder = new TextEncoder();
-    vi.mocked(globalThis.fetch)
-      .mockResolvedValueOnce({
-        ok: true,
-        body: new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"已整理当前节点。"}}]}\n\n'));
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            controller.close();
-          },
-        }),
-      } as unknown as Response)
-      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: " " } }] }), { status: 200 }));
-
-    const store = new ProjectStore();
-    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
-
-    const response = await POST(
-      new Request("http://localhost/api/projects/test-project/chat", {
-        method: "POST",
-        body: JSON.stringify({
-          nodeId: "feature-design",
-          message: "加入客户管理",
-          providerId: "mp-1",
-          model: "test-model",
-          sessionId: session.id,
-        }),
-      }),
-      { params: Promise.resolve({ projectId: "test-project" }) },
-    );
-
-    const events = await readSseEvents(response);
-    expect(events.some((event) => event.type === "node_update_error")).toBe(true);
-    expect(events.find((event) => event.type === "done")?.updatedNode).toBeUndefined();
-
-    const messages = await store.getChatMessages("test-project", "feature-design", session.id);
-    expect(messages.at(-1)?.role).toBe("assistant");
-    expect(messages.at(-1)?.content).toBe("已整理当前节点。");
-    const nodes = await store.getProjectNodes("test-project");
-    expect(nodes.find((node) => node.id === "feature-design")?.markdown).not.toContain("- 客户管理");
+    const node = nodes.find((n) => n.id === "feature-design");
+    expect(node?.revision).toBe(0);
   });
 
   it("returns 404 for an invalid chat session", async () => {
@@ -349,25 +435,3 @@ describe("chat API", () => {
     expect(await response.json()).toEqual({ error: "会话不存在" });
   });
 });
-
-async function readSseEvents(response: Response): Promise<Array<Record<string, unknown>>> {
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  const events: Array<Record<string, unknown>> = [];
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop()!;
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data: ")) continue;
-      events.push(JSON.parse(trimmed.slice(6)) as Record<string, unknown>);
-    }
-  }
-
-  return events;
-}
