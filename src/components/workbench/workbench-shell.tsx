@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowLeftIcon, FolderOpenIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -11,25 +11,77 @@ import { ExportPanel } from "./export-panel";
 import { FilePoolDialog } from "./file-pool-dialog";
 import { MarkdownPanel } from "./markdown-panel";
 import { NodeSidebar } from "./node-sidebar";
+import type { MarkdownGenerationState, SharedWorkbenchContext } from "./markdown-generation-types";
+
+const INITIAL_GEN_STATE: MarkdownGenerationState = { phase: "idle" };
 
 export function WorkbenchShell({ project, nodes }: { project: Project; nodes: ProjectNode[] }) {
   const [activeNodeId, setActiveNodeId] = useState<WorkflowNodeId>(nodes[0]?.id ?? "basic-info");
   const [draftNodes, setDraftNodes] = useState<ProjectNode[]>(nodes);
   const [showFilePool, setShowFilePool] = useState(false);
+  const [genState, setGenState] = useState<MarkdownGenerationState>(INITIAL_GEN_STATE);
+
+  // Shared context state (lifted from ChatPanel)
+  const [activeSessionId, setActiveSessionId] = useState("");
+  const [providerId, setProviderId] = useState("");
+  const [model, setModel] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh">("medium");
+  const [providers, setProviders] = useState<import("@/lib/project/types").ModelProvider[]>([]);
 
   const activeNode = useMemo(
     () => draftNodes.find((node) => node.id === activeNodeId) ?? draftNodes[0],
     [activeNodeId, draftNodes],
   );
 
+  const sharedContext: SharedWorkbenchContext = {
+    activeSessionId,
+    setActiveSessionId: useCallback((id: string) => setActiveSessionId(id), []),
+    providerId,
+    setProviderId: useCallback((id: string) => setProviderId(id), []),
+    model,
+    setModel: useCallback((m: string) => setModel(m), []),
+    reasoningEffort,
+    setReasoningEffort: useCallback(
+      (r: "low" | "medium" | "high" | "xhigh") => setReasoningEffort(r),
+      [],
+    ),
+    providers,
+    setProviders: useCallback((p: import("@/lib/project/types").ModelProvider[]) => setProviders(p), []),
+  };
+
+  function handleSelectNode(nodeId: WorkflowNodeId) {
+    // Ignore selection during generation phases
+    if (
+      genState.phase === "checking" ||
+      genState.phase === "previewing_increment" ||
+      genState.phase === "submitting_increment" ||
+      genState.phase === "previewing_rewrite"
+    ) {
+      return;
+    }
+    setActiveNodeId(nodeId);
+  }
+
   function updateActiveMarkdown(markdown: string) {
+    // Prevent user edits during animation/submit phases
+    if (
+      genState.phase === "previewing_increment" ||
+      genState.phase === "submitting_increment" ||
+      genState.phase === "previewing_rewrite"
+    ) {
+      return;
+    }
     setDraftNodes((current) =>
-      current.map((node) => (node.id === activeNodeId ? { ...node, markdown, status: "draft" } : node)),
+      current.map((node) =>
+        node.id === activeNodeId ? { ...node, markdown, status: "draft" } : node,
+      ),
     );
   }
 
-  function updateNodeFromAgent(node: ProjectNode) {
-    setDraftNodes((current) => current.map((item) => (item.id === node.id ? node : item)));
+  function onSavedNode(node: ProjectNode) {
+    setDraftNodes((current) =>
+      current.map((item) => (item.id === node.id ? node : item)),
+    );
   }
 
   if (!activeNode) {
@@ -66,9 +118,29 @@ export function WorkbenchShell({ project, nodes }: { project: Project; nodes: Pr
         />
       </header>
       <section className="grid min-h-0 flex-1 grid-cols-[280px_minmax(360px,0.9fr)_minmax(420px,1.1fr)]">
-        <NodeSidebar activeNodeId={activeNodeId} definitions={WORKFLOW_NODES} nodes={draftNodes} onSelect={setActiveNodeId} />
-        <ChatPanel activeNode={activeNode} key={activeNode.id} onNodeUpdated={updateNodeFromAgent} projectId={project.id} />
-        <MarkdownPanel node={activeNode} onChange={updateActiveMarkdown} projectId={project.id} />
+        <NodeSidebar activeNodeId={activeNodeId} definitions={WORKFLOW_NODES} nodes={draftNodes} onSelect={handleSelectNode} />
+        <ChatPanel
+          activeNode={activeNode}
+          key={activeNode.id}
+          projectId={project.id}
+          sharedContext={sharedContext}
+          onGenStateChange={setGenState}
+        />
+        <MarkdownPanel
+          node={activeNode}
+          onChange={updateActiveMarkdown}
+          onSavedNode={onSavedNode}
+          projectId={project.id}
+          genState={genState}
+          setGenState={setGenState}
+          sharedContext={{
+            activeSessionId: sharedContext.activeSessionId,
+            providerId: sharedContext.providerId,
+            model: sharedContext.model,
+            reasoningEffort: sharedContext.reasoningEffort,
+            providers: sharedContext.providers,
+          }}
+        />
       </section>
     </main>
   );

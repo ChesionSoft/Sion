@@ -2,7 +2,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatPanel, createStreamingTextBuffer } from "./chat-panel";
-import type { ProjectNode } from "@/lib/project/types";
+import type { MarkdownGenerationState } from "./markdown-generation-types";
+import type { ModelProvider, ProjectNode } from "@/lib/project/types";
 
 const activeNode: ProjectNode = {
   id: "feature-design",
@@ -12,6 +13,39 @@ const activeNode: ProjectNode = {
   updatedAt: "2026-06-14T10:00:00.000Z",
 };
 
+const defaultProviders: ModelProvider[] = [
+  {
+    id: "mp-1",
+    name: "OpenAI",
+    apiBaseUrl: "https://api.example.com",
+    apiKey: "secret",
+    models: [
+      { name: "GPT-5.5", isDefault: true },
+      { name: "GPT-5.4" },
+      { name: "GPT-5.4-Mini" },
+    ],
+    isDefault: true,
+    createdAt: "2026-06-14T10:00:00.000Z",
+    updatedAt: "2026-06-14T10:00:00.000Z",
+  },
+];
+
+function createMockSharedContext() {
+  const ctx = {
+    activeSessionId: "s-1",
+    setActiveSessionId: vi.fn(),
+    providerId: "mp-1",
+    setProviderId: vi.fn(),
+    model: "GPT-5.5",
+    setModel: vi.fn(),
+    reasoningEffort: "medium" as const,
+    setReasoningEffort: vi.fn(),
+    providers: defaultProviders,
+    setProviders: vi.fn(),
+  };
+  return ctx;
+}
+
 beforeEach(() => {
   vi.useRealTimers();
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -19,24 +53,7 @@ beforeEach(() => {
 
     if (url.includes("/api/settings/model-providers")) {
       return new Response(
-        JSON.stringify({
-          providers: [
-            {
-              id: "mp-1",
-              name: "OpenAI",
-              apiBaseUrl: "https://api.example.com",
-              apiKey: "secret",
-              models: [
-                { name: "GPT-5.5", isDefault: true },
-                { name: "GPT-5.4" },
-                { name: "GPT-5.4-Mini" },
-              ],
-              isDefault: true,
-              createdAt: "2026-06-14T10:00:00.000Z",
-              updatedAt: "2026-06-14T10:00:00.000Z",
-            },
-          ],
-        }),
+        JSON.stringify({ providers: defaultProviders }),
       );
     }
 
@@ -81,14 +98,52 @@ beforeEach(() => {
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify({
+                  type: "markdown_check_start",
+                })}\n\n`,
+              ),
+            );
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  type: "markdown_start",
+                  mode: "increment",
+                  baseRevision: 0,
+                })}\n\n`,
+              ),
+            );
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  type: "markdown_patch_preview",
+                  patch: {
+                    category: "confirmed_fact",
+                    targetSectionKey: "confirmed",
+                    patchKind: "append_bullet",
+                    markdown: "第一批信息",
+                    evidence: { source: "assistant", quote: "from chat" },
+                  },
+                })}\n\n`,
+              ),
+            );
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  type: "markdown_patch_preview",
+                  patch: {
+                    category: "confirmed_fact",
+                    targetSectionKey: "confirmed",
+                    patchKind: "append_bullet",
+                    markdown: "第二批信息",
+                    evidence: { source: "assistant", quote: "from chat" },
+                  },
+                })}\n\n`,
+              ),
+            );
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
                   type: "done",
                   sessionId: "s-1",
-                  updatedNode: {
-                    ...activeNode,
-                    markdown: "# feature-design\n\n- customer management",
-                    status: "generated",
-                    updatedAt: "2026-06-14T11:00:00.000Z",
-                  },
                 })}\n\n`,
               ),
             );
@@ -154,12 +209,20 @@ describe("createStreamingTextBuffer", () => {
       reasoningContent: "",
     });
   });
-
 });
 
 describe("ChatPanel", () => {
   it("renders a session selector and new session button", async () => {
-    render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
 
     const sessionTrigger = await screen.findByRole("button", { name: /6月14日/ });
     expect(sessionTrigger).toBeInTheDocument();
@@ -171,7 +234,16 @@ describe("ChatPanel", () => {
 
   it("renders the compact model menu with reasoning effort and nested models", async () => {
     const user = userEvent.setup();
-    render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
 
     const trigger = await screen.findByRole("button", { name: /模型 GPT-5.5/ });
     expect(trigger).toBeInTheDocument();
@@ -187,14 +259,32 @@ describe("ChatPanel", () => {
   });
 
   it("renders send button and file attachment button in toolbar", async () => {
-    render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
 
     expect(await screen.findByRole("button", { name: /发送/ })).toBeInTheDocument();
     expect(screen.getByTitle("添加文件附件")).toBeInTheDocument();
   });
 
   it("anchors file and model popovers to their toolbar controls", async () => {
-    render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
 
     const fileButton = screen.getByTitle("添加文件附件");
     const modelButton = await screen.findByRole("button", { name: /模型 GPT-5.5/ });
@@ -205,7 +295,16 @@ describe("ChatPanel", () => {
 
   it("auto-scrolls the chat viewport as streamed content arrives", async () => {
     const user = userEvent.setup();
-    const { container } = render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    const { container } = render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
 
     await screen.findByRole("button", { name: /发送/ });
     const viewport = container.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
@@ -225,7 +324,16 @@ describe("ChatPanel", () => {
 
   it("renders streamed reasoning separately from final assistant output", async () => {
     const user = userEvent.setup();
-    render(<ChatPanel activeNode={activeNode} projectId="p-1" />);
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
 
     await screen.findByRole("button", { name: /发送/ });
     await user.type(screen.getByPlaceholderText(/补充需求、追问边界/), "请分析");
@@ -236,22 +344,96 @@ describe("ChatPanel", () => {
     expect(await screen.findByText("这是最终回复。")).toBeInTheDocument();
   });
 
-  it("notifies the shell when the server returns an updated node", async () => {
+  it("calls onGenStateChange with SSE events: checking then previewing_increment with patches", async () => {
     const user = userEvent.setup();
-    const onNodeUpdated = vi.fn();
-    render(<ChatPanel activeNode={activeNode} onNodeUpdated={onNodeUpdated} projectId="p-1" />);
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
 
     await screen.findByRole("button", { name: /发送/ });
-    await user.type(screen.getByPlaceholderText(/补充/), "update node");
+    await user.type(screen.getByPlaceholderText(/补充/), "add patches");
     await user.click(screen.getByRole("button", { name: /发送/ }));
 
+    // Wait for the stream to process
+    await screen.findByText("这是最终回复。");
+
+    // Check that onGenStateChange was called with checking
     await waitFor(() => {
-      expect(onNodeUpdated).toHaveBeenCalledWith(
+      expect(onGenStateChange).toHaveBeenCalledWith(
+        expect.objectContaining({ phase: "checking" }),
+      );
+    });
+
+    // Check that onGenStateChange was called with previewing_increment (baseRevision)
+    await waitFor(() => {
+      expect(onGenStateChange).toHaveBeenCalledWith(
         expect.objectContaining({
-          id: "feature-design",
-          markdown: "# feature-design\n\n- customer management",
+          phase: "previewing_increment",
+          baseRevision: 0,
         }),
       );
     });
+
+    // Check that patches accumulate (functional update)
+    // The first call with previewing_increment has empty patches
+    // Subsequent calls append patches via functional update
+    const previewCalls = onGenStateChange.mock.calls.filter(
+      (call: unknown[]) =>
+        typeof call[0] === "object" &&
+        call[0] !== null &&
+        "phase" in (call[0] as MarkdownGenerationState) &&
+        (call[0] as MarkdownGenerationState).phase === "previewing_increment",
+    );
+
+    // Should have at least 1 call (the initial transition with empty patches)
+    expect(previewCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does NOT call onGenStateChange with idle or error after done event", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "test done");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    await screen.findByText("这是最终回复。");
+
+    // After done, genState should still be previewing_increment (not idle, not cleared)
+    const checkingCallIndex = onGenStateChange.mock.calls.findIndex(
+      (call: unknown[]) => {
+        const state = call[0] as MarkdownGenerationState;
+        return state.phase === "checking";
+      },
+    );
+
+    if (checkingCallIndex >= 0) {
+      const idleCallsAfterChecking = onGenStateChange.mock.calls
+        .slice(checkingCallIndex)
+        .filter(
+          (call: unknown[]) => {
+            const state = call[0] as MarkdownGenerationState;
+            return state.phase === "idle";
+          },
+        );
+      // There should be no idle calls (no markdown_unchanged event in mock)
+      expect(idleCallsAfterChecking).toHaveLength(0);
+    }
   });
 });

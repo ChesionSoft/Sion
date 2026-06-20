@@ -19,6 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { WORKFLOW_NODES } from "@/lib/project/nodes";
 import type { ChatMessage, ChatSession, ModelProvider, ProjectFile, ProjectNode, ReasoningEffort } from "@/lib/project/types";
+import type { MarkdownGenerationState, SharedWorkbenchContext } from "./markdown-generation-types";
 
 const REASONING_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
   { value: "low", label: "低" },
@@ -161,22 +162,19 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
 
 export function ChatPanel({
   activeNode,
-  onNodeUpdated,
   projectId,
+  sharedContext,
+  onGenStateChange,
 }: {
   activeNode: ProjectNode;
-  onNodeUpdated?: (node: ProjectNode) => void;
   projectId: string;
+  sharedContext: SharedWorkbenchContext;
+  onGenStateChange: (state: MarkdownGenerationState | ((prev: MarkdownGenerationState) => MarkdownGenerationState)) => void;
 }) {
   const activeNodeTitle = WORKFLOW_NODES.find((node) => node.id === activeNode.id)?.title ?? activeNode.id;
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState("");
-  const [providers, setProviders] = useState<ModelProvider[]>([]);
-  const [selectedProviderId, setSelectedProviderId] = useState("");
-  const [selectedModel, setSelectedModel] = useState("");
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelSubmenuOpen, setModelSubmenuOpen] = useState(false);
   const [projectFiles, setProjectFiles] = useState<ProjectFile[]>([]);
@@ -190,6 +188,8 @@ export function ChatPanel({
   const filePopoverRef = useRef<HTMLDivElement>(null);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const sessionMenuRef = useRef<HTMLDivElement>(null);
+  const onGenStateChangeRef = useRef(onGenStateChange);
+  useEffect(() => { onGenStateChangeRef.current = onGenStateChange; }, [onGenStateChange]);
 
   async function loadSessionMessages(sessionId: string) {
     const response = await fetch(
@@ -220,7 +220,7 @@ export function ChatPanel({
     }
 
     setSessions((current) => [data.session as ChatSession, ...current].slice(0, 10));
-    setActiveSessionId(data.session.id);
+    sharedContext.setActiveSessionId(data.session.id);
     setMessages([]);
   }
 
@@ -228,15 +228,16 @@ export function ChatPanel({
     fetch("/api/settings/model-providers")
       .then((r) => r.json())
       .then((d: { providers: ModelProvider[] }) => {
-        setProviders(d.providers);
+        sharedContext.setProviders(d.providers);
         const def = d.providers.find((p) => p.isDefault);
         if (def) {
-          setSelectedProviderId(def.id);
+          sharedContext.setProviderId(def.id);
           const defaultModelName = def.models.find((m) => m.isDefault)?.name ?? def.models[0]?.name ?? "";
-          setSelectedModel(defaultModelName);
+          sharedContext.setModel(defaultModelName);
         }
       })
       .catch(() => setError("读取模型配置失败"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -291,14 +292,14 @@ export function ChatPanel({
         if (!ok) {
           setError(data.error ?? "读取会话失败");
           setSessions([]);
-          setActiveSessionId("");
+          sharedContext.setActiveSessionId("");
           setMessages([]);
           return;
         }
 
         if (data.sessions?.length) {
           setSessions(data.sessions);
-          setActiveSessionId(data.sessions[0].id);
+          sharedContext.setActiveSessionId(data.sessions[0].id);
           loadSessionMessages(data.sessions[0].id);
           return;
         }
@@ -312,17 +313,16 @@ export function ChatPanel({
     return () => {
       cancelled = true;
     };
-    // createSession/loadSessionMessages intentionally use current node state for this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, activeNode.id]);
 
-  const selectedProvider = providers.find((p) => p.id === selectedProviderId);
-  const selectedReasoning = REASONING_OPTIONS.find((option) => option.value === reasoningEffort) ?? REASONING_OPTIONS[1];
+  const selectedProvider = sharedContext.providers.find((p) => p.id === sharedContext.providerId);
+  const selectedReasoning = REASONING_OPTIONS.find((option) => option.value === sharedContext.reasoningEffort) ?? REASONING_OPTIONS[1];
   const selectedFiles = projectFiles.filter((f) => selectedFileIds.includes(f.id));
 
-  function selectModel(provider: ModelProvider, model: string) {
-    setSelectedProviderId(provider.id);
-    setSelectedModel(model);
+  function selectModel(provider: ModelProvider, modelName: string) {
+    sharedContext.setProviderId(provider.id);
+    sharedContext.setModel(modelName);
     setModelMenuOpen(false);
     setModelSubmenuOpen(false);
   }
@@ -359,11 +359,11 @@ export function ChatPanel({
         body: JSON.stringify({
           nodeId: activeNode.id,
           message: userContent,
-          providerId: selectedProviderId,
-          model: selectedModel,
-          reasoningEffort,
+          providerId: sharedContext.providerId,
+          model: sharedContext.model,
+          reasoningEffort: sharedContext.reasoningEffort,
           fileIds: selectedFileIds,
-          sessionId: activeSessionId || undefined,
+          sessionId: sharedContext.activeSessionId || undefined,
         }),
         signal: controller.signal,
       });
@@ -410,23 +410,39 @@ export function ChatPanel({
           const payload = trimmed.slice(6);
 
           try {
-            const event = JSON.parse(payload) as {
-              type: string;
-              content?: string;
-              sessionId?: string;
-              updatedNode?: ProjectNode | null;
-              error?: string;
-            };
+            const event = JSON.parse(payload) as Record<string, unknown>;
+            const type = event.type as string;
 
-            if (event.type === "reasoning" && event.content) {
-              textBuffer.push("reasoning", event.content);
-            } else if (event.type === "token" && event.content) {
-              textBuffer.push("content", event.content);
-            } else if (event.type === "done" && event.sessionId) {
-              if (event.updatedNode) {
-                onNodeUpdated?.(event.updatedNode);
+            if (type === "reasoning" && event.content) {
+              textBuffer.push("reasoning", event.content as string);
+            } else if (type === "token" && event.content) {
+              textBuffer.push("content", event.content as string);
+            } else if (type === "markdown_check_start") {
+              onGenStateChangeRef.current({ phase: "checking" as const });
+            } else if (type === "markdown_unchanged") {
+              if (event.warning) {
+                setError(event.warning as string);
               }
-              setActiveSessionId(event.sessionId);
+              onGenStateChangeRef.current({ phase: "idle" as const });
+            } else if (type === "markdown_start") {
+              const mode = event.mode as string;
+              if (mode === "increment") {
+                onGenStateChangeRef.current({
+                  phase: "previewing_increment" as const,
+                  patches: [],
+                  baseRevision: event.baseRevision as number,
+                });
+              }
+            } else if (type === "markdown_patch_preview") {
+              const patch = event.patch as import("@/lib/project/types").NodeMarkdownPatch;
+              onGenStateChangeRef.current((prev) => {
+                if (prev.phase === "previewing_increment") {
+                  return { ...prev, patches: [...prev.patches, patch] };
+                }
+                return prev;
+              });
+            } else if (type === "done" && event.sessionId) {
+              sharedContext.setActiveSessionId(event.sessionId as string);
               setSessions((current) =>
                 current.map((session) =>
                   session.id === event.sessionId
@@ -434,10 +450,14 @@ export function ChatPanel({
                     : session,
                 ),
               );
-            } else if (event.type === "node_update_error" && event.error) {
-              setError(`Agent 回复已保存，但 Markdown 自动保存失败：${event.error}`);
-            } else if (event.type === "error" && event.error) {
-              setError(event.error);
+              // Do NOT clear genState here — MarkdownPanel owns the increment lifecycle
+            } else if (type === "node_update_error" && event.error) {
+              setError(`Agent 回复已保存，但 Markdown 自动保存失败：${event.error as string}`);
+            } else if (type === "markdown_error" && event.error) {
+              setError(event.error as string);
+              onGenStateChangeRef.current({ phase: "idle" });
+            } else if (type === "error" && event.error) {
+              setError(event.error as string);
             }
           } catch {
             // skip malformed events
@@ -490,10 +510,10 @@ export function ChatPanel({
               type="button"
             >
               <span className="truncate">
-                {sessions.find((s) => s.id === activeSessionId)?.name ?? "会话"}
+                {sessions.find((s) => s.id === sharedContext.activeSessionId)?.name ?? "会话"}
               </span>
               <span className="text-muted-foreground">
-                · {sessions.find((s) => s.id === activeSessionId)?.messageCount ?? 0} 条
+                · {sessions.find((s) => s.id === sharedContext.activeSessionId)?.messageCount ?? 0} 条
               </span>
               <ChevronDownIcon className="h-3.5 w-3.5 text-muted-foreground" />
             </button>
@@ -502,7 +522,7 @@ export function ChatPanel({
                 <p className="px-2 py-1 text-xs text-muted-foreground">会话</p>
                 <div className="flex max-h-60 flex-col gap-0.5 overflow-auto">
                   {sessions.map((session) => {
-                    const active = session.id === activeSessionId;
+                    const active = session.id === sharedContext.activeSessionId;
                     return (
                       <button
                         key={session.id}
@@ -511,7 +531,7 @@ export function ChatPanel({
                           active && "bg-muted"
                         )}
                         onClick={() => {
-                          setActiveSessionId(session.id);
+                          sharedContext.setActiveSessionId(session.id);
                           loadSessionMessages(session.id);
                           setSessionMenuOpen(false);
                         }}
@@ -569,7 +589,7 @@ export function ChatPanel({
               {error}
             </p>
           ) : null}
-          <div className="flex items-center justify-between gap-2 border-t px-3 py-2">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-t px-3 py-2">
             <div className="relative flex min-w-0 flex-1 flex-wrap items-center gap-1.5" ref={filePopoverRef}>
               <button
                 className="shrink-0 rounded-full p-2 text-muted-foreground transition-colors hover:bg-muted"
@@ -627,10 +647,10 @@ export function ChatPanel({
               ) : null}
             </div>
             <div className="relative flex shrink-0 items-center gap-2" ref={modelMenuRef}>
-              {providers.length > 0 ? (
+              {sharedContext.providers.length > 0 ? (
                 <>
                   <button
-                    aria-label={`模型 ${selectedModel || selectedProvider?.models.find((m) => m.isDefault)?.name || selectedProvider?.models[0]?.name || "未选择"}，推理 ${selectedReasoning.label}`}
+                    aria-label={`模型 ${sharedContext.model || selectedProvider?.models.find((m) => m.isDefault)?.name || selectedProvider?.models[0]?.name || "未选择"}，推理 ${selectedReasoning.label}`}
                     aria-expanded={modelMenuOpen}
                     aria-haspopup="menu"
                     className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-full border bg-background px-3 text-xs font-medium shadow-sm transition hover:bg-muted/60"
@@ -640,23 +660,23 @@ export function ChatPanel({
                     }}
                     type="button"
                   >
-                    <span className="truncate">{selectedModel || selectedProvider?.models.find((m) => m.isDefault)?.name || selectedProvider?.models[0]?.name || "选择模型"}</span>
+                    <span className="truncate">{sharedContext.model || selectedProvider?.models.find((m) => m.isDefault)?.name || selectedProvider?.models[0]?.name || "选择模型"}</span>
                     <span className="text-muted-foreground">{selectedReasoning.label}</span>
                     <ChevronDownIcon className="h-3.5 w-3.5 text-muted-foreground" />
                   </button>
 
                   {modelMenuOpen ? (
                     <div className="absolute bottom-10 right-0 z-30 w-52 rounded-xl border bg-popover p-1.5 text-sm shadow-xl">
-                    <p className="px-2 py-1 text-xs text-muted-foreground">推理强度</p>
+                      <p className="px-2 py-1 text-xs text-muted-foreground">推理强度</p>
                       {REASONING_OPTIONS.map((option) => (
                         <button
                           key={option.value}
                           className="flex h-8 w-full items-center justify-between rounded-md px-2 text-left text-sm hover:bg-muted"
-                          onClick={() => setReasoningEffort(option.value)}
+                          onClick={() => sharedContext.setReasoningEffort(option.value)}
                           type="button"
                         >
                           <span>{option.label}</span>
-                          {reasoningEffort === option.value ? <CheckIcon className="h-4 w-4" /> : null}
+                          {sharedContext.reasoningEffort === option.value ? <CheckIcon className="h-4 w-4" /> : null}
                         </button>
                       ))}
 
@@ -671,30 +691,30 @@ export function ChatPanel({
                         onMouseEnter={() => setModelSubmenuOpen(true)}
                         type="button"
                       >
-                        <span className="truncate">{selectedModel || "模型"}</span>
+                        <span className="truncate">{sharedContext.model || "模型"}</span>
                         <ChevronRightIcon className="h-4 w-4 text-muted-foreground" />
                       </button>
 
                       {modelSubmenuOpen ? (
                         <div className="absolute bottom-0 left-[calc(100%+6px)] z-40 max-h-72 w-56 overflow-auto rounded-xl border bg-popover p-1.5 shadow-xl">
-                        <p className="px-2 py-1 text-xs text-muted-foreground">选择模型</p>
-                          {providers.map((provider) => (
+                          <p className="px-2 py-1 text-xs text-muted-foreground">选择模型</p>
+                          {sharedContext.providers.map((provider) => (
                             <div key={provider.id}>
-                              {providers.length > 1 ? (
+                              {sharedContext.providers.length > 1 ? (
                                 <p className="px-2 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
                                   {provider.name}
                                 </p>
                               ) : null}
-                              {provider.models.map((model) => {
-                                const active = provider.id === selectedProviderId && model.name === selectedModel;
+                              {provider.models.map((m) => {
+                                const active = provider.id === sharedContext.providerId && m.name === sharedContext.model;
                                 return (
                                   <button
-                                    key={`${provider.id}-${model.name}`}
+                                    key={`${provider.id}-${m.name}`}
                                     className="flex h-8 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-sm hover:bg-muted"
-                                    onClick={() => selectModel(provider, model.name)}
+                                    onClick={() => selectModel(provider, m.name)}
                                     type="button"
                                   >
-                                    <span className="truncate">{model.name}</span>
+                                    <span className="truncate">{m.name}</span>
                                     {active ? <CheckIcon className="h-4 w-4 shrink-0" /> : null}
                                   </button>
                                 );
@@ -706,14 +726,10 @@ export function ChatPanel({
                     </div>
                   ) : null}
                 </>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  先在主菜单配置模型提供商，再开始节点对话。
-                </p>
-              )}
+              ) : null}
               <Button
                 className={sending ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : ""}
-                disabled={!message.trim() || !selectedProviderId || !selectedModel || !activeSessionId}
+                disabled={!message.trim() || !sharedContext.providerId || !sharedContext.model || !sharedContext.activeSessionId}
                 onClick={sending ? abortSendMessage : sendMessage}
                 type="button"
               >
