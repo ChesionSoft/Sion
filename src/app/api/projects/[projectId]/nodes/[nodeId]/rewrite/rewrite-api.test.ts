@@ -1,4 +1,4 @@
-import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ReadableStream } from "node:stream/web";
@@ -169,20 +169,101 @@ describe("rewrite API", () => {
     expect(response.status).toBe(400);
   });
 
-  it("returns 409 when revision is already stale", async () => {
+  it("emits markdown_conflict via SSE when revision is stale", async () => {
     await setupProjectFixture();
-    // Bump revision by PATCH-ing first
+    // Bump the node's revision to 1
     const store = new ProjectStore();
-    await store.updateProjectNode("test-project", "basic-info", { markdown: "# 项目基本信息\n\nupdated" });
+    await store.updateProjectNode("test-project", "basic-info", { markdown: "# basic-info\n\nupdated" });
 
+    // Mock LLM to return valid markdown
+    const validContent = [
+      "# 项目基本信息",
+      "",
+      "## 已确认内容",
+      "",
+      "确认内容已更新",
+      "",
+      "## 基础信息表",
+      "",
+      "| 字段 | 值 |",
+      "|------|-----|",
+      "| 名称 | 测试 |",
+      "",
+      "## 项目边界",
+      "",
+      "无边界限制",
+      "",
+      "## 设计假设",
+      "",
+      "- 假设1",
+      "",
+      "## 待确认问题",
+      "",
+      "- 问题1",
+    ].join("\n");
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder();
+          const escaped = validContent.replace(/"/g, '\\"').replace(/\n/g, "\\n");
+          controller.enqueue(
+            encoder.encode(`data: {"choices":[{"delta":{"content":"${escaped}"}}]}\n\n`),
+          );
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      }),
+    })) as unknown as typeof fetch;
+
+    // Request with stale expectedRevision 0 — no upfront 409, route generates then CAS fails
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "mp-1", model: "m", expectedRevision: 0 }),
+        body: JSON.stringify({ providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
     );
-    expect(response.status).toBe(409);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("text/event-stream");
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let allData = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      allData += decoder.decode(value, { stream: true });
+    }
+
+    const events = allData
+      .trim()
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => JSON.parse(l.slice(6)));
+
+    const conflictEvent = events.find(
+      (e: Record<string, unknown>) => e.type === "markdown_conflict",
+    ) as Record<string, unknown> | undefined;
+    expect(conflictEvent).toBeDefined();
+    const latestNode = conflictEvent!.latestNode as Record<string, unknown>;
+    expect(latestNode.revision).toBe(1);
+    expect(conflictEvent!.candidateMarkdown).toBe(validContent);
+
+    // No markdown_done since CAS failed
+    const doneEvent = events.find((e: Record<string, unknown>) => e.type === "markdown_done");
+    expect(doneEvent).toBeUndefined();
+
+    // Disk is unchanged — node still has bumped content at revision 1
+    const raw = await readFile(
+      path.join(tmpDir, "projects", "test-project", "nodes", "basic-info.json"),
+      "utf8",
+    );
+    const nodeAfter = JSON.parse(raw);
+    expect(nodeAfter.revision).toBe(1);
+    expect(nodeAfter.markdown).toBe("# basic-info\n\nupdated");
   });
 
   it("streams SSE events on successful rewrite", async () => {
@@ -264,12 +345,227 @@ describe("rewrite API", () => {
     expect(lastEvent).toMatchObject({ type: "markdown_done" });
     expect(lastEvent.updatedNode).toBeDefined();
     expect(lastEvent.updatedNode.revision).toBe(1);
-    expect(lastEvent.updatedNode.status).toBe("draft");
+    expect(lastEvent.updatedNode.status).toBe("generated");
     expect(lastEvent.updatedNode.markdown).toContain("# 项目基本信息");
     expect(lastEvent.updatedNode.markdown).toContain("## 已确认内容");
 
     // Should have at least one token event
     const tokenEvents = events.filter((e: Record<string, unknown>) => e.type === "markdown_token");
     expect(tokenEvents.length).toBeGreaterThan(0);
+  });
+
+  it("emits markdown_error on validation failure and does NOT write disk", async () => {
+    await setupProjectFixture();
+
+    // Mock LLM to return markdown MISSING required section "## 设计假设"
+    const invalidContent = [
+      "# 项目基本信息",
+      "",
+      "## 已确认内容",
+      "",
+      "确认内容已更新",
+      "",
+      "## 基础信息表",
+      "",
+      "| 字段 | 值 |",
+      "|------|-----|",
+      "| 名称 | 测试 |",
+      "",
+      "## 项目边界",
+      "",
+      "无边界限制",
+      "",
+      // Missing "## 设计假设" section — required by schema
+      "",
+      "## 待确认问题",
+      "",
+      "- 问题1",
+    ].join("\n");
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder();
+          const escaped = invalidContent.replace(/"/g, '\\"').replace(/\n/g, "\\n");
+          controller.enqueue(
+            encoder.encode(`data: {"choices":[{"delta":{"content":"${escaped}"}}]}\n\n`),
+          );
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      }),
+    })) as unknown as typeof fetch;
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
+        method: "POST",
+        body: JSON.stringify({ providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
+    );
+
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let allData = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      allData += decoder.decode(value, { stream: true });
+    }
+
+    const events = allData
+      .trim()
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => JSON.parse(l.slice(6)));
+
+    const errorEvent = events.find(
+      (e: Record<string, unknown>) => e.type === "markdown_error",
+    ) as Record<string, unknown> | undefined;
+    expect(errorEvent).toBeDefined();
+    expect(typeof errorEvent!.error).toBe("string");
+
+    // No markdown_done since validation failed
+    const doneEvent = events.find((e: Record<string, unknown>) => e.type === "markdown_done");
+    expect(doneEvent).toBeUndefined();
+
+    // Disk unchanged — revision stays 0
+    const raw = await readFile(
+      path.join(tmpDir, "projects", "test-project", "nodes", "basic-info.json"),
+      "utf8",
+    );
+    const nodeAfter = JSON.parse(raw);
+    expect(nodeAfter.revision).toBe(0);
+    expect(nodeAfter.markdown).toBe("# basic-info\n\n测试内容");
+  });
+
+  it("emits markdown_error on LLM error and does NOT write disk", async () => {
+    await setupProjectFixture();
+
+    // Mock fetch to return non-200
+    globalThis.fetch = vi.fn().mockImplementation(async () => ({
+      ok: false,
+      status: 500,
+    })) as unknown as typeof fetch;
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
+        method: "POST",
+        body: JSON.stringify({ providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
+    );
+
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let allData = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      allData += decoder.decode(value, { stream: true });
+    }
+
+    const events = allData
+      .trim()
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => JSON.parse(l.slice(6)));
+
+    const errorEvent = events.find(
+      (e: Record<string, unknown>) => e.type === "markdown_error",
+    ) as Record<string, unknown> | undefined;
+    expect(errorEvent).toBeDefined();
+    expect(typeof errorEvent!.error).toBe("string");
+
+    // Disk unchanged
+    const raw = await readFile(
+      path.join(tmpDir, "projects", "test-project", "nodes", "basic-info.json"),
+      "utf8",
+    );
+    const nodeAfter = JSON.parse(raw);
+    expect(nodeAfter.revision).toBe(0);
+    expect(nodeAfter.markdown).toBe("# basic-info\n\n测试内容");
+  });
+
+  it("handles abort without writing to disk", async () => {
+    await setupProjectFixture();
+
+    // Create a promise that resolves when the fetch body stream controller is available
+    let bodyController: ReadableStreamDefaultController | null = null;
+    let bodyControllerReady: () => void;
+    const bodyControllerReadyPromise = new Promise<void>((resolve) => {
+      bodyControllerReady = resolve;
+    });
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            bodyController = controller;
+            const encoder = new TextEncoder();
+            controller.enqueue(
+              encoder.encode(`data: {"choices":[{"delta":{"content":"hello"}}]}\n\n`),
+            );
+            bodyControllerReady();
+            // Never close — we abort the request to end the stream
+          },
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    const abortController = new AbortController();
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
+        method: "POST",
+        body: JSON.stringify({ providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
+        signal: abortController.signal,
+      }),
+      { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
+    );
+
+    expect(response.status).toBe(200);
+
+    // Wait for the body stream to be set up and one token to be sent
+    await bodyControllerReadyPromise;
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Abort the request — route will close its SSE controller early
+    abortController.abort();
+
+    // Close the hanging body stream so the reader resolves
+    bodyController!.close();
+
+    // Read SSE events from the response
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let allData = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      allData += decoder.decode(value, { stream: true });
+    }
+
+    // No markdown_done event (route closes early on abort)
+    const events = allData
+      .trim()
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => JSON.parse(l.slice(6)));
+    const doneEvent = events.find((e: Record<string, unknown>) => e.type === "markdown_done");
+    expect(doneEvent).toBeUndefined();
+
+    // Disk unchanged
+    const raw = await readFile(
+      path.join(tmpDir, "projects", "test-project", "nodes", "basic-info.json"),
+      "utf8",
+    );
+    const nodeAfter = JSON.parse(raw);
+    expect(nodeAfter.revision).toBe(0);
+    expect(nodeAfter.markdown).toBe("# basic-info\n\n测试内容");
   });
 });

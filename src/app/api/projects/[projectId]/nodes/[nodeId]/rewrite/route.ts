@@ -57,14 +57,6 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     return NextResponse.json({ error: "流程节点不存在" }, { status: 404 });
   }
 
-  if (currentNode.revision !== body.expectedRevision) {
-    // Already stale before the rewrite starts
-    return NextResponse.json(
-      { error: "节点已被其他操作修改", latestNode: currentNode },
-      { status: 409 },
-    );
-  }
-
   const contextMarkdown = nodes
     .filter((n) => n.id !== nodeId)
     .map((n) => n.markdown)
@@ -135,7 +127,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           projectId,
           nodeId as WorkflowNodeId,
           body.expectedRevision!,
-          { markdown: candidateMarkdown, status: "draft" },
+          { markdown: candidateMarkdown, status: "generated" },
         );
         sendEvent({ type: "markdown_done", updatedNode });
       } catch (error) {
