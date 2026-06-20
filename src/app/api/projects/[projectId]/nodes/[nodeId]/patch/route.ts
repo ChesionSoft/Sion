@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
 import { NodeRevisionConflictError, ProjectStore } from "@/lib/project/store";
 import {
@@ -7,6 +8,11 @@ import {
   validateNodeMarkdownPatch,
 } from "@/lib/project/node-markdown-patcher";
 import type { NodeMarkdownPatch, WorkflowNodeId } from "@/lib/project/types";
+
+const patchRequestBodySchema = z.object({
+  patches: z.array(z.unknown()),
+  expectedRevision: z.number().refine(Number.isFinite, { message: "expectedRevision 必须是有限数字" }),
+});
 
 export async function POST(
   request: Request,
@@ -25,24 +31,25 @@ export async function POST(
   }
 
   // Parse body
-  let body: Record<string, unknown>;
+  let raw: unknown;
   try {
-    body = (await request.json()) as Record<string, unknown>;
+    raw = await request.json();
   } catch {
     return NextResponse.json({ error: "请求体必须为 JSON" }, { status: 400 });
   }
 
-  // Validate container shape
-  const patchesRaw = body.patches;
-  const expectedRevisionRaw = body.expectedRevision;
-
-  if (!Array.isArray(patchesRaw)) {
-    return NextResponse.json({ error: "缺少 patches" }, { status: 400 });
+  // Validate container shape with Zod
+  const parsed = patchRequestBodySchema.safeParse(raw);
+  if (!parsed.success) {
+    const firstIssue = parsed.error.issues[0];
+    const error = firstIssue
+      ? firstIssue.path.length > 0
+        ? `缺少或非法字段：${firstIssue.path.join(".")}`
+        : firstIssue.message
+      : "请求体格式非法";
+    return NextResponse.json({ error }, { status: 400 });
   }
-  if (typeof expectedRevisionRaw !== "number" || !Number.isFinite(expectedRevisionRaw)) {
-    return NextResponse.json({ error: "缺少 expectedRevision" }, { status: 400 });
-  }
-  const expectedRevision = expectedRevisionRaw as number;
+  const { patches: patchesRaw, expectedRevision } = parsed.data;
 
   // Read current node
   const nodes = await store.getProjectNodes(projectId);
