@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
-import { ProjectStore } from "@/lib/project/store";
-import type { NodeStatus } from "@/lib/project/types";
+import { NodeRevisionConflictError, ProjectStore } from "@/lib/project/store";
 
 export async function PATCH(request: Request, context: { params: Promise<{ projectId: string; nodeId: string }> }) {
   const { projectId, nodeId } = await context.params;
@@ -18,13 +17,30 @@ export async function PATCH(request: Request, context: { params: Promise<{ proje
 
   const body = (await request.json()) as {
     markdown?: string;
-    status?: NodeStatus;
+    expectedRevision?: number;
   };
 
-  const node = await store.updateProjectNode(projectId, nodeId, {
-    markdown: body.markdown,
-    status: body.status,
-  });
+  if (typeof body.markdown !== "string") {
+    return NextResponse.json({ error: "缺少 markdown" }, { status: 400 });
+  }
 
-  return NextResponse.json({ node });
+  if (typeof body.expectedRevision !== "number" || !Number.isFinite(body.expectedRevision)) {
+    return NextResponse.json({ error: "缺少 expectedRevision" }, { status: 400 });
+  }
+
+  try {
+    const node = await store.updateProjectNodeIfRevision(projectId, nodeId, body.expectedRevision, {
+      markdown: body.markdown,
+      status: "draft",
+    });
+    return NextResponse.json({ node });
+  } catch (error) {
+    if (error instanceof NodeRevisionConflictError) {
+      return NextResponse.json(
+        { error: "节点已被其他操作修改", latestNode: error.latestNode },
+        { status: 409 },
+      );
+    }
+    throw error;
+  }
 }
