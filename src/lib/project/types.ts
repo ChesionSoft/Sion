@@ -132,3 +132,10 @@ export type NodeMarkdownPatch = {
 export type NodeFactDecision = {
   changes: NodeMarkdownPatch[];
 };
+
+export type RewriteStreamEvent =
+  | { type: "markdown_start"; mode: "rewrite"; baseRevision: number }
+  | { type: "markdown_token"; content: string; mode: "rewrite" }
+  | { type: "markdown_done"; updatedNode: ProjectNode }
+  | { type: "markdown_conflict"; latestNode: ProjectNode; candidateMarkdown: string }
+  | { type: "markdown_error"; error: string };
