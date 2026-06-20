@@ -385,6 +385,74 @@ describe("applyPatches", () => {
     expect(result.markdown).toContain("Existing block content.");
   });
 
+  it("supports * and + bullet prefixes in existing body, appends - bullet after them", () => {
+    const md =
+      "# 5. 功能模块设计\n\n## 已确认内容\n\n* 星号项\n+ 加号项\n\n## 设计假设\n\n- 假设1\n";
+    const result = applyPatches(featureDesignId, md, [
+      {
+        category: "confirmed_fact",
+        targetSectionKey: "confirmed",
+        patchKind: "append_bullet",
+        markdown: "- 新项",
+        evidence: { source: "user", quote: "test" },
+      },
+    ]);
+    // The new - bullet should appear AFTER the * and + bullets
+    const starIdx = result.markdown.indexOf("* 星号项");
+    const plusIdx = result.markdown.indexOf("+ 加号项");
+    const newIdx = result.markdown.indexOf("- 新项");
+    expect(newIdx).toBeGreaterThan(starIdx);
+    expect(newIdx).toBeGreaterThan(plusIdx);
+    // All three bullets preserved
+    expect(result.markdown).toContain("* 星号项");
+    expect(result.markdown).toContain("+ 加号项");
+    expect(result.markdown).toContain("- 新项");
+  });
+
+  it("deduplicates bullets across different prefixes (* foo vs - foo)", () => {
+    const md =
+      "# 5. 功能模块设计\n\n## 已确认内容\n\n* 客户管理\n\n## 设计假设\n\n- 假设1\n";
+    const result = applyPatches(featureDesignId, md, [
+      {
+        category: "confirmed_fact",
+        targetSectionKey: "confirmed",
+        patchKind: "append_bullet",
+        markdown: "- 客户管理",
+        evidence: { source: "user", quote: "test" },
+      },
+    ]);
+    // Only one occurrence of "客户管理"
+    const matches = result.markdown.match(/客户管理/g);
+    expect(matches).toHaveLength(1);
+    expect(result.applied).toHaveLength(0);
+  });
+
+  it("append_block avoids double blank line when body ends with newlines", () => {
+    const md =
+      "# 5. 功能模块设计\n\n## 模块详情\n\n- existing\n\n## 设计假设\n\n- 假设1\n";
+    const result = applyPatches(featureDesignId, md, [
+      {
+        category: "confirmed_fact",
+        targetSectionKey: "module_details",
+        patchKind: "append_block",
+        markdown: "New block.",
+        evidence: { source: "user", quote: "test" },
+      },
+    ]);
+    // There should be exactly one blank line between "- existing" and "New block."
+    // The body is "- existing\n" (ends with \n), after trim: "- existing", then "\n\nNew block."
+    // So the result should be: "- existing\n\nNew block." — one blank line.
+    const sectionBody = result.markdown.slice(
+      result.markdown.indexOf("## 模块详情"),
+      result.markdown.indexOf("## 设计假设"),
+    );
+    // Count consecutive newlines between "- existing" and "New block."
+    const match = sectionBody.match(/- existing(\n+)/);
+    expect(match).not.toBeNull();
+    // Exactly 2 newlines = one blank line
+    expect(match![1].length).toBe(2);
+  });
+
   it("deduplicates blocks", () => {
     const md =
       "# 5. 功能模块设计\n\n## 模块详情\n\nExisting block content.\n\n## 设计假设\n\n- 假设1\n";
@@ -479,5 +547,80 @@ describe("applyPartialPatchForPreview", () => {
     const full = applyPartialPatchForPreview(featureDesignId, md, patch, 999);
     const applied = applyPatches(featureDesignId, md, [patch]);
     expect(full).toBe(applied.markdown);
+  });
+
+  it("append_table_row preview with existing table: frame 0 returns markdown unchanged", () => {
+    const md =
+      "# 5. 功能模块设计\n\n## 功能模块清单\n\n| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |\n| --- | --- | --- |\n| 用户管理 | 管理用户 | P0 |\n\n## 模块详情\n\nDetails\n";
+    const patch: NodeMarkdownPatch = {
+      category: "confirmed_fact",
+      targetSectionKey: "module_list",
+      patchKind: "append_table_row",
+      markdown: "| 客户管理 | 管理客户档案 | P0 |",
+      evidence: { source: "user", quote: "test" },
+    };
+
+    // visibleCharCount=0: markdown unchanged (existing table intact, no new row)
+    const frame0 = applyPartialPatchForPreview(featureDesignId, md, patch, 0);
+    expect(frame0).toBe(md);
+    // Existing row still present
+    expect(frame0).toContain("| 用户管理 | 管理用户 | P0 |");
+    // New row not present
+    expect(frame0).not.toContain("| 客户管理 | 管理客户档案 | P0 |");
+  });
+
+  it("append_table_row preview with existing table: full char count shows row after last existing row", () => {
+    const md =
+      "# 5. 功能模块设计\n\n## 功能模块清单\n\n| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |\n| --- | --- | --- |\n| 用户管理 | 管理用户 | P0 |\n\n## 模块详情\n\nDetails\n";
+    const patch: NodeMarkdownPatch = {
+      category: "confirmed_fact",
+      targetSectionKey: "module_list",
+      patchKind: "append_table_row",
+      markdown: "| 客户管理 | 管理客户档案 | P0 |",
+      evidence: { source: "user", quote: "test" },
+    };
+
+    const full = applyPartialPatchForPreview(featureDesignId, md, patch, 999);
+    expect(full).toContain("| 客户管理 | 管理客户档案 | P0 |");
+    // New row appears after the existing row
+    const existingIdx = full.indexOf("| 用户管理 | 管理用户 | P0 |");
+    const newIdx = full.indexOf("| 客户管理 | 管理客户档案 | P0 |");
+    expect(newIdx).toBeGreaterThan(existingIdx);
+  });
+
+  it("append_table_row preview with missing section: frame 0 shows header+separator, no data row", () => {
+    const md =
+      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 项1\n\n## 模块详情\n\nDetails\n";
+    const patch: NodeMarkdownPatch = {
+      category: "confirmed_fact",
+      targetSectionKey: "module_list",
+      patchKind: "append_table_row",
+      markdown: "| 客户管理 | 管理客户档案 | P0 |",
+      evidence: { source: "user", quote: "test" },
+    };
+
+    const frame0 = applyPartialPatchForPreview(featureDesignId, md, patch, 0);
+    // Header + separator present
+    expect(frame0).toContain("| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |");
+    expect(frame0).toContain("| --- | --- | --- |");
+    // No data row
+    expect(frame0).not.toContain("| 客户管理 | 管理客户档案 | P0 |");
+  });
+
+  it("append_table_row preview with missing section: full char count shows header+separator+data row", () => {
+    const md =
+      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 项1\n\n## 模块详情\n\nDetails\n";
+    const patch: NodeMarkdownPatch = {
+      category: "confirmed_fact",
+      targetSectionKey: "module_list",
+      patchKind: "append_table_row",
+      markdown: "| 客户管理 | 管理客户档案 | P0 |",
+      evidence: { source: "user", quote: "test" },
+    };
+
+    const full = applyPartialPatchForPreview(featureDesignId, md, patch, 999);
+    expect(full).toContain("| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |");
+    expect(full).toContain("| --- | --- | --- |");
+    expect(full).toContain("| 客户管理 | 管理客户档案 | P0 |");
   });
 });

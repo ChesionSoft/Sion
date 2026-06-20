@@ -126,7 +126,7 @@ function findLastBulletEndInBody(body: string): number {
   const lines = body.split("\n");
   let lastBulletLineIndex = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith("- ")) {
+    if (/^\s*[-*+]\s/.test(lines[i])) {
       lastBulletLineIndex = i;
     }
   }
@@ -145,8 +145,9 @@ function extractBulletTexts(body: string): string[] {
   const lines = body.split("\n");
   const bullets: string[] = [];
   for (const line of lines) {
-    if (line.startsWith("- ")) {
-      bullets.push(line.slice(2).trim());
+    const match = line.match(/^\s*[-*+]\s+(.*)/);
+    if (match) {
+      bullets.push(match[1].trim());
     }
   }
   return bullets;
@@ -402,7 +403,8 @@ export function applyPatches(
         continue; // Skip duplicate
       }
 
-      const newBody = body + "\n\n" + validated.markdown;
+      const trimmedBody = body.replace(/\n+$/, "");
+      const newBody = trimmedBody + "\n\n" + validated.markdown;
       result = result.slice(0, bodyStart) + newBody + result.slice(bodyEnd);
       applied.push(validated);
     } else if (validated.patchKind === "append_table_row") {
@@ -467,6 +469,13 @@ export function applyPatches(
  * Apply a single patch partially for preview animation.
  * Shows only the first `visibleCharacterCount` characters of the patch content
  * at the insertion point. The rest of the markdown stays as the base.
+ *
+ * Semantics by patch kind:
+ * - append_table_row: when the section already has a table, only the new row
+ *   types out (existing table stays fixed); when creating a new table, the
+ *   header+separator appear at frame 0 and the data row types out.
+ * - append_bullet: the `- ` prefix appears at frame 0, then the text types out.
+ * - append_block: the block text types out from frame 0.
  */
 export function applyPartialPatchForPreview(
   nodeId: WorkflowNodeId,
@@ -526,7 +535,8 @@ export function applyPartialPatchForPreview(
   }
 
   if (validated.patchKind === "append_block") {
-    const newBody = body + "\n\n" + partialContent;
+    const trimmedBody = body.replace(/\n+$/, "");
+    const newBody = trimmedBody + "\n\n" + partialContent;
     return markdown.slice(0, bodyStart) + newBody + markdown.slice(bodyEnd);
   }
 
