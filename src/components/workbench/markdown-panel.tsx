@@ -148,10 +148,16 @@ export function MarkdownPanel({
     );
 
     if (frames.length <= 1) {
-      // No animation needed, just the base frame
+      // No animation needed, just the base frame.
+      // Read patches from the ref so async-arriving patches (SSE chunks
+      // landing after this microtask is queued) are not lost to a stale
+      // effect closure.
       animationAbortRef.current = null;
       queueMicrotask(() => {
-        void submitPatches(genState.patches, genState.baseRevision);
+        const current = genStateRef.current;
+        if (current.phase === "previewing_increment") {
+          void submitPatches(current.patches, current.baseRevision);
+        }
       });
       return;
     }
