@@ -1,5 +1,6 @@
 import { WORKFLOW_NODES } from "./nodes";
 import type { Project, ProjectNode } from "./types";
+import { collectNodeAssumptions, collectNodeOpenQuestions } from "./node-markdown-content";
 
 export function assembleProjectDesignMarkdown(project: Project, nodes: ProjectNode[]): string {
   const orderedNodes = orderNodes(nodes);
@@ -30,11 +31,11 @@ export function assembleProjectDesignMarkdown(project: Project, nodes: ProjectNo
     "",
     "## 汇总设计假设",
     "",
-    ...collectListItems(orderedNodes.flatMap((node) => node.assumptions)),
+    ...collectListItems(collectNodeAssumptions(orderedNodes)),
     "",
     "## 汇总待确认事项",
     "",
-    ...collectListItems(orderedNodes.flatMap((node) => node.openQuestions)),
+    ...collectListItems(collectNodeOpenQuestions(orderedNodes)),
     "",
   ].join("\n");
 }
@@ -71,7 +72,7 @@ export function createTasksMarkdown(project: Project, nodes: ProjectNode[]): str
 }
 
 export function createAgentsMarkdown(project: Project, nodes: ProjectNode[]): string {
-  const openQuestions = nodes.flatMap((node) => node.openQuestions);
+  const openQuestions = collectNodeOpenQuestions(nodes);
 
   return [
     "# AGENTS.md",

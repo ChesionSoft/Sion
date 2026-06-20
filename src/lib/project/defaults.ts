@@ -28,8 +28,7 @@ export function createDefaultProjectNodes(now = new Date().toISOString()): Proje
     id: node.id,
     status: node.requiredForInitialization ? "draft" : "not_started",
     markdown: createNodeMarkdown(node.id),
-    assumptions: [],
-    openQuestions: [],
+    revision: 0,
     updatedAt: now,
   }));
 }

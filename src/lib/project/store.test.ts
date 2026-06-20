@@ -40,8 +40,6 @@ describe("ProjectStore", () => {
     await store.updateProjectNode(project.id, "feature-design", {
       markdown: "# 功能模块设计\n\n## 已确认内容\n\n- 客户管理",
       status: "confirmed",
-      assumptions: ["默认存在管理员角色"],
-      openQuestions: ["是否需要客户分级？"],
       updatedAt: "2026-06-14T11:00:00.000Z",
     });
 
@@ -203,5 +201,41 @@ describe("ProjectStore", () => {
     const nodes = await store.getProjectNodes(project.id);
     expect(nodes).toHaveLength(11);
     expect(nodes.find((node) => node.id === "feature-design")).toBeUndefined();
+  });
+
+  it("migrates legacy node JSON with assumptions/openQuestions arrays and no revision", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+
+    // Write legacy JSON with old array fields and no revision
+    const legacyNode = {
+      id: "feature-design",
+      status: "generated",
+      markdown: "# 功能模块设计\n\n## 已确认内容\n\n- 入库管理",
+      assumptions: ["默认使用后台管理系统"],
+      openQuestions: ["是否需要扫码入库？"],
+      updatedAt: "2026-06-14T10:00:00.000Z",
+    };
+    await writeFile(
+      path.join(rootDir, project.id, "nodes", "feature-design.json"),
+      JSON.stringify(legacyNode, null, 2),
+      "utf8",
+    );
+
+    const nodes = await store.getProjectNodes(project.id);
+    const migrated = nodes.find((node) => node.id === "feature-design")!;
+
+    // revision should be normalized to 0
+    expect(migrated.revision).toBe(0);
+
+    // Legacy assumptions should be merged into markdown
+    expect(migrated.markdown).toContain("默认使用后台管理系统");
+
+    // Legacy open questions should be merged into markdown
+    expect(migrated.markdown).toContain("是否需要扫码入库？");
+
+    // Node object should NOT have the old array fields
+    expect((migrated as Record<string, unknown>).assumptions).toBeUndefined();
+    expect((migrated as Record<string, unknown>).openQuestions).toBeUndefined();
   });
 });

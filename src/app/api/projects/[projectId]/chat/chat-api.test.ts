@@ -50,8 +50,7 @@ beforeEach(async () => {
       id: nid,
       status: "draft",
       markdown: `# ${nid}\n\n测试内容`,
-      assumptions: [],
-      openQuestions: [],
+      revision: 0,
       updatedAt: "2026-06-14T10:00:00.000Z",
     };
     await writeFile(

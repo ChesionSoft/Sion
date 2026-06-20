@@ -19,15 +19,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ proje
   const body = (await request.json()) as {
     markdown?: string;
     status?: NodeStatus;
-    assumptions?: string[];
-    openQuestions?: string[];
   };
 
   const node = await store.updateProjectNode(projectId, nodeId, {
     markdown: body.markdown,
     status: body.status,
-    assumptions: body.assumptions,
-    openQuestions: body.openQuestions,
   });
 
   return NextResponse.json({ node });

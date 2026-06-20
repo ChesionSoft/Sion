@@ -47,8 +47,7 @@ export type ProjectNode = {
   id: WorkflowNodeId;
   status: NodeStatus;
   markdown: string;
-  assumptions: string[];
-  openQuestions: string[];
+  revision: number;
   updatedAt: string;
 };
 

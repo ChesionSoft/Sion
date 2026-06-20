@@ -8,8 +8,7 @@ const activeNode: ProjectNode = {
   id: "feature-design",
   status: "draft",
   markdown: "# 功能模块设计",
-  assumptions: [],
-  openQuestions: [],
+  revision: 0,
   updatedAt: "2026-06-14T10:00:00.000Z",
 };
 

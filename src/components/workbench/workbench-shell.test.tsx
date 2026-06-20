@@ -23,8 +23,7 @@ const nodes: ProjectNode[] = [
     id: "basic-info",
     status: "draft",
     markdown: "# 项目基本信息",
-    assumptions: [],
-    openQuestions: [],
+    revision: 0,
     updatedAt: "2026-06-14T10:00:00.000Z",
   },
 ] as ProjectNode[];

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createDefaultProject, createDefaultProjectNodes } from "./defaults";
+import { mergeLegacyNodeListsIntoMarkdown } from "./node-markdown-content";
 import { WORKFLOW_NODES, isWorkflowNodeId } from "./nodes";
 import { assertSafeProjectId, ProjectIdError } from "./paths";
 import type { ChatMessage, ChatSession, Project, ProjectNode, WorkflowNodeId } from "./types";
@@ -59,7 +60,7 @@ export class ProjectStore {
     const nodes = await Promise.all(
       WORKFLOW_NODES.map(async (node) => {
         try {
-          return await readJson<ProjectNode>(this.nodePath(projectId, node.id));
+          return await this.readProjectNode(projectId, node.id);
         } catch (error) {
           if (error instanceof ProjectIdError) throw error;
           return null;
@@ -80,7 +81,7 @@ export class ProjectStore {
       throw new Error(`Unknown workflow node: ${nodeId}`);
     }
 
-    const current = await readJson<ProjectNode>(this.nodePath(projectId, nodeId));
+    const current = await this.readProjectNode(projectId, nodeId);
     const next: ProjectNode = {
       ...current,
       ...patch,
@@ -181,6 +182,35 @@ export class ProjectStore {
 
   private nodePath(projectId: string, nodeId: WorkflowNodeId): string {
     return path.join(this.projectDir(projectId), "nodes", `${nodeId}.json`);
+  }
+
+  /**
+   * Read a project node from disk, normalizing legacy data.
+   * - Normalizes missing `revision` to 0.
+   * - If the raw JSON has legacy `assumptions`/`openQuestions` arrays, merges
+   *   them into the markdown via `mergeLegacyNodeListsIntoMarkdown` and
+   *   discards the array fields.
+   * - Returns only the new shape `ProjectNode` (no array fields).
+   */
+  private async readProjectNode(projectId: string, nodeId: WorkflowNodeId): Promise<ProjectNode> {
+    const raw = await readJson<Record<string, unknown>>(this.nodePath(projectId, nodeId));
+
+    const assumptions = Array.isArray(raw.assumptions) ? (raw.assumptions as string[]) : undefined;
+    const openQuestions = Array.isArray(raw.openQuestions) ? (raw.openQuestions as string[]) : undefined;
+    const markdown = typeof raw.markdown === "string" ? raw.markdown : "";
+    const status = typeof raw.status === "string" ? raw.status : "not_started";
+    const updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString();
+    const revision = typeof raw.revision === "number" ? raw.revision : 0;
+
+    const migratedMarkdown = mergeLegacyNodeListsIntoMarkdown(markdown, assumptions, openQuestions);
+
+    return {
+      id: nodeId,
+      status: status as ProjectNode["status"],
+      markdown: migratedMarkdown,
+      revision,
+      updatedAt,
+    };
   }
 
   private legacyChatPath(projectId: string, nodeId: WorkflowNodeId): string {
