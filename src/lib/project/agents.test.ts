@@ -1,12 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { loadAgentRule, renderAgentSystemPrompt } from "./agents";
+import { getDeliverySchema } from "./node-delivery-schemas";
+import { WORKFLOW_NODES } from "./nodes";
+
+const SIX_HEADINGS = [
+  "## 角色与边界",
+  "## 输入依赖",
+  "## 交付稿骨架",
+  "## 事实判定规则",
+  "## 追问策略",
+  "## 禁止事项",
+];
 
 describe("agent rules", () => {
   it("loads the fixed feature-design rule file", async () => {
     const rule = await loadAgentRule("feature-design");
     expect(rule.nodeId).toBe("feature-design");
     expect(rule.content).toContain("你只负责功能模块设计");
-    expect(rule.content).toContain("每轮最多提出 3 个关键问题");
+    expect(rule.content).toContain("每轮最多 3 个关键问题");
   });
 
   it("renders a node-scoped system prompt with project context", async () => {
@@ -21,5 +32,82 @@ describe("agent rules", () => {
     expect(prompt).toContain("你只负责功能模块设计");
     expect(prompt).toContain("## 当前节点 Markdown");
     expect(prompt).toContain("## 可参考项目上下文");
+  });
+
+  describe("six-section structure", () => {
+    for (const node of WORKFLOW_NODES) {
+      it(`${node.id} has six sections in order`, async () => {
+        const rule = await loadAgentRule(node.id);
+        const content = rule.content;
+
+        let prevIndex = -1;
+        for (const heading of SIX_HEADINGS) {
+          const idx = content.indexOf(heading);
+          expect(idx).toBeGreaterThan(-1);
+          expect(idx).toBeGreaterThan(prevIndex);
+          prevIndex = idx;
+        }
+      });
+    }
+  });
+
+  describe("交付稿骨架 contains schema headings and table columns", () => {
+    for (const node of WORKFLOW_NODES) {
+      it(`${node.id} 骨架 contains all schema headings and table columns`, async () => {
+        const rule = await loadAgentRule(node.id);
+        const schema = getDeliverySchema(node.id);
+        expect(schema).toBeDefined();
+
+        const content = rule.content;
+        const skeletonStart = content.indexOf("## 交付稿骨架");
+        expect(skeletonStart).toBeGreaterThan(-1);
+
+        // Find the next ## heading after 交付稿骨架
+        const afterSkeleton = content.slice(skeletonStart + "## 交付稿骨架".length);
+        const nextHeadingMatch = afterSkeleton.match(/\n## /);
+        const skeletonEnd = nextHeadingMatch
+          ? skeletonStart + "## 交付稿骨架".length + nextHeadingMatch.index!
+          : content.length;
+        const skeletonSection = content.slice(skeletonStart, skeletonEnd);
+
+        for (const section of schema!.sections) {
+          expect(skeletonSection).toContain(section.heading);
+          if (section.tableColumns) {
+            for (const col of section.tableColumns) {
+              expect(skeletonSection).toContain(col);
+            }
+          }
+        }
+      });
+    }
+  });
+
+  describe("输入依赖 lists dependsOn titles", () => {
+    for (const node of WORKFLOW_NODES) {
+      it(`${node.id} 输入依赖 lists upstream node titles`, async () => {
+        const rule = await loadAgentRule(node.id);
+        const content = rule.content;
+
+        const depStart = content.indexOf("## 输入依赖");
+        expect(depStart).toBeGreaterThan(-1);
+
+        const afterDep = content.slice(depStart + "## 输入依赖".length);
+        const nextHeadingMatch = afterDep.match(/\n## /);
+        const depEnd = nextHeadingMatch
+          ? depStart + "## 输入依赖".length + nextHeadingMatch.index!
+          : content.length;
+        const depSection = content.slice(depStart, depEnd);
+
+        if (node.dependsOn.length === 0) {
+          expect(depSection).toContain("无上游依赖");
+        } else {
+          for (const depId of node.dependsOn) {
+            const depNode = WORKFLOW_NODES.find((n) => n.id === depId);
+            expect(depNode).toBeDefined();
+            expect(depSection).toContain(depNode!.title);
+          }
+        }
+      });
+    }
   });
 });
