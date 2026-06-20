@@ -129,20 +129,22 @@ describe("applyPatches", () => {
     expect(result.applied).toHaveLength(1);
   });
 
-  it("throws UnpatchableError for two same-level same-name headings", () => {
+  it("skips a patch when the target heading is ambiguous (two same-level same-name)", () => {
     const md =
       "# 5. 功能模块设计\n\n## 已确认内容\n\n- 项1\n\n## 已确认内容\n\n- 项2\n\n## 设计假设\n\n- 假设1\n";
-    expect(() =>
-      applyPatches(featureDesignId, md, [
-        {
-          category: "confirmed_fact",
-          targetSectionKey: "confirmed",
-          patchKind: "append_bullet",
-          markdown: "新项",
-          evidence: { source: "user", quote: "test" },
-        },
-      ]),
-    ).toThrow(UnpatchableError);
+    const result = applyPatches(featureDesignId, md, [
+      {
+        category: "confirmed_fact",
+        targetSectionKey: "confirmed",
+        patchKind: "append_bullet",
+        markdown: "新项",
+        evidence: { source: "user", quote: "test" },
+      },
+    ]);
+    // Ambiguous heading can't be safely located — skip the patch, leave
+    // markdown unchanged rather than aborting the whole batch.
+    expect(result.markdown).toBe(md);
+    expect(result.applied).toHaveLength(0);
   });
 
   it("does not confuse setext heading with ATX heading", () => {
@@ -244,20 +246,50 @@ describe("applyPatches", () => {
     expect(newRowIdx).toBeGreaterThan(firstRowIdx);
   });
 
-  it("throws UnpatchableError for column count mismatch", () => {
+  it("skips a table-row patch whose column count does not match the existing table", () => {
     const md =
       "# 5. 功能模块设计\n\n## 功能模块清单\n\n| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |\n| --- | --- | --- |\n| 用户管理 | 管理用户 | P0 |\n\n## 模块详情\n\nDetails\n";
-    expect(() =>
-      applyPatches(featureDesignId, md, [
-        {
-          category: "confirmed_fact",
-          targetSectionKey: "module_list",
-          patchKind: "append_table_row",
-          markdown: "| 客户管理 | P0 |", // Only 2 columns, needs 3
-          evidence: { source: "user", quote: "test" },
-        },
-      ]),
-    ).toThrow(UnpatchableError);
+    const result = applyPatches(featureDesignId, md, [
+      {
+        category: "confirmed_fact",
+        targetSectionKey: "module_list",
+        patchKind: "append_table_row",
+        markdown: "| 客户管理 | P0 |", // Only 2 columns, existing table has 3
+        evidence: { source: "user", quote: "test" },
+      },
+    ]);
+    // The bad row is skipped — markdown unchanged, nothing applied
+    expect(result.markdown).toBe(md);
+    expect(result.applied).toHaveLength(0);
+  });
+
+  it("skips a column-mismatch row but still applies other patches in the same batch", () => {
+    const md =
+      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 既有条目\n\n## 功能模块清单\n\n| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |\n| --- | --- | --- |\n| 用户管理 | 管理用户 | P0 |\n\n## 模块详情\n\nDetails\n";
+    const result = applyPatches(featureDesignId, md, [
+      {
+        category: "confirmed_fact",
+        targetSectionKey: "confirmed",
+        patchKind: "append_bullet",
+        markdown: "- 新增确认条目",
+        evidence: { source: "user", quote: "需要新增" },
+      },
+      {
+        category: "confirmed_fact",
+        targetSectionKey: "module_list",
+        patchKind: "append_table_row",
+        markdown: "| 客户管理 | P0 |", // 2 cols, existing table has 3 — should skip
+        evidence: { source: "user", quote: "客户管理" },
+      },
+    ]);
+    // The valid bullet was applied
+    expect(result.markdown).toContain("- 新增确认条目");
+    expect(result.applied).toHaveLength(1);
+    expect(result.applied[0].targetSectionKey).toBe("confirmed");
+    // The bad row was NOT inserted
+    expect(result.markdown).not.toContain("| 客户管理 | P0 |");
+    // The existing table is intact
+    expect(result.markdown).toContain("| 用户管理 | 管理用户 | P0 |");
   });
 
   it("rejects fragment containing a heading line", () => {

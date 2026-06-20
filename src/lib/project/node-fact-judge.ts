@@ -66,6 +66,11 @@ Rules:
 - open_question: Something that needs clarification. evidence.source should be "assistant".
 - If there are no changes, return {"changes":[]}.
 
+markdown format by patchKind:
+- append_bullet: a single bullet line, e.g. "- 客户管理". Do not include a heading.
+- append_block: a short paragraph. Do not include a heading.
+- append_table_row: a single GFM table data row. The number of pipe-separated cells MUST exactly equal the section's tableColumns length. Example: if tableColumns is ["模块名","职责","优先级"], the row MUST be "| 客户管理 | 管理客户档案 | P0 |" (3 cells). Do NOT emit fewer or more cells. Do not include a header or separator row — only the data row.
+
 Available sections for this node:
 ${sectionsList}`;
 }

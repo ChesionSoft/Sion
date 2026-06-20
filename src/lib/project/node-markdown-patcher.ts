@@ -346,9 +346,11 @@ export function applyPatches(
   const applied: NodeMarkdownPatch[] = [];
 
   for (const patch of patches) {
-    // Validate
+    // Schema-level validation — errors propagate to the caller. The /patch
+    // endpoint pre-validates and returns 422; direct callers get the throw.
     const validated = validateNodeMarkdownPatch(nodeId, patch);
 
+    try {
     // Get section schema
     const section = getDeliverySection(nodeId, validated.targetSectionKey);
     if (!section) {
@@ -455,6 +457,15 @@ export function applyPatches(
         result = result.slice(0, bodyStart) + newBody + result.slice(bodyEnd);
         applied.push(validated);
       }
+    }
+    } catch (error) {
+      // Tolerate per-patch runtime failures (column-count mismatch against
+      // an existing table, ambiguous heading, section can't be located):
+      // skip this patch and keep applying the rest. Schema-level invalid
+      // patches are still rejected upstream by the /patch endpoint's
+      // pre-validation (422), so this only catches document-state issues.
+      if (error instanceof UnpatchableError) continue;
+      throw error;
     }
   }
 
