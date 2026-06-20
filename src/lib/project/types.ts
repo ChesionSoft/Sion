@@ -128,3 +128,7 @@ export type NodeMarkdownPatch = {
     quote: string;
   };
 };
+
+export type NodeFactDecision = {
+  changes: NodeMarkdownPatch[];
+};

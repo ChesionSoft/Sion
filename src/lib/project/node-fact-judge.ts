@@ -1,0 +1,197 @@
+import { z } from "zod";
+import { callOpenAICompatibleChat } from "./llm";
+import { getDeliverySchema, getDeliverySection } from "./node-delivery-schemas";
+import type { NodeFactDecision, NodeMarkdownPatch, WorkflowNodeId } from "./types";
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+export type JudgeNodeFactsResult =
+  | { ok: true; decision: NodeFactDecision }
+  | { ok: false; error: string };
+
+export type JudgeNodeFactsInput = {
+  apiBaseUrl: string;
+  apiUrlMode?: "base" | "full";
+  apiKey: string;
+  model: string;
+  nodeId: WorkflowNodeId;
+  userMessage: string;
+  assistantContent: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+};
+
+// ---------------------------------------------------------------------------
+// Per-item Zod schema
+// ---------------------------------------------------------------------------
+
+const patchSchema = z.object({
+  category: z.enum(["confirmed_fact", "assumption", "open_question"]),
+  targetSectionKey: z.string(),
+  patchKind: z.enum(["append_bullet", "append_block", "append_table_row"]),
+  markdown: z.string(),
+  evidence: z.object({
+    source: z.enum(["user", "assistant"]),
+    quote: z.string(),
+  }),
+});
+
+// ---------------------------------------------------------------------------
+// System prompt builder
+// ---------------------------------------------------------------------------
+
+function buildSystemPrompt(nodeId: WorkflowNodeId): string {
+  const schema = getDeliverySchema(nodeId);
+  if (!schema) {
+    throw new Error(`Unknown node id: ${nodeId}`);
+  }
+
+  const sectionsList = schema.sections
+    .map(
+      (s) =>
+        `- sectionKey: "${s.key}", heading: "${s.heading}", allowedPatchKinds: [${s.allowedPatchKinds.map((k) => `"${k}"`).join(", ")}]`,
+    )
+    .join("\n");
+
+  return `You are a fact-checking judge. Analyze the user's message and the assistant's response to extract structured facts.
+
+Output strict JSON only, with this shape:
+{"changes":[{"category":"confirmed_fact|assumption|open_question","targetSectionKey":"<sectionKey>","patchKind":"append_bullet|append_block|append_table_row","markdown":"<markdown content>","evidence":{"source":"user|assistant","quote":"<exact quote from user message>"}}]}
+
+Rules:
+- confirmed_fact: The user explicitly stated this. Requires evidence.source="user" and evidence.quote must be a verbatim substring from the user's message.
+- assumption: The assistant inferred or suggested something the user didn't explicitly confirm. evidence.source should be "assistant".
+- open_question: Something that needs clarification. evidence.source should be "assistant".
+- If there are no changes, return {"changes":[]}.
+
+Available sections for this node:
+${sectionsList}`;
+}
+
+// ---------------------------------------------------------------------------
+// Main judge function
+// ---------------------------------------------------------------------------
+
+export async function judgeNodeFacts(
+  input: JudgeNodeFactsInput,
+): Promise<JudgeNodeFactsResult> {
+  const systemPrompt = buildSystemPrompt(input.nodeId);
+
+  // 1. Call the LLM
+  let responseContent: string;
+  try {
+    responseContent = await callOpenAICompatibleChat({
+      apiBaseUrl: input.apiBaseUrl,
+      apiUrlMode: input.apiUrlMode,
+      apiKey: input.apiKey,
+      model: input.model,
+      reasoningEffort: "low",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: input.userMessage },
+      ],
+      fetchImpl: input.fetchImpl,
+      signal: input.signal,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  // 2. Parse JSON (try direct, then try ```json fence)
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(responseContent);
+  } catch {
+    const fenceMatch = responseContent.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenceMatch) {
+      try {
+        parsed = JSON.parse(fenceMatch[1].trim());
+      } catch {
+        return { ok: false, error: "judge response was not valid JSON" };
+      }
+    } else {
+      return { ok: false, error: "judge response was not valid JSON" };
+    }
+  }
+
+  // 3. Validate top-level structure
+  const topSchema = z.object({ changes: z.array(z.unknown()) });
+  const topResult = topSchema.safeParse(parsed);
+  if (!topResult.success) {
+    return {
+      ok: false,
+      error: `judge response missing valid changes array: ${topResult.error.message}`,
+    };
+  }
+
+  // 4. Per-item processing
+  const rawChanges = topResult.data.changes;
+  const changes: NodeMarkdownPatch[] = [];
+
+  for (const item of rawChanges) {
+    // 4a. Per-item Zod safeParse — drop on failure
+    const itemResult = patchSchema.safeParse(item);
+    if (!itemResult.success) continue;
+
+    let patch = itemResult.data as NodeMarkdownPatch;
+
+    // 4b. Section must exist
+    const section = getDeliverySection(input.nodeId, patch.targetSectionKey);
+    if (!section) continue;
+
+    // 4c. patchKind must be allowed in the target section
+    if (!section.allowedPatchKinds.includes(patch.patchKind)) continue;
+
+    // 4d. markdown must be non-empty after trim
+    if (!patch.markdown.trim()) continue;
+
+    // 4e. markdown must NOT contain a heading line
+    if (/^#{1,6}\s/.test(patch.markdown)) continue;
+
+    // 4f. Evidence source rule: confirmed_fact with non-user source → assumption
+    if (patch.category === "confirmed_fact" && patch.evidence.source !== "user") {
+      patch = { ...patch, category: "assumption" };
+    }
+
+    // 4g. Quote substring rule: confirmed_fact with user source needs valid quote
+    if (patch.category === "confirmed_fact" && patch.evidence.source === "user") {
+      const quote = patch.evidence.quote.trim();
+      if (!quote || !input.userMessage.includes(quote)) {
+        patch = { ...patch, category: "assumption" };
+      }
+    }
+
+    // 4h. Category→section forced mapping
+    if (patch.category === "assumption") {
+      patch = {
+        ...patch,
+        targetSectionKey: "assumptions",
+        patchKind: "append_bullet",
+      };
+    } else if (patch.category === "open_question") {
+      patch = {
+        ...patch,
+        targetSectionKey: "open_questions",
+        patchKind: "append_bullet",
+      };
+    }
+    // confirmed_fact: keep the model's targetSectionKey
+
+    // 4i. Re-validate after mapping
+    const mappedSection = getDeliverySection(
+      input.nodeId,
+      patch.targetSectionKey,
+    );
+    if (!mappedSection) continue;
+    if (!mappedSection.allowedPatchKinds.includes(patch.patchKind)) continue;
+
+    changes.push(patch);
+  }
+
+  return { ok: true, decision: { changes } };
+}
