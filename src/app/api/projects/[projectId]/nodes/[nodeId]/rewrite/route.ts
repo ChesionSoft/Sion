@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
-import { ProjectStore } from "@/lib/project/store";
+import { NodeRevisionConflictError, ProjectStore } from "@/lib/project/store";
 import { streamNodeMarkdownRewrite, validateRewrittenNodeMarkdown } from "@/lib/project/agent-markdown";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
-import type { ReasoningEffort, WorkflowNodeId } from "@/lib/project/types";
+import type { ProjectNode, ReasoningEffort, WorkflowNodeId } from "@/lib/project/types";
 
 const REASONING_EFFORTS = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 
@@ -131,11 +131,11 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         );
         sendEvent({ type: "markdown_done", updatedNode });
       } catch (error) {
-        const conflictErr = error as { latestNode?: unknown; name?: string };
-        if (conflictErr.name === "NodeRevisionConflictError" && conflictErr.latestNode) {
+        if (error instanceof NodeRevisionConflictError) {
+          const latestNode: ProjectNode = error.latestNode;
           sendEvent({
             type: "markdown_conflict",
-            latestNode: conflictErr.latestNode,
+            latestNode,
             candidateMarkdown,
           });
         } else {
