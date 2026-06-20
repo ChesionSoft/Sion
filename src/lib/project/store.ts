@@ -290,8 +290,8 @@ export class ProjectStore {
     const dir = path.dirname(filePath);
     const base = path.basename(filePath);
     const tmp = path.join(dir, "." + base + "." + randomUUID() + ".tmp");
-    await this.fs.writeFile(tmp, JSON.stringify(value, null, 2) + "\n", "utf8");
     try {
+      await this.fs.writeFile(tmp, JSON.stringify(value, null, 2) + "\n", "utf8");
       await this.fs.rename(tmp, filePath);
     } catch (e) {
       await this.fs.unlink(tmp).catch(() => {});

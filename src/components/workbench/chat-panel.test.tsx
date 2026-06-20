@@ -344,7 +344,7 @@ describe("ChatPanel", () => {
     expect(await screen.findByText("这是最终回复。")).toBeInTheDocument();
   });
 
-  it("calls onGenStateChange with SSE events: checking then previewing_increment with patches", async () => {
+  it("publishes the complete patch batch only after the SSE done event", async () => {
     const user = userEvent.setup();
     const ctx = createMockSharedContext();
     const onGenStateChange = vi.fn();
@@ -371,29 +371,20 @@ describe("ChatPanel", () => {
       );
     });
 
-    // Check that onGenStateChange was called with previewing_increment (baseRevision)
+    // The animation receives one complete batch. Publishing an empty batch at
+    // markdown_start races with patch events that arrive in later network chunks.
     await waitFor(() => {
       expect(onGenStateChange).toHaveBeenCalledWith(
         expect.objectContaining({
           phase: "previewing_increment",
           baseRevision: 0,
+          patches: [
+            expect.objectContaining({ markdown: "第一批信息" }),
+            expect.objectContaining({ markdown: "第二批信息" }),
+          ],
         }),
       );
     });
-
-    // Check that patches accumulate (functional update)
-    // The first call with previewing_increment has empty patches
-    // Subsequent calls append patches via functional update
-    const previewCalls = onGenStateChange.mock.calls.filter(
-      (call: unknown[]) =>
-        typeof call[0] === "object" &&
-        call[0] !== null &&
-        "phase" in (call[0] as MarkdownGenerationState) &&
-        (call[0] as MarkdownGenerationState).phase === "previewing_increment",
-    );
-
-    // Should have at least 1 call (the initial transition with empty patches)
-    expect(previewCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("does NOT call onGenStateChange with idle or error after done event", async () => {

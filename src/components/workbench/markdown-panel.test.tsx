@@ -108,12 +108,12 @@ describe("MarkdownPanel", () => {
     });
   });
 
-  it("checking phase does not show status bar (no user-facing indicator)", () => {
+  it("checking phase shows feedback and locks editing actions", () => {
     renderPanel({ genState: { phase: "checking" } });
-    // Checking phase has no separate status bar — only the textarea is read-only
-    const textarea = screen.getByDisplayValue(/Known item/);
-    // textarea should be read-only (or have the attribute)
-    expect(textarea).toBeInTheDocument();
+    expect(screen.getByText("正在判断是否需要更新交付稿...")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/Known item/)).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: /保存当前节点交付稿/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "按规则重写交付稿" })).toBeDisabled();
   });
 
   it("shows animation status during previewing_increment", () => {
@@ -126,6 +126,7 @@ describe("MarkdownPanel", () => {
   it("shows submitting status during submitting_increment", () => {
     renderPanel({ genState: { phase: "submitting_increment" } });
     expect(screen.getByText("正在提交增量写入...")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "中断写入" })).not.toBeInTheDocument();
   });
 
   it("shows rewrite status during previewing_rewrite", () => {

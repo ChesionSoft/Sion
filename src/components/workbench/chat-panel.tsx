@@ -351,6 +351,8 @@ export function ChatPanel({
     const controller = new AbortController();
     abortControllerRef.current = controller;
     let textBuffer: ReturnType<typeof createStreamingTextBuffer> | null = null;
+    let pendingPatchRevision: number | null = null;
+    const pendingPatches: import("@/lib/project/types").NodeMarkdownPatch[] = [];
 
     try {
       const res = await fetch(`/api/projects/${projectId}/chat`, {
@@ -427,21 +429,19 @@ export function ChatPanel({
             } else if (type === "markdown_start") {
               const mode = event.mode as string;
               if (mode === "increment") {
-                onGenStateChangeRef.current({
-                  phase: "previewing_increment" as const,
-                  patches: [],
-                  baseRevision: event.baseRevision as number,
-                });
+                pendingPatchRevision = event.baseRevision as number;
               }
             } else if (type === "markdown_patch_preview") {
               const patch = event.patch as import("@/lib/project/types").NodeMarkdownPatch;
-              onGenStateChangeRef.current((prev) => {
-                if (prev.phase === "previewing_increment") {
-                  return { ...prev, patches: [...prev.patches, patch] };
-                }
-                return prev;
-              });
+              pendingPatches.push(patch);
             } else if (type === "done" && event.sessionId) {
+              if (pendingPatchRevision !== null && pendingPatches.length > 0) {
+                onGenStateChangeRef.current({
+                  phase: "previewing_increment",
+                  patches: [...pendingPatches],
+                  baseRevision: pendingPatchRevision,
+                });
+              }
               sharedContext.setActiveSessionId(event.sessionId as string);
               setSessions((current) =>
                 current.map((session) =>
@@ -451,8 +451,6 @@ export function ChatPanel({
                 ),
               );
               // Do NOT clear genState here — MarkdownPanel owns the increment lifecycle
-            } else if (type === "node_update_error" && event.error) {
-              setError(`Agent 回复已保存，但 Markdown 自动保存失败：${event.error as string}`);
             } else if (type === "markdown_error" && event.error) {
               setError(event.error as string);
               onGenStateChangeRef.current({ phase: "idle" });

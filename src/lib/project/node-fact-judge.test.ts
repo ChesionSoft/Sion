@@ -272,6 +272,21 @@ describe("judgeNodeFacts", () => {
     expect(callBody.reasoning_effort).toBe("low");
   });
 
+  it("sends the assistant response and table column contract to the judge", async () => {
+    const fetchImpl = makeFetchImpl(JSON.stringify({ changes: [] }));
+
+    await judgeNodeFacts({ ...BASE_INPUT, fetchImpl });
+
+    const callBody = JSON.parse(
+      (fetchImpl.mock.calls[0][1] as { body: string }).body,
+    ) as { messages: Array<{ role: string; content: string }> };
+    const prompt = callBody.messages.map((message) => message.content).join("\n");
+    expect(prompt).toContain(BASE_INPUT.assistantContent);
+    expect(prompt).toContain("tableColumns");
+    expect(prompt).toContain("字段");
+    expect(prompt).toContain("值");
+  });
+
   it("parses JSON inside ```json fence", async () => {
     const fetchImpl = makeFetchImpl("```json\n{\"changes\":[]}\n```");
 

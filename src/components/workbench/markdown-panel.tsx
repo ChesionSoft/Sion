@@ -436,7 +436,11 @@ export function MarkdownPanel({
     genState.phase === "previewing_rewrite";
 
   const canSave = !isGenActive && !savingMarkdown;
-  const rewriteDisabled = isGenActive || !sharedContext.providerId || !sharedContext.model;
+  const rewriteDisabled =
+    isGenActive ||
+    !sharedContext.activeSessionId ||
+    !sharedContext.providerId ||
+    !sharedContext.model;
 
   // Determine what to show in the textarea
   const textareaValue =
@@ -466,18 +470,22 @@ export function MarkdownPanel({
       </div>
 
       {/* Generation status bar */}
-      {(genState.phase === "previewing_increment" ||
+      {(genState.phase === "checking" ||
+        genState.phase === "previewing_increment" ||
         genState.phase === "submitting_increment" ||
         genState.phase === "previewing_rewrite") && (
         <div className="flex items-center justify-between border-b bg-muted/20 px-5 py-2">
           <span className="text-xs text-muted-foreground">
+            {genState.phase === "checking" && "正在判断是否需要更新交付稿..."}
             {genState.phase === "previewing_increment" && "正在动画展示增量写入..."}
             {genState.phase === "submitting_increment" && "正在提交增量写入..."}
             {genState.phase === "previewing_rewrite" && "按规则重写中..."}
           </span>
-          <Button onClick={interruptAnimation} size="sm" type="button" variant="outline">
-            中断写入
-          </Button>
+          {(genState.phase === "previewing_increment" || genState.phase === "previewing_rewrite") ? (
+            <Button onClick={interruptAnimation} size="sm" type="button" variant="outline">
+              中断写入
+            </Button>
+          ) : null}
         </div>
       )}
 

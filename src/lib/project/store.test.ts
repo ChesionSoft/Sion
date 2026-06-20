@@ -302,6 +302,24 @@ describe("ProjectStore", () => {
     expect(nodeFiles.filter((f) => f.startsWith("."))).toHaveLength(0);
   });
 
+  it("cleans up the temp path when writing the temp file fails", async () => {
+    const unlinkMock = vi.fn().mockResolvedValue(undefined);
+    const store = new ProjectStore(rootDir, {
+      readFile,
+      writeFile: vi.fn().mockRejectedValue(new Error("disk full")),
+      rename: vi.fn(),
+      unlink: unlinkMock,
+    });
+    const project = await new ProjectStore(rootDir).createProject({ name: "写失败清理" });
+
+    await expect(
+      store.updateProjectNodeIfRevision(project.id, "basic-info", 0, { markdown: "new" }),
+    ).rejects.toThrow("disk full");
+
+    expect(unlinkMock).toHaveBeenCalledTimes(1);
+    expect(String(unlinkMock.mock.calls[0][0])).toMatch(/\.tmp$/);
+  });
+
   it("returns lock count to 0 after 100 sequential writes to different node keys", async () => {
     const store = new ProjectStore(rootDir);
     const project = await store.createProject({ name: "Test", now: "2026-06-14T10:00:00.000Z" });

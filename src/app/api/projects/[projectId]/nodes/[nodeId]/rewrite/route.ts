@@ -23,11 +23,16 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   }
 
   const body = (await request.json()) as {
+    sessionId?: string;
     providerId?: string;
     model?: string;
     reasoningEffort?: ReasoningEffort;
     expectedRevision?: number;
   };
+
+  if (!body.sessionId) {
+    return NextResponse.json({ error: "请选择有效会话" }, { status: 400 });
+  }
 
   if (!body.providerId) {
     return NextResponse.json({ error: "请先配置并选择大模型" }, { status: 400 });
@@ -62,13 +67,12 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     .map((n) => n.markdown)
     .join("\n\n");
 
-  // Gather recent chat messages for context
-  const sessions = await projectStore.listSessions(projectId, nodeId);
-  const recentMessages: import("@/lib/project/types").ChatMessage[] = [];
-  for (const session of sessions.slice(0, 3)) {
-    const messages = await projectStore.getChatMessages(projectId, nodeId, session.id);
-    // Only include chat role messages (user/assistant)
-    recentMessages.push(...messages.filter((m) => m.role === "user" || m.role === "assistant"));
+  let recentMessages: import("@/lib/project/types").ChatMessage[];
+  try {
+    const messages = await projectStore.getChatMessages(projectId, nodeId, body.sessionId);
+    recentMessages = messages.filter((message) => message.role === "user" || message.role === "assistant");
+  } catch {
+    return NextResponse.json({ error: "会话不属于当前节点" }, { status: 400 });
   }
 
   const abortController = new AbortController();

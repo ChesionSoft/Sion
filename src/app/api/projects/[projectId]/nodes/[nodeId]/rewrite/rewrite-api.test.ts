@@ -14,7 +14,7 @@ async function setupProjectFixture() {
   const projectsDir = path.join(tmpDir, "projects", "test-project");
   const { mkdir } = await import("node:fs/promises");
   await mkdir(path.join(projectsDir, "nodes"), { recursive: true });
-  await mkdir(path.join(projectsDir, "chat", "basic-info", "sess-1"), { recursive: true });
+  await mkdir(path.join(projectsDir, "chat", "basic-info"), { recursive: true });
   await mkdir(path.join(projectsDir, "exports"), { recursive: true });
 
   const project = {
@@ -52,11 +52,15 @@ async function setupProjectFixture() {
     );
     // Create chat dir and session index
     await mkdir(path.join(projectsDir, "chat", nid), { recursive: true });
-    await writeFile(
-      path.join(projectsDir, "chat", nid, "sessions.json"),
-      JSON.stringify([]),
-      "utf8",
-    );
+    await writeFile(path.join(projectsDir, "chat", nid, "index.json"), JSON.stringify([{
+      id: "sess-1",
+      nodeId: nid,
+      name: "测试会话",
+      messageCount: 0,
+      createdAt: "2026-06-14T10:00:00.000Z",
+      updatedAt: "2026-06-14T10:00:00.000Z",
+    }]), "utf8");
+    await writeFile(path.join(projectsDir, "chat", nid, "sess-1.json"), JSON.stringify([]), "utf8");
   }
 
   // Set up model provider
@@ -101,7 +105,7 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/missing/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "mp-1", model: "m", expectedRevision: 0 }),
+        body: JSON.stringify({ sessionId: "sess-1", providerId: "mp-1", model: "m", expectedRevision: 0 }),
       }),
       { params: Promise.resolve({ projectId: "missing", nodeId: "basic-info" }) },
     );
@@ -114,7 +118,7 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/unknown/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "mp-1", model: "m", expectedRevision: 0 }),
+        body: JSON.stringify({ sessionId: "sess-1", providerId: "mp-1", model: "m", expectedRevision: 0 }),
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "unknown" }) },
     );
@@ -126,7 +130,7 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ model: "m", expectedRevision: 0 }),
+        body: JSON.stringify({ sessionId: "sess-1", model: "m", expectedRevision: 0 }),
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
     );
@@ -138,7 +142,7 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "mp-1", expectedRevision: 0 }),
+        body: JSON.stringify({ sessionId: "sess-1", providerId: "mp-1", expectedRevision: 0 }),
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
     );
@@ -150,11 +154,90 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "mp-1", model: "m" }),
+        body: JSON.stringify({ sessionId: "sess-1", providerId: "mp-1", model: "m" }),
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
     );
     expect(response.status).toBe(400);
+  });
+
+  it("returns 400 when sessionId is missing", async () => {
+    await setupProjectFixture();
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
+        method: "POST",
+        body: JSON.stringify({ providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("uses only the requested node session as rewrite chat context", async () => {
+    await setupProjectFixture();
+    const store = new ProjectStore();
+    const selected = await store.createSession("test-project", "basic-info", "2026-06-14T11:00:00.000Z");
+    const other = await store.createSession("test-project", "basic-info", "2026-06-14T12:00:00.000Z");
+    await store.appendChatMessage("test-project", "basic-info", {
+      id: "selected-message",
+      role: "user",
+      content: "只属于选中会话的结论",
+      createdAt: "2026-06-14T11:01:00.000Z",
+    }, selected.id);
+    await store.appendChatMessage("test-project", "basic-info", {
+      id: "other-message",
+      role: "user",
+      content: "不应进入提示词的其他会话",
+      createdAt: "2026-06-14T12:01:00.000Z",
+    }, other.id);
+
+    const validContent = [
+      "# 项目基本信息",
+      "## 已确认内容",
+      "内容",
+      "## 基础信息表",
+      "| 字段 | 值 |",
+      "| --- | --- |",
+      "| 名称 | 测试 |",
+      "## 项目边界",
+      "内容",
+      "## 设计假设",
+      "- 暂无。",
+      "## 待确认问题",
+      "- 暂无。",
+    ].join("\n\n");
+    let llmRequestBody = "";
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init?: RequestInit) => {
+      llmRequestBody = String(init?.body ?? "");
+      const encoder = new TextEncoder();
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: validContent } }] })}\n\n`));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          },
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
+        method: "POST",
+        body: JSON.stringify({
+          sessionId: selected.id,
+          providerId: "mp-1",
+          model: "test-model",
+          expectedRevision: 0,
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
+    );
+    await response.text();
+
+    expect(llmRequestBody).toContain("只属于选中会话的结论");
+    expect(llmRequestBody).not.toContain("不应进入提示词的其他会话");
   });
 
   it("returns 400 when provider does not exist", async () => {
@@ -162,7 +245,7 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "nonexistent", model: "m", expectedRevision: 0 }),
+        body: JSON.stringify({ sessionId: "sess-1", providerId: "nonexistent", model: "m", expectedRevision: 0 }),
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
     );
@@ -221,7 +304,7 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
+        body: JSON.stringify({ sessionId: "sess-1", providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
     );
@@ -315,7 +398,7 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
+        body: JSON.stringify({ sessionId: "sess-1", providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
     );
@@ -400,7 +483,7 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
+        body: JSON.stringify({ sessionId: "sess-1", providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
     );
@@ -453,7 +536,7 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
+        body: JSON.stringify({ sessionId: "sess-1", providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },
     );
@@ -522,7 +605,7 @@ describe("rewrite API", () => {
     const response = await POST(
       new Request("http://localhost/api/projects/test-project/nodes/basic-info/rewrite", {
         method: "POST",
-        body: JSON.stringify({ providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
+        body: JSON.stringify({ sessionId: "sess-1", providerId: "mp-1", model: "test-model", expectedRevision: 0 }),
         signal: abortController.signal,
       }),
       { params: Promise.resolve({ projectId: "test-project", nodeId: "basic-info" }) },

@@ -51,7 +51,7 @@ function buildSystemPrompt(nodeId: WorkflowNodeId): string {
   const sectionsList = schema.sections
     .map(
       (s) =>
-        `- sectionKey: "${s.key}", heading: "${s.heading}", allowedPatchKinds: [${s.allowedPatchKinds.map((k) => `"${k}"`).join(", ")}]`,
+        `- sectionKey: "${s.key}", heading: "${s.heading}", allowedPatchKinds: [${s.allowedPatchKinds.map((k) => `"${k}"`).join(", ")}]${s.tableColumns ? `, tableColumns: [${s.tableColumns.map((column) => `"${column}"`).join(", ")}]` : ""}`,
     )
     .join("\n");
 
@@ -90,7 +90,16 @@ export async function judgeNodeFacts(
       reasoningEffort: "low",
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: input.userMessage },
+        {
+          role: "user",
+          content: [
+            "## User message",
+            input.userMessage,
+            "",
+            "## Assistant response",
+            input.assistantContent,
+          ].join("\n"),
+        },
       ],
       fetchImpl: input.fetchImpl,
       signal: input.signal,
