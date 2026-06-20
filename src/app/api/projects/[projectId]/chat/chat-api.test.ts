@@ -263,6 +263,13 @@ describe("chat API", () => {
     expect(types).not.toContain("markdown_start");
     expect(types).not.toContain("markdown_patch_preview");
 
+    // Strict event ordering: token* -> markdown_check_start -> markdown_unchanged -> done
+    expect(types.indexOf("markdown_check_start")).toBeGreaterThan(0);
+    expect(types.indexOf("markdown_check_start")).toBeLessThan(types.indexOf("markdown_unchanged"));
+    expect(types.indexOf("markdown_unchanged")).toBeLessThan(types.indexOf("done"));
+    expect(types.filter((t) => t === "done")).toHaveLength(1);
+    expect(types.indexOf("done")).toBe(types.length - 1);
+
     const doneEvent = events.find((e) => e.type === "done");
     expect(doneEvent).toBeDefined();
     expect(typeof doneEvent!.sessionId).toBe("string");
@@ -317,6 +324,17 @@ describe("chat API", () => {
     expect(types).toContain("markdown_patch_preview");
     expect(types).toContain("done");
 
+    // Strict event ordering: token* -> markdown_check_start -> markdown_start -> markdown_patch_preview -> done
+    expect(types.indexOf("markdown_check_start")).toBeGreaterThan(0);
+    expect(types.indexOf("markdown_check_start")).toBeLessThan(types.indexOf("markdown_start"));
+    expect(types.indexOf("markdown_start")).toBeLessThan(types.indexOf("markdown_patch_preview"));
+    // There could be multiple patch_preview events; ensure at least one comes before done
+    const firstPatchIdx = types.indexOf("markdown_patch_preview");
+    expect(firstPatchIdx).toBeGreaterThanOrEqual(0);
+    expect(firstPatchIdx).toBeLessThan(types.indexOf("done"));
+    expect(types.filter((t) => t === "done")).toHaveLength(1);
+    expect(types.indexOf("done")).toBe(types.length - 1);
+
     const startEvent = events.find((e) => e.type === "markdown_start");
     expect(startEvent!.mode).toBe("increment");
     expect(startEvent!.baseRevision).toBe(0); // matches fixture node revision
@@ -362,6 +380,13 @@ describe("chat API", () => {
     expect(types).toContain("done");
     expect(types).not.toContain("markdown_start");
     expect(types).not.toContain("markdown_patch_preview");
+
+    // Strict event ordering: token* -> markdown_check_start -> markdown_unchanged(with warning) -> done
+    expect(types.indexOf("markdown_check_start")).toBeGreaterThan(0);
+    expect(types.indexOf("markdown_check_start")).toBeLessThan(types.indexOf("markdown_unchanged"));
+    expect(types.indexOf("markdown_unchanged")).toBeLessThan(types.indexOf("done"));
+    expect(types.filter((t) => t === "done")).toHaveLength(1);
+    expect(types.indexOf("done")).toBe(types.length - 1);
 
     const unchangedEvent = events.find((e) => e.type === "markdown_unchanged");
     expect(unchangedEvent!.warning).toBe("judge failed");
@@ -414,6 +439,94 @@ describe("chat API", () => {
     const nodes = await store.getProjectNodes("test-project");
     const node = nodes.find((n) => n.id === "feature-design");
     expect(node?.revision).toBe(0);
+  });
+
+  it("handles abort during streaming: no patch preview, no node write", async () => {
+    const requestAbortController = new AbortController();
+    const encoder = new TextEncoder();
+
+    // Override fetch with a stream that hangs after 2 chunks, reacting to abort signal
+    globalThis.fetch = vi.fn().mockImplementation(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"先判断节点目标。"}}]}\n\n'));
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"已更新"}}]}\n\n'));
+        },
+        pull(controller) {
+          return new Promise<void>((resolve) => {
+            if (signal?.aborted) {
+              controller.error(new DOMException("Aborted", "AbortError"));
+              resolve();
+              return;
+            }
+            signal?.addEventListener(
+              "abort",
+              () => {
+                controller.error(new DOMException("Aborted", "AbortError"));
+                resolve();
+              },
+              { once: true },
+            );
+          });
+        },
+      });
+
+      return { ok: true, body };
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "优化功能设计",
+          providerId: "mp-1",
+          model: "test-model",
+        }),
+        signal: requestAbortController.signal,
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    expect(response.status).toBe(200);
+
+    // Read SSE events, abort after seeing at least one token
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const events: Array<Record<string, unknown>> = [];
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) continue;
+        events.push(JSON.parse(trimmed.slice(6)) as Record<string, unknown>);
+      }
+      if (events.some((e) => e.type === "token")) {
+        requestAbortController.abort();
+      }
+    }
+
+    // No patch preview — interrupt happened before judge
+    const eventTypes = events.map((e) => e.type);
+    expect(eventTypes).not.toContain("markdown_patch_preview");
+    // No done event — client disconnected mid-stream
+    expect(eventTypes).not.toContain("done");
+    // We did see the streamed tokens before abort
+    expect(eventTypes).toContain("reasoning");
+    expect(eventTypes).toContain("token");
+
+    // Node disk revision unchanged — no node write
+    const store = new ProjectStore();
+    const rev = await getNodeRevision(store, "test-project", "feature-design");
+    expect(rev).toBe(0);
   });
 
   it("returns 404 for an invalid chat session", async () => {
