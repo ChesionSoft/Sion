@@ -1,9 +1,4 @@
-import type { WorkflowNodeId } from "./types";
-
-/**
- * The kinds of patches that can be applied to a delivery section.
- */
-export type PatchKind = "append_bullet" | "append_block" | "append_table_row";
+import type { PatchKind, WorkflowNodeId } from "./types";
 
 /**
  * Describes a single section within a workflow node's delivery document.

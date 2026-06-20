@@ -1,5 +1,7 @@
 export type NodeStatus = "not_started" | "draft" | "generated" | "confirmed" | "needs_confirmation";
 
+export type PatchKind = "append_bullet" | "append_block" | "append_table_row";
+
 export type WorkflowNodeId =
   | "basic-info"
   | "goals"
