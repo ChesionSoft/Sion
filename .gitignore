@@ -36,7 +36,6 @@
 
 # dotfiles (local config)
 .*
-!.env.example
 !.gitignore
 
 # debug
@@ -45,9 +44,8 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files
 .env*
-!.env.example
 
 # vercel
 .vercel
