@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
-import type { ApiUrlMode, ModelEntry } from "@/lib/project/types";
+import type { ApiUrlMode, ModelEntry, ModelProviderProtocol } from "@/lib/project/types";
 
 const store = new ModelProviderStore();
 
@@ -13,6 +13,7 @@ export async function POST(request: Request) {
     name?: string;
     apiBaseUrl?: string;
     apiUrlMode?: ApiUrlMode;
+    protocol?: ModelProviderProtocol;
     apiKey?: string;
     models?: ModelEntry[];
     isDefault?: boolean;
@@ -23,6 +24,7 @@ export async function POST(request: Request) {
       name: body.name ?? "",
       apiBaseUrl: body.apiBaseUrl ?? "",
       apiUrlMode: body.apiUrlMode,
+      protocol: body.protocol,
       apiKey: body.apiKey ?? "",
       models: body.models ?? [],
       isDefault: body.isDefault,

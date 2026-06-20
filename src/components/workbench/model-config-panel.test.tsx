@@ -142,4 +142,70 @@ describe("ModelConfigPanel", () => {
       }),
     );
   });
+
+  it("submits OpenAI Responses protocol when creating a provider", async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings/model-providers" && !init) {
+        return new Response(JSON.stringify({ providers: [] }));
+      }
+
+      if (url === "/api/settings/model-providers" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            provider: {
+              id: "mp-1",
+              name: "OpenAI Responses",
+              apiBaseUrl: "https://api.openai.com",
+              apiUrlMode: "base",
+              apiKey: "secret",
+              protocol: "openai_responses",
+              models: [{ name: "gpt-5", isDefault: true }],
+              isDefault: true,
+              createdAt: "2026-06-21T00:00:00.000Z",
+              updatedAt: "2026-06-21T00:00:00.000Z",
+            },
+          }),
+          { status: 201 },
+        );
+      }
+
+      return new Response(JSON.stringify({ providers: [] }));
+    }) as typeof fetch;
+
+    const user = userEvent.setup();
+    render(<ModelConfigPanel />);
+
+    await user.click(await screen.findByRole("button", { name: /添加模型提供商/ }));
+    await user.selectOptions(screen.getByLabelText("API 协议"), "openai_responses");
+    expect(screen.getByText("系统会自动补全 /v1/responses。")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("提供商名称"), "OpenAI Responses");
+    await user.type(screen.getByLabelText("API Base URL"), "https://api.openai.com");
+    await user.type(screen.getByLabelText("API Key"), "secret");
+    await user.type(screen.getByPlaceholderText(/gpt-4\.1/), "gpt-5");
+    await user.click(screen.getByRole("button", { name: /保存配置/ }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "/api/settings/model-providers",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.any(String),
+        }),
+      );
+    });
+
+    const postCall = vi.mocked(globalThis.fetch).mock.calls.find(
+      ([url, init]) => String(url) === "/api/settings/model-providers" && init?.method === "POST",
+    );
+    expect(JSON.parse(String(postCall?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        name: "OpenAI Responses",
+        apiBaseUrl: "https://api.openai.com",
+        apiUrlMode: "base",
+        protocol: "openai_responses",
+        apiKey: "secret",
+      }),
+    );
+  });
 });

@@ -19,6 +19,7 @@ const defaultProviders: ModelProvider[] = [
     name: "OpenAI",
     apiBaseUrl: "https://api.example.com",
     apiKey: "secret",
+    protocol: "chat_completions",
     models: [
       { name: "GPT-5.5", isDefault: true },
       { name: "GPT-5.4" },

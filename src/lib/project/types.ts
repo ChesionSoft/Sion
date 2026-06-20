@@ -82,12 +82,15 @@ export type ModelEntry = {
   isDefault?: boolean;
 };
 
+export type ModelProviderProtocol = "chat_completions" | "openai_responses";
+
 export type ModelProvider = {
   id: string;
   name: string;
   apiBaseUrl: string;
   apiUrlMode?: ApiUrlMode;
   apiKey: string;
+  protocol: ModelProviderProtocol;
   models: ModelEntry[];
   isDefault: boolean;
   createdAt: string;

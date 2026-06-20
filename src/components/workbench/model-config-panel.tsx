@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import type { ApiUrlMode, ContextLength, ModelEntry, ModelProvider } from "@/lib/project/types";
+import type { ApiUrlMode, ContextLength, ModelEntry, ModelProvider, ModelProviderProtocol } from "@/lib/project/types";
 
 const CONTEXT_LENGTH_OPTIONS: Array<{ value: ContextLength | undefined; label: string }> = [
   { value: undefined, label: "不填" },
@@ -62,6 +62,7 @@ export function ModelConfigPanel() {
     name: string;
     apiBaseUrl: string;
     apiUrlMode: ApiUrlMode;
+    protocol: ModelProviderProtocol;
     apiKey: string;
     models: ModelEntry[];
   }) {
@@ -119,9 +120,12 @@ export function ModelConfigPanel() {
                     {provider.isDefault ? (
                       <Badge variant="secondary">默认</Badge>
                     ) : null}
+                    {provider.protocol === "openai_responses" ? (
+                      <Badge variant="outline">Responses</Badge>
+                    ) : null}
                   </div>
                   <p className="truncate text-xs text-muted-foreground">
-                    {provider.apiUrlMode === "full" ? "完整 API 链接" : "系统填充"} &middot; {provider.apiBaseUrl} &middot; {provider.models.length} 个模型
+                    {provider.protocol === "openai_responses" ? "OpenAI Responses" : "Chat Completions"} &middot; {provider.apiUrlMode === "full" ? "完整 API 链接" : "系统填充"} &middot; {provider.apiBaseUrl} &middot; {provider.models.length} 个模型
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
@@ -262,11 +266,12 @@ function AddProviderDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  onSave: (input: { name: string; apiBaseUrl: string; apiUrlMode: ApiUrlMode; apiKey: string; models: ModelEntry[] }) => void;
+  onSave: (input: { name: string; apiBaseUrl: string; apiUrlMode: ApiUrlMode; protocol: ModelProviderProtocol; apiKey: string; models: ModelEntry[] }) => void;
 }) {
   const [name, setName] = useState("");
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [apiUrlMode, setApiUrlMode] = useState<ApiUrlMode>("base");
+  const [protocol, setProtocol] = useState<ModelProviderProtocol>("chat_completions");
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<ModelEntry[]>([{ name: "", isDefault: true }]);
   const [error, setError] = useState("");
@@ -278,10 +283,16 @@ function AddProviderDialog({
     if (!apiKey.trim()) { setError("API Key 不能为空"); return; }
     if (models.length === 0 || models.every((m) => !m.name.trim())) { setError("至少需要一个模型名称"); return; }
     if (models.some((m) => m.name.trim() === "")) { setError("模型名称不能为空"); return; }
-    onSave({ name, apiBaseUrl, apiUrlMode, apiKey, models });
+    onSave({ name, apiBaseUrl, apiUrlMode, protocol, apiKey, models });
   }
 
   if (!open) return null;
+
+  const baseUrlHint = apiUrlMode === "full"
+    ? "系统会直接请求这个完整接口。"
+    : protocol === "openai_responses"
+      ? "系统会自动补全 /v1/responses。"
+      : "系统会自动补全 /v1/chat/completions。";
 
   return (
     <Dialog onOpenChange={(open) => { if (!open) onClose(); }} open={open}>
@@ -296,6 +307,18 @@ function AddProviderDialog({
           <div className="flex flex-col gap-2">
             <Label htmlFor="mp-name">提供商名称</Label>
             <Input id="mp-name" onChange={(e) => setName(e.target.value)} value={name} />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="mp-protocol">API 协议</Label>
+            <select
+              className="h-9 rounded-md border bg-background px-2 text-sm"
+              id="mp-protocol"
+              onChange={(e) => setProtocol(e.target.value as ModelProviderProtocol)}
+              value={protocol}
+            >
+              <option value="chat_completions">OpenAI-compatible Chat Completions</option>
+              <option value="openai_responses">OpenAI Responses（支持原生联网）</option>
+            </select>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="mp-url-mode">API 链接模式</Label>
@@ -313,7 +336,7 @@ function AddProviderDialog({
             <Label htmlFor="mp-url">{apiUrlMode === "full" ? "完整 API URL" : "API Base URL"}</Label>
             <Input id="mp-url" onChange={(e) => setApiBaseUrl(e.target.value)} value={apiBaseUrl} />
             <p className="text-xs text-muted-foreground">
-              {apiUrlMode === "full" ? "系统会直接请求这个完整接口。" : "系统会自动补全 /v1/chat/completions。"}
+              {baseUrlHint}
             </p>
           </div>
           <div className="flex flex-col gap-2">
@@ -381,6 +404,18 @@ function EditProviderDialog({
             />
           </div>
           <div className="flex flex-col gap-2">
+            <Label htmlFor="edit-protocol">API 协议</Label>
+            <select
+              className="h-9 rounded-md border bg-background px-2 text-sm"
+              id="edit-protocol"
+              onChange={(e) => setProvider({ ...provider, protocol: e.target.value as ModelProviderProtocol })}
+              value={provider.protocol ?? "chat_completions"}
+            >
+              <option value="chat_completions">OpenAI-compatible Chat Completions</option>
+              <option value="openai_responses">OpenAI Responses（支持原生联网）</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-2">
             <Label htmlFor="edit-url-mode">API 链接模式</Label>
             <select
               className="h-9 rounded-md border bg-background px-2 text-sm"
@@ -400,7 +435,11 @@ function EditProviderDialog({
               value={provider.apiBaseUrl}
             />
             <p className="text-xs text-muted-foreground">
-              {provider.apiUrlMode === "full" ? "系统会直接请求这个完整接口。" : "系统会自动补全 /v1/chat/completions。"}
+              {provider.apiUrlMode === "full"
+                ? "系统会直接请求这个完整接口。"
+                : (provider.protocol ?? "chat_completions") === "openai_responses"
+                  ? "系统会自动补全 /v1/responses。"
+                  : "系统会自动补全 /v1/chat/completions。"}
             </p>
           </div>
           <div className="flex flex-col gap-2">

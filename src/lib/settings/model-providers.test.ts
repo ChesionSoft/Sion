@@ -203,4 +203,69 @@ describe("ModelProviderStore", () => {
       { name: "gpt-4o-mini", isDefault: true },
     ]);
   });
+
+  it("migrates a provider without protocol to chat_completions", async () => {
+    const filePath = path.join(settingsDir, "model-providers.json");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(settingsDir, { recursive: true });
+    await writeFile(filePath, JSON.stringify([
+      {
+        id: "legacy-id",
+        name: "Legacy",
+        apiBaseUrl: "https://api.legacy.com/v1",
+        apiKey: "sk-legacy",
+        models: [{ name: "gpt-4o", isDefault: true }],
+        isDefault: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]));
+
+    const store = new ModelProviderStore(settingsDir);
+    const providers = await store.listProviders();
+    expect(providers).toHaveLength(1);
+    expect(providers[0].protocol).toBe("chat_completions");
+  });
+
+  it("persists an OpenAI Responses provider", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    const provider = await store.createProvider({
+      name: "OpenAI Responses",
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "secret",
+      protocol: "openai_responses",
+      models: [{ name: "gpt-5", isDefault: true }],
+    });
+    expect(provider.protocol).toBe("openai_responses");
+
+    const providers = await store.listProviders();
+    expect(providers[0].protocol).toBe("openai_responses");
+  });
+
+  it("rejects an unknown provider protocol", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    await expect(
+      store.createProvider({
+        name: "OpenAI",
+        apiBaseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test",
+        protocol: "other" as never,
+        models: [{ name: "gpt-4o", isDefault: true }],
+      }),
+    ).rejects.toThrow("不支持的 API 协议");
+  });
+
+  it("updates provider protocol", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    const created = await store.createProvider({
+      name: "OpenAI",
+      apiBaseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      models: [{ name: "gpt-4o", isDefault: true }],
+    });
+    expect(created.protocol).toBe("chat_completions");
+
+    const updated = await store.updateProvider(created.id, { protocol: "openai_responses" });
+    expect(updated.protocol).toBe("openai_responses");
+  });
 });

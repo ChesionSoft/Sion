@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ApiUrlMode, ModelEntry, ModelProvider } from "@/lib/project/types";
+import type { ApiUrlMode, ModelEntry, ModelProvider, ModelProviderProtocol } from "@/lib/project/types";
 
 export type CreateModelProviderInput = {
   name: string;
   apiBaseUrl: string;
   apiUrlMode?: ApiUrlMode;
   apiKey: string;
+  protocol?: ModelProviderProtocol;
   models: ModelEntry[];
   isDefault?: boolean;
 };
@@ -59,6 +60,7 @@ export class ModelProviderStore {
       apiBaseUrl: input.apiBaseUrl.trim(),
       apiUrlMode: normalizeApiUrlMode(input.apiUrlMode),
       apiKey: input.apiKey.trim(),
+      protocol: normalizeProtocol(input.protocol),
       models,
       isDefault: input.isDefault ?? (providers.length === 0),
       createdAt: now,
@@ -88,6 +90,7 @@ export class ModelProviderStore {
       apiBaseUrl: input.apiBaseUrl?.trim() ?? current.apiBaseUrl,
       apiUrlMode: normalizeApiUrlMode(input.apiUrlMode ?? current.apiUrlMode),
       apiKey: input.apiKey?.trim() ?? current.apiKey,
+      protocol: input.protocol ? normalizeProtocol(input.protocol) : current.protocol,
       models: input.models ?? current.models,
       updatedAt: new Date().toISOString(),
     };
@@ -169,6 +172,7 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
 
 function migrateProvider(raw: Record<string, unknown>): ModelProvider {
   raw.apiUrlMode = normalizeApiUrlMode(raw.apiUrlMode);
+  raw.protocol = normalizeProtocol(raw.protocol);
   const models = raw.models;
   if (Array.isArray(models) && models.length > 0 && typeof models[0] === "string") {
     raw.models = (models as string[]).map((name: string, i: number) => ({
@@ -187,4 +191,10 @@ function migrateProvider(raw: Record<string, unknown>): ModelProvider {
 
 function normalizeApiUrlMode(value: unknown): ApiUrlMode {
   return value === "full" ? "full" : "base";
+}
+
+function normalizeProtocol(value: unknown): ModelProviderProtocol {
+  if (value === undefined) return "chat_completions";
+  if (value === "chat_completions" || value === "openai_responses") return value;
+  throw new ValidationError("不支持的 API 协议");
 }

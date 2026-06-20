@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
-import type { ApiUrlMode, ModelEntry } from "@/lib/project/types";
+import type { ApiUrlMode, ModelEntry, ModelProviderProtocol } from "@/lib/project/types";
 
 const store = new ModelProviderStore();
 
@@ -10,6 +10,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ provi
     name?: string;
     apiBaseUrl?: string;
     apiUrlMode?: ApiUrlMode;
+    protocol?: ModelProviderProtocol;
     apiKey?: string;
     models?: ModelEntry[];
     isDefault?: boolean;
