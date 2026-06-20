@@ -115,3 +115,16 @@ export type AgentOverrideSetting = {
   customRulePath?: string;
   updatedAt: string;
 };
+
+export type FactCategory = "confirmed_fact" | "assumption" | "open_question";
+
+export type NodeMarkdownPatch = {
+  category: FactCategory;
+  targetSectionKey: string;
+  patchKind: PatchKind;
+  markdown: string;
+  evidence: {
+    source: "user" | "assistant";
+    quote: string;
+  };
+};
