@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ProjectStore } from "./store";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getNodeWriteLockCount, NodeRevisionConflictError, ProjectStore } from "./store";
 import { ProjectIdError } from "./paths";
 
 let rootDir: string;
@@ -201,6 +201,123 @@ describe("ProjectStore", () => {
     const nodes = await store.getProjectNodes(project.id);
     expect(nodes).toHaveLength(11);
     expect(nodes.find((node) => node.id === "feature-design")).toBeUndefined();
+  });
+
+  it("writes successfully when expected revision matches and increments revision", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "Test", now: "2026-06-14T10:00:00.000Z" });
+
+    const result = await store.updateProjectNodeIfRevision(project.id, "basic-info", 0, {
+      markdown: "# Updated",
+      status: "draft",
+    });
+
+    expect(result.revision).toBe(1);
+    expect(result.markdown).toBe("# Updated");
+    expect(result.status).toBe("draft");
+
+    // Verify on disk
+    const nodes = await store.getProjectNodes(project.id);
+    const node = nodes.find((n) => n.id === "basic-info")!;
+    expect(node.revision).toBe(1);
+  });
+
+  it("throws NodeRevisionConflictError with latestNode when revision is stale", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "Test", now: "2026-06-14T10:00:00.000Z" });
+
+    // First write bumps revision to 1
+    await store.updateProjectNodeIfRevision(project.id, "basic-info", 0, { markdown: "# v1" });
+
+    // Try with stale revision 0
+    let error: unknown;
+    try {
+      await store.updateProjectNodeIfRevision(project.id, "basic-info", 0, { markdown: "# v2 stale" });
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(NodeRevisionConflictError);
+    expect((error as NodeRevisionConflictError).latestNode.revision).toBe(1);
+  });
+
+  it("only one of two concurrent revision 0 writes succeeds", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "Test", now: "2026-06-14T10:00:00.000Z" });
+
+    const results = await Promise.allSettled([
+      store.updateProjectNodeIfRevision(project.id, "basic-info", 0, { markdown: "# A" }),
+      store.updateProjectNodeIfRevision(project.id, "basic-info", 0, { markdown: "# B" }),
+    ]);
+
+    const successes = results.filter((r) => r.status === "fulfilled");
+    const failures = results.filter((r) => r.status === "rejected");
+
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect((failures[0] as PromiseRejectedResult).reason).toBeInstanceOf(NodeRevisionConflictError);
+  });
+
+  it("does not include expectedRevision in the written JSON", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "Test", now: "2026-06-14T10:00:00.000Z" });
+
+    await store.updateProjectNodeIfRevision(project.id, "basic-info", 0, { markdown: "# Updated" });
+
+    const raw = JSON.parse(
+      await readFile(path.join(rootDir, project.id, "nodes", "basic-info.json"), "utf8"),
+    );
+    expect(raw.expectedRevision).toBeUndefined();
+    expect(raw.revision).toBe(1);
+  });
+
+  it("preserves original node content and cleans up temp file when rename fails", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "Test", now: "2026-06-14T10:00:00.000Z" });
+
+    const originalContent = await readFile(
+      path.join(rootDir, project.id, "nodes", "basic-info.json"),
+      "utf8",
+    );
+
+    const realFs = { readFile, writeFile, rename: undefined as never, unlink };
+    const failingFs = {
+      ...realFs,
+      rename: vi.fn().mockRejectedValue(new Error("rename failed")),
+    };
+    const failingStore = new ProjectStore(rootDir, failingFs);
+
+    await expect(
+      failingStore.updateProjectNodeIfRevision(project.id, "basic-info", 0, { markdown: "# Should fail" }),
+    ).rejects.toThrow("rename failed");
+
+    // Original content unchanged
+    const afterContent = await readFile(
+      path.join(rootDir, project.id, "nodes", "basic-info.json"),
+      "utf8",
+    );
+    expect(afterContent).toBe(originalContent);
+
+    // No temp files remain
+    const nodeFiles = await readdir(path.join(rootDir, project.id, "nodes"));
+    expect(nodeFiles.filter((f) => f.startsWith("."))).toHaveLength(0);
+  });
+
+  it("returns lock count to 0 after 100 sequential writes to different node keys", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "Test", now: "2026-06-14T10:00:00.000Z" });
+
+    const nodeIds: import("./types").WorkflowNodeId[] = [
+      "basic-info", "goals", "roles-permissions", "business-flow",
+      "feature-design", "page-interaction", "data-structure", "api-design",
+      "architecture-deployment", "development-tasks", "risks-open-questions", "final-export",
+    ];
+
+    for (let i = 0; i < 100; i++) {
+      const nodeId = nodeIds[i % nodeIds.length];
+      await store.updateProjectNode(project.id, nodeId, { markdown: `# Write ${i}` });
+    }
+
+    expect(getNodeWriteLockCount()).toBe(0);
   });
 
   it("migrates legacy node JSON with assumptions/openQuestions arrays and no revision", async () => {

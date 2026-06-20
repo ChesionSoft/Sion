@@ -1,11 +1,44 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createDefaultProject, createDefaultProjectNodes } from "./defaults";
 import { mergeLegacyNodeListsIntoMarkdown } from "./node-markdown-content";
 import { WORKFLOW_NODES, isWorkflowNodeId } from "./nodes";
 import { assertSafeProjectId, ProjectIdError } from "./paths";
 import type { ChatMessage, ChatSession, Project, ProjectNode, WorkflowNodeId } from "./types";
+
+export type StoreFs = Pick<
+  typeof import("node:fs/promises"),
+  "readFile" | "writeFile" | "rename" | "unlink"
+>;
+
+export class NodeRevisionConflictError extends Error {
+  constructor(public readonly latestNode: ProjectNode) {
+    super("revision conflict");
+    this.name = "NodeRevisionConflictError";
+  }
+}
+
+const nodeWriteLocks = new Map<string, Promise<unknown>>();
+
+export function getNodeWriteLockCount(): number {
+  return nodeWriteLocks.size;
+}
+
+function withNodeLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = nodeWriteLocks.get(key) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  nodeWriteLocks.set(key, next);
+  next.then(
+    () => {
+      if (nodeWriteLocks.get(key) === next) nodeWriteLocks.delete(key);
+    },
+    () => {
+      if (nodeWriteLocks.get(key) === next) nodeWriteLocks.delete(key);
+    },
+  );
+  return next;
+}
 
 export type CreateProjectInput = {
   name: string;
@@ -15,7 +48,14 @@ export type CreateProjectInput = {
 };
 
 export class ProjectStore {
-  constructor(private readonly rootDir = path.join(process.cwd(), "projects")) {}
+  private readonly fs: StoreFs;
+
+  constructor(
+    private readonly rootDir = path.join(process.cwd(), "projects"),
+    fsImpl?: StoreFs,
+  ) {
+    this.fs = fsImpl ?? { readFile, writeFile, rename, unlink };
+  }
 
   async listProjects(): Promise<Project[]> {
     await mkdir(this.rootDir, { recursive: true });
@@ -81,16 +121,47 @@ export class ProjectStore {
       throw new Error(`Unknown workflow node: ${nodeId}`);
     }
 
-    const current = await this.readProjectNode(projectId, nodeId);
-    const next: ProjectNode = {
-      ...current,
-      ...patch,
-      id: nodeId,
-      updatedAt: patch.updatedAt ?? new Date().toISOString(),
-    };
+    const lockKey = `${projectId}:${nodeId}`;
+    return withNodeLock(lockKey, async () => {
+      const current = await this.readProjectNode(projectId, nodeId);
+      const next: ProjectNode = {
+        ...current,
+        ...patch,
+        id: nodeId,
+        revision: current.revision + 1,
+        updatedAt: patch.updatedAt ?? new Date().toISOString(),
+      };
+      await this.atomicWriteJson(this.nodePath(projectId, nodeId), next);
+      return next;
+    });
+  }
 
-    await writeJson(this.nodePath(projectId, nodeId), next);
-    return next;
+  async updateProjectNodeIfRevision(
+    projectId: string,
+    nodeId: WorkflowNodeId,
+    expectedRevision: number,
+    patch: Partial<Omit<ProjectNode, "id" | "revision">>,
+  ): Promise<ProjectNode> {
+    if (!isWorkflowNodeId(nodeId)) {
+      throw new Error(`Unknown workflow node: ${nodeId}`);
+    }
+
+    const lockKey = `${projectId}:${nodeId}`;
+    return withNodeLock(lockKey, async () => {
+      const current = await this.readProjectNode(projectId, nodeId);
+      if (current.revision !== expectedRevision) {
+        throw new NodeRevisionConflictError(current);
+      }
+      const next: ProjectNode = {
+        ...current,
+        ...patch,
+        id: nodeId,
+        revision: current.revision + 1,
+        updatedAt: patch.updatedAt ?? new Date().toISOString(),
+      };
+      await this.atomicWriteJson(this.nodePath(projectId, nodeId), next);
+      return next;
+    });
   }
 
   async createSession(projectId: string, nodeId: WorkflowNodeId, now = new Date().toISOString()): Promise<ChatSession> {
@@ -193,7 +264,9 @@ export class ProjectStore {
    * - Returns only the new shape `ProjectNode` (no array fields).
    */
   private async readProjectNode(projectId: string, nodeId: WorkflowNodeId): Promise<ProjectNode> {
-    const raw = await readJson<Record<string, unknown>>(this.nodePath(projectId, nodeId));
+    const raw = JSON.parse(
+      await this.fs.readFile(this.nodePath(projectId, nodeId), "utf8"),
+    ) as Record<string, unknown>;
 
     const assumptions = Array.isArray(raw.assumptions) ? (raw.assumptions as string[]) : undefined;
     const openQuestions = Array.isArray(raw.openQuestions) ? (raw.openQuestions as string[]) : undefined;
@@ -211,6 +284,19 @@ export class ProjectStore {
       revision,
       updatedAt,
     };
+  }
+
+  private async atomicWriteJson(filePath: string, value: unknown): Promise<void> {
+    const dir = path.dirname(filePath);
+    const base = path.basename(filePath);
+    const tmp = path.join(dir, "." + base + "." + randomUUID() + ".tmp");
+    await this.fs.writeFile(tmp, JSON.stringify(value, null, 2) + "\n", "utf8");
+    try {
+      await this.fs.rename(tmp, filePath);
+    } catch (e) {
+      await this.fs.unlink(tmp).catch(() => {});
+      throw e;
+    }
   }
 
   private legacyChatPath(projectId: string, nodeId: WorkflowNodeId): string {
