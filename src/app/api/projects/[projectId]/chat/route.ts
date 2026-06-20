@@ -194,6 +194,11 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           signal: abortController.signal,
         });
 
+        // If the client disconnected during the judge call (judge's own catch
+        // turns AbortError into { ok:false }, so we must not then emit to a
+        // cancelled stream — let finally close it).
+        if (abortController.signal.aborted) return;
+
         // 5. Branch on result
         if (!result.ok) {
           // Judge failure — emit warning
