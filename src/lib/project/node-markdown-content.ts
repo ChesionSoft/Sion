@@ -13,7 +13,7 @@ export function extractSectionBullets(markdown: string, headingText: string): st
   const results: string[] = [];
 
   for (const line of lines) {
-    if (line.startsWith("## ")) {
+    if (/^#{1,2}\s/.test(line)) {
       if (inSection) {
         // We've hit the next heading at same or higher level — stop
         break;

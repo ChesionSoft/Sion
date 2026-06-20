@@ -77,13 +77,19 @@ describe("extractSectionBullets", () => {
     expect(extractSectionBullets(md, "设计假设")).toEqual(["假设A"]);
   });
 
-  it("stops at a higher-level heading", () => {
+  it("stops at a higher-level heading mid-document", () => {
     const md = [
       "## 设计假设",
       "",
       "- 假设A",
       "",
-      "# 更高层级",
+      "# 其他",
+      "",
+      "- 不应被收集的内容",
+      "",
+      "## 待确认问题",
+      "",
+      "- 也不应被收集",
       "",
     ].join("\n");
     expect(extractSectionBullets(md, "设计假设")).toEqual(["假设A"]);
