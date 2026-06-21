@@ -284,15 +284,15 @@ describe("chat API SSE and persistence", () => {
     expect(assistant?.sources?.[0].url).toBe("https://example.com/page");
   });
 
-  it("does not emit web_search_unavailable for chat_completions even with search on", async () => {
+  it("does not infer a search notice from chat_completions protocol", async () => {
     const store = new ProjectStore();
     const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
     await store.updateSessionWebSearch("test-project", "feature-design", session.id, true);
     const events = await readSseEvents(await POST(baseRequest({ sessionId: session.id }), { params: Promise.resolve({ projectId: "test-project" }) }));
-    expect(events.map((e) => e.type)).not.toContain("web_search_unavailable");
+    expect(events.map((e) => e.type)).not.toContain("notice");
   });
 
-  it("does not emit web_search_unavailable for openai_responses with search on", async () => {
+  it("does not infer a search notice from openai_responses protocol", async () => {
     const settingsDir = path.join(tmpDir, "settings");
     await writeFile(
       path.join(settingsDir, "model-providers.json"),
@@ -307,7 +307,7 @@ describe("chat API SSE and persistence", () => {
     const events = await readSseEvents(
       await POST(baseRequest({ providerId: "mp-resp", model: "gpt-5", sessionId: session.id }), { params: Promise.resolve({ projectId: "test-project" }) }),
     );
-    expect(events.map((e) => e.type)).not.toContain("web_search_unavailable");
+    expect(events.map((e) => e.type)).not.toContain("notice");
     expect(events.map((e) => e.type)).toContain("token");
   });
 

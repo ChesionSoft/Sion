@@ -537,7 +537,7 @@ describe("ChatPanel", () => {
     expect(screen.getByText("切换联网搜索失败")).toBeInTheDocument();
   });
 
-  it("renders URL read status, web_search_unavailable notice, and deduped source links", async () => {
+  it("renders URL read status, notice, and deduped source links", async () => {
     const user = userEvent.setup();
     const ctx = createMockSharedContext();
     const onGenStateChange = vi.fn();
@@ -611,7 +611,7 @@ describe("ChatPanel", () => {
                 ),
               );
               controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify({ type: "web_search_unavailable" })}\n\n`),
+                encoder.encode(`data: ${JSON.stringify({ type: "notice", message: "搜索暂不可用，已继续普通对话" })}\n\n`),
               );
               // Duplicate source event from the adapter — must dedupe to one link
               controller.enqueue(
@@ -645,8 +645,101 @@ describe("ChatPanel", () => {
     await user.type(screen.getByPlaceholderText(/补充/), "看 https://example.com/ 并总结");
     await user.click(screen.getByRole("button", { name: /发送/ }));
 
-    expect(await screen.findByText("当前模型不支持原生联网，已继续普通对话")).toBeInTheDocument();
+    expect(await screen.findByText("搜索暂不可用，已继续普通对话")).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: /Example/ })).toHaveLength(1);
     expect(screen.getByText("example.com")).toBeInTheDocument();
+  });
+
+  it("opens scoped browser verification with only sessionId and retries as a new turn", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    const postBodies: unknown[] = [];
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/settings/model-providers")) {
+        return new Response(JSON.stringify({ providers: defaultProviders }));
+      }
+      if (url.includes("/files")) {
+        return new Response(JSON.stringify({ files: [] }));
+      }
+      if (url.includes("/chat/sessions/s-1")) {
+        return new Response(JSON.stringify({ messages: [] }));
+      }
+      if (url.includes("/chat/sessions")) {
+        return new Response(
+          JSON.stringify({
+            sessions: [
+              {
+                id: "s-1",
+                nodeId: "feature-design",
+                name: "6月14日 23:30",
+                messageCount: 2,
+                webSearchEnabled: true,
+                createdAt: "2026-06-14T15:30:00.000Z",
+                updatedAt: "2026-06-14T15:31:00.000Z",
+              },
+            ],
+          }),
+        );
+      }
+      if (url.includes("/chat/verifications/v-1") && init?.method === "POST") {
+        postBodies.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      if (url.endsWith("/chat") && init?.method === "POST") {
+        postBodies.push(JSON.parse(String(init.body)));
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  "data: " +
+                    JSON.stringify({ type: "browser_verification_required", verificationId: "v-1", engine: "google" }) +
+                    "\n\n",
+                ),
+              );
+              controller.enqueue(encoder.encode('data: {"type":"token","content":"需要验证。"}\n\n'));
+              controller.enqueue(encoder.encode("data: " + JSON.stringify({ type: "done", sessionId: "s-1" }) + "\n\n"));
+              controller.close();
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({}));
+    }) as typeof fetch;
+
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "请搜索需要验证的内容");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    await user.click(await screen.findByRole("button", { name: "打开浏览器验证" }));
+
+    expect(postBodies).toContainEqual({ sessionId: "s-1" });
+    expect(JSON.stringify(postBodies)).not.toContain("challenge");
+    expect(JSON.stringify(postBodies)).not.toContain("url");
+
+    await screen.findByText("需要验证。");
+    await screen.findByRole("button", { name: /发送/ });
+    await user.click(screen.getByRole("button", { name: "验证后重试" }));
+
+    const chatPosts = postBodies.filter(
+      (body): body is { message: string } =>
+        typeof body === "object" && body !== null && "message" in body,
+    );
+    expect(chatPosts).toHaveLength(2);
+    expect(chatPosts[1].message).toBe("请搜索需要验证的内容");
   });
 });

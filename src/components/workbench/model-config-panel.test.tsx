@@ -215,7 +215,7 @@ describe("ModelConfigPanel", () => {
     await user.click(await screen.findByRole("button", { name: /添加模型提供商/ }));
     // The retired capability claim must be gone, and protocol copy must say it
     // controls request format only.
-    expect(screen.queryByText(/原生联网/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Responses.*联网/)).not.toBeInTheDocument();
     expect(screen.getByText(/协议仅决定请求格式/)).toBeInTheDocument();
   });
 

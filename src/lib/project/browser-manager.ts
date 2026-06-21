@@ -36,6 +36,7 @@ export type PersistentContextLike = {
     pattern: string,
     handler: (route: RouteLike, request: RequestLike) => Promise<void> | void,
   ): Promise<void>;
+  on?(event: "close", handler: () => void): void;
 };
 
 export type RouteLike = {
@@ -321,6 +322,36 @@ export class BrowserManager {
   }
 
   /**
+   * Open a visible (headed) browser at a server-held verification URL. The
+   * challenge is consumed via `resolveUrl` only after the serialized context
+   * lock is acquired, so a failed consume never navigates. The model has no
+   * control over this page. Resolves when the user closes the window, the
+   * bounded timeout elapses, or the request aborts; the context is always
+   * cleaned up in finally.
+   */
+  async openVisibleVerification(opts: {
+    resolveUrl: () => Promise<string>;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  }): Promise<void> {
+    if (!this.deps.playwright) {
+      throw new BrowserLaunchError("browser_launch_failed", "浏览器运行时不可用");
+    }
+    const timeoutMs = opts.timeoutMs ?? 5 * 60 * 1000;
+    await this.withPersistentContext(
+      async (ctx) => {
+        const url = await opts.resolveUrl();
+        const page = (await ctx.newPage()) as {
+          goto(url: string, opts?: Record<string, unknown>): Promise<void>;
+        };
+        await page.goto(url, { waitUntil: "domcontentloaded" });
+        await waitForCloseOrTimeout(ctx, opts.signal, timeoutMs);
+      },
+      { signal: opts.signal, launchOptions: { headless: false } },
+    );
+  }
+
+  /**
    * Run `work` against a freshly launched persistent context. A FIFO mutex
    * guarantees two calls never overlap. The context is closed in `finally`
    * for success, failure, timeout, and abort. Never points userDataDir at a
@@ -384,4 +415,41 @@ function sanitizeLaunchError(error: unknown): string {
     return error.message.replace(/(?:\/[\w.\-]+)+|[A-Za-z]:\\[^\s]*/g, "<path>").slice(0, 300);
   }
   return "浏览器启动失败";
+}
+
+function waitForCloseOrTimeout(
+  ctx: PersistentContextLike,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      action();
+    };
+    const timer = setTimeout(() => finish(resolve), timeoutMs);
+    if (typeof ctx.on === "function") {
+      ctx.on("close", () => finish(resolve));
+    }
+    if (signal) {
+      if (signal.aborted) {
+        finish(() => {
+          clearTimeout(timer);
+          reject(new Error("aborted"));
+        });
+        return;
+      }
+      signal.addEventListener(
+        "abort",
+        () =>
+          finish(() => {
+            clearTimeout(timer);
+            reject(new Error("aborted"));
+          }),
+        { once: true },
+      );
+    }
+  });
 }

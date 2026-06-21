@@ -168,7 +168,6 @@ export type ChatStreamEvent =
   | { type: "url_read_start"; urls: string[] }
   | { type: "url_read_result"; url: string; ok: true; source: ExternalSource }
   | { type: "url_read_result"; url: string; ok: false; error: string }
-  | { type: "web_search_unavailable" }
   | { type: "source"; source: ExternalSource }
   | { type: "web_search_start"; query: string }
   | { type: "web_search_result"; query: string; ok: true; results: SearchResult[] }

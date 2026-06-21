@@ -9,6 +9,7 @@ import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle }
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Project } from "@/lib/project/types";
+import { BrowserSearchConfigPanel } from "./browser-search-config-panel";
 import { ModelConfigPanel } from "./model-config-panel";
 
 function CreateProjectForm({
@@ -177,7 +178,10 @@ export function ProjectList() {
             </section>
           ) : null}
 
-          <ModelConfigPanel />
+          <div className="grid gap-4">
+            <ModelConfigPanel />
+            <BrowserSearchConfigPanel />
+          </div>
         </div>
       </main>
     );
@@ -262,7 +266,10 @@ export function ProjectList() {
           </div>
         </section>
 
-        <ModelConfigPanel />
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ModelConfigPanel />
+          <BrowserSearchConfigPanel />
+        </div>
       </div>
     </main>
   );

@@ -65,6 +65,59 @@ describe("MarkdownPanel", () => {
     expect(screen.getByRole("tab", { name: "Agent 规则" })).toBeInTheDocument();
   });
 
+  it("reloads agent rules when the active node changes while the agent tab is open", async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/agents/basic-info")) {
+        return new Response(
+          JSON.stringify({
+            setting: { mode: "default" },
+            defaultContent: "basic-info default rules",
+            customContent: null,
+          }),
+        );
+      }
+      if (url.includes("/agents/goals")) {
+        return new Response(
+          JSON.stringify({
+            setting: { mode: "default" },
+            defaultContent: "goals default rules",
+            customContent: null,
+          }),
+        );
+      }
+      return new Response(JSON.stringify({}));
+    });
+
+    const goalsNode: ProjectNode = {
+      ...localNode,
+      id: "goals",
+      markdown: "# 2. 项目目标",
+    };
+
+    const { rerender } = renderPanel();
+    await user.click(screen.getByRole("tab", { name: "Agent 规则" }));
+
+    expect(await screen.findByText("basic-info default rules")).toBeInTheDocument();
+
+    rerender(
+      <MarkdownPanel
+        node={goalsNode}
+        onChange={vi.fn()}
+        onSavedNode={vi.fn()}
+        projectId="p-1"
+        genState={{ phase: "idle" }}
+        setGenState={vi.fn()}
+        sharedContext={defaultSharedContext}
+      />,
+    );
+
+    expect(await screen.findByText("goals default rules")).toBeInTheDocument();
+    expect(screen.queryByText("basic-info default rules")).not.toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith("/api/projects/p-1/agents/goals");
+  });
+
   it("save sends expectedRevision with the PATCH body", async () => {
     const user = userEvent.setup();
     globalThis.fetch = vi.fn().mockResolvedValue(

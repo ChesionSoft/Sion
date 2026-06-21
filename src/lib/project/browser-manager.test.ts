@@ -316,7 +316,7 @@ describe("BrowserManager/withPersistentContext", () => {
 });
 
 describe("BrowserManager/managed mutations", () => {
-  it("installManagedChromium runs the installer with PLAYWRIGHT_BROWSERS_PATH set", async () => {
+  it("installManagedChromium installs into the managed cache directory", async () => {
     const runInstall = vi.fn(async () => {});
     const mgr = new BrowserManager(makeDeps({ runInstall }));
     await mgr.installManagedChromium();

@@ -1,7 +1,7 @@
 import { googleSearchAdapter } from "./google-search";
 import { baiduSearchAdapter } from "./baidu-search";
 import { BrowserLaunchError } from "./browser-manager";
-import { BrowserVerificationStore } from "./browser-verification";
+import { BrowserVerificationStore, browserVerificationStore } from "./browser-verification";
 import { extractPageText } from "./url-content";
 import { readPublicUrlOutcome, type UrlReadOutcome } from "./url-reader";
 import type { BrowserWebErrorCode, SearchEngineId, SearchResult } from "./types";
@@ -74,7 +74,7 @@ function defaultAdapters(): Record<SearchEngineId, SearchEngineAdapter> {
 export function createBrowserWebService(deps: BrowserWebServiceDeps): BrowserWebService {
   const browserManager = deps.browserManager;
   const adapters = deps.adapters ?? defaultAdapters();
-  const challengeStore = deps.challengeStore ?? new BrowserVerificationStore();
+  const challengeStore = deps.challengeStore ?? browserVerificationStore;
   const readUrlOutcome = deps.readUrlOutcome ?? ((url, signal) => readPublicUrlOutcome(url, { signal }));
   const extractText = deps.extractText ?? extractPageText;
   const searchTimeoutMs = deps.searchTimeoutMs ?? DEFAULT_SEARCH_TIMEOUT_MS;

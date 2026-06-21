@@ -110,3 +110,10 @@ export class VerificationError extends Error {
     this.name = "VerificationError";
   }
 }
+
+/**
+ * Process-wide singleton challenge store. Challenges are created during a chat
+ * turn (inside BrowserWebService) and consumed by the scoped verification API
+ * on a later request, so the two must share one in-memory store.
+ */
+export const browserVerificationStore = new BrowserVerificationStore();

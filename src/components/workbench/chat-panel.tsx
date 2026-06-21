@@ -40,6 +40,13 @@ type StreamingTextBufferOptions = {
   maxChunkSize?: number;
 };
 
+type PendingVerification = {
+  verificationId: string;
+  engine: string;
+  originalMessage: string;
+  status: "required" | "opening" | "opened" | "error";
+};
+
 export function createStreamingTextBuffer(
   onUpdate: (state: StreamingTextBufferState) => void,
   options: StreamingTextBufferOptions = {},
@@ -212,7 +219,8 @@ export function ChatPanel({
   const sessionMenuRef = useRef<HTMLDivElement>(null);
   const [savingWebSearch, setSavingWebSearch] = useState(false);
   const [urlReadNotice, setUrlReadNotice] = useState<string | null>(null);
-  const [webSearchUnavailableNotice, setWebSearchUnavailableNotice] = useState(false);
+  const [webNotice, setWebNotice] = useState<string | null>(null);
+  const [pendingVerification, setPendingVerification] = useState<PendingVerification | null>(null);
   const onGenStateChangeRef = useRef(onGenStateChange);
   useEffect(() => { onGenStateChangeRef.current = onGenStateChange; }, [onGenStateChange]);
 
@@ -403,14 +411,14 @@ export function ChatPanel({
     );
   }
 
-  async function sendMessage() {
-    if (!message.trim() || sending) return;
+  async function sendMessage(overrideMessage?: string) {
+    const userContent = (overrideMessage ?? message).trim();
+    if (!userContent || sending) return;
     setError("");
     // Clear transient notices from the previous send.
     setUrlReadNotice(null);
-    setWebSearchUnavailableNotice(false);
-
-    const userContent = message.trim();
+    setWebNotice(null);
+    setPendingVerification(null);
 
     // Show user message immediately and clear input
     const userMessageId = crypto.randomUUID();
@@ -418,7 +426,7 @@ export function ChatPanel({
       ...prev,
       { id: userMessageId, role: "user" as const, content: userContent, createdAt: new Date().toISOString() },
     ]);
-    setMessage("");
+    if (!overrideMessage) setMessage("");
 
     setSending(true);
     const controller = new AbortController();
@@ -513,8 +521,8 @@ export function ChatPanel({
                 }
               }
               setUrlReadNotice(null);
-            } else if (type === "web_search_unavailable") {
-              setWebSearchUnavailableNotice(true);
+            } else if (type === "notice" && event.message) {
+              setWebNotice(event.message as string);
             } else if (type === "source" && event.source) {
               const source = event.source as ExternalSource;
               if (!seenSourceIds.has(source.id)) {
@@ -528,6 +536,13 @@ export function ChatPanel({
                   ),
                 );
               }
+            } else if (type === "browser_verification_required" && event.verificationId) {
+              setPendingVerification({
+                verificationId: event.verificationId as string,
+                engine: (event.engine as string) || "browser",
+                originalMessage: userContent,
+                status: "required",
+              });
             } else if (type === "markdown_check_start") {
               onGenStateChangeRef.current({ phase: "checking" as const });
             } else if (type === "markdown_unchanged") {
@@ -587,6 +602,43 @@ export function ChatPanel({
 
   function abortSendMessage() {
     abortControllerRef.current?.abort();
+  }
+
+  async function openBrowserVerification() {
+    if (!pendingVerification || !sharedContext.activeSessionId) return;
+    setPendingVerification((current) =>
+      current ? { ...current, status: "opening" } : current,
+    );
+    try {
+      const res = await fetch(
+        `/api/projects/${projectId}/chat/verifications/${pendingVerification.verificationId}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: sharedContext.activeSessionId }),
+        },
+      );
+      if (!res.ok) {
+        setPendingVerification((current) =>
+          current ? { ...current, status: "error" } : current,
+        );
+        return;
+      }
+      setPendingVerification((current) =>
+        current ? { ...current, status: "opened" } : current,
+      );
+    } catch {
+      setPendingVerification((current) =>
+        current ? { ...current, status: "error" } : current,
+      );
+    }
+  }
+
+  function retryAfterVerification() {
+    if (!pendingVerification) return;
+    const retryMessage = pendingVerification.originalMessage;
+    setPendingVerification(null);
+    void sendMessage(retryMessage);
   }
 
   useEffect(() => {
@@ -666,10 +718,43 @@ export function ChatPanel({
             {urlReadNotice}
           </p>
         ) : null}
-        {webSearchUnavailableNotice ? (
+        {webNotice ? (
           <p className="rounded-md border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
-            当前模型不支持原生联网，已继续普通对话
+            {webNotice}
           </p>
+        ) : null}
+        {pendingVerification ? (
+          <div className="flex flex-col gap-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <span>
+              搜索引擎需要浏览器验证（{pendingVerification.engine}）。验证窗口只会打开服务器保存的挑战页面。
+            </span>
+            {pendingVerification.status === "error" ? (
+              <span className="text-destructive">打开验证窗口失败，请重新发起搜索。</span>
+            ) : null}
+            {pendingVerification.status === "opened" ? (
+              <span>验证窗口已打开。完成后可重试这次请求。</span>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                disabled={pendingVerification.status === "opening" || !sharedContext.activeSessionId}
+                onClick={openBrowserVerification}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                {pendingVerification.status === "opening" ? "打开中..." : "打开浏览器验证"}
+              </Button>
+              <Button
+                disabled={pendingVerification.status === "opening" || sending}
+                onClick={retryAfterVerification}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                验证后重试
+              </Button>
+            </div>
+          </div>
         ) : null}
         <ScrollArea className="min-h-0 flex-1" ref={scrollRef}>
           {messages.length === 0 ? (
@@ -864,7 +949,10 @@ export function ChatPanel({
               <Button
                 className={sending ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : ""}
                 disabled={!message.trim() || !sharedContext.providerId || !sharedContext.model || !sharedContext.activeSessionId}
-                onClick={sending ? abortSendMessage : sendMessage}
+                onClick={() => {
+                  if (sending) abortSendMessage();
+                  else void sendMessage();
+                }}
                 type="button"
               >
                 {sending ? <StopCircleIcon data-icon="inline-start" /> : <SendIcon data-icon="inline-start" />}

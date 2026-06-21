@@ -71,7 +71,9 @@ export function MarkdownPanel({
   const [customRuleContent, setCustomRuleContent] = useState("");
   const [agentSaveMsg, setAgentSaveMsg] = useState("");
   const [savingAgent, setSavingAgent] = useState(false);
-  const [agentTabLoaded, setAgentTabLoaded] = useState(false);
+  const [agentTabOpen, setAgentTabOpen] = useState(false);
+  const [loadedAgentKey, setLoadedAgentKey] = useState("");
+  const latestAgentKeyRef = useRef("");
 
   // ---------------------------------------------------------------------------
   // Submit patches helper (hoisted before the animation effect that calls it)
@@ -333,9 +335,16 @@ export function MarkdownPanel({
   // Agent rule
   // ---------------------------------------------------------------------------
 
+  const agentKey = `${projectId}:${node.id}`;
+
   function loadAgentRule(): void {
-    if (agentTabLoaded) return;
-    setAgentTabLoaded(true);
+    if (loadedAgentKey === agentKey) return;
+    const requestedAgentKey = agentKey;
+    latestAgentKeyRef.current = requestedAgentKey;
+    setLoadedAgentKey(agentKey);
+    setAgentSaveMsg("");
+    setDefaultRuleContent("");
+    setCustomRuleContent("");
 
     fetch(`/api/projects/${projectId}/agents/${node.id}`)
       .then((r) => r.json())
@@ -346,13 +355,26 @@ export function MarkdownPanel({
           customContent?: string | null;
           error?: string;
         }) => {
+          if (latestAgentKeyRef.current !== requestedAgentKey) return;
           if (d.setting) setAgentMode(d.setting.mode);
-          if (d.defaultContent) setDefaultRuleContent(d.defaultContent);
-          if (d.customContent) setCustomRuleContent(d.customContent);
+          if (typeof d.defaultContent === "string") setDefaultRuleContent(d.defaultContent);
+          if (typeof d.customContent === "string") setCustomRuleContent(d.customContent);
         },
       )
       .catch(() => {});
   }
+
+  useEffect(() => {
+    if (!agentTabOpen) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) loadAgentRule();
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentTabOpen, agentKey]);
 
   async function switchAgentMode(mode: AgentRuleMode): Promise<void> {
     setAgentSaveMsg("");
@@ -532,7 +554,7 @@ export function MarkdownPanel({
         <TabsList variant="line">
           <TabsTrigger className="text-xs" value="edit">编辑 Markdown</TabsTrigger>
           <TabsTrigger className="text-xs" value="preview">预览交付稿</TabsTrigger>
-          <TabsTrigger className="text-xs" onClick={loadAgentRule} value="agent">
+          <TabsTrigger className="text-xs" onClick={() => setAgentTabOpen(true)} value="agent">
             Agent 规则
           </TabsTrigger>
         </TabsList>
