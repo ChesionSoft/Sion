@@ -608,23 +608,6 @@ export function ChatPanel({
           <h2 className="truncate text-sm font-semibold">{activeNode.id}</h2>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            aria-label={`联网搜索：${webSearchEnabled ? "开启" : "关闭"}`}
-            aria-pressed={webSearchEnabled}
-            className={cn(
-              "inline-flex h-8 items-center justify-center rounded-md border px-2 text-xs font-medium transition",
-              webSearchEnabled
-                ? "border-primary bg-primary/10 text-primary"
-                : "bg-background text-muted-foreground hover:bg-muted/60",
-              (!activeSession || savingWebSearch) && "opacity-50",
-            )}
-            disabled={!activeSession || savingWebSearch}
-            onClick={toggleWebSearch}
-            title={webSearchEnabled ? "联网搜索已开启" : "联网搜索已关闭"}
-            type="button"
-          >
-            <Globe2Icon className="h-4 w-4" />
-          </button>
           <div className="relative" ref={sessionMenuRef}>
             <button
               aria-expanded={sessionMenuOpen}
@@ -732,6 +715,23 @@ export function ChatPanel({
                 type="button"
               >
                 <PaperclipIcon className="h-4 w-4" />
+              </button>
+              <button
+                aria-label={`联网搜索：${webSearchEnabled ? "开启" : "关闭"}`}
+                aria-pressed={webSearchEnabled}
+                className={cn(
+                  "shrink-0 rounded-full p-2 transition-colors",
+                  webSearchEnabled
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted",
+                  (!activeSession || savingWebSearch) && "opacity-50",
+                )}
+                disabled={!activeSession || savingWebSearch}
+                onClick={toggleWebSearch}
+                title={webSearchEnabled ? "联网搜索已开启" : "联网搜索已关闭"}
+                type="button"
+              >
+                <Globe2Icon className="h-4 w-4" />
               </button>
               {selectedFiles.map((file) => (
                 <span
