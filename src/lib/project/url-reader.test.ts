@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readPublicUrl, readPublicUrls, UrlReadError } from "./url-reader";
+import { readPublicUrl, readPublicUrlOutcome, readPublicUrls, UrlReadError } from "./url-reader";
 import type { ExternalSource } from "./types";
 
 type LookupFn = (hostname: string) => Promise<{ address: string; family: number }[]>;
@@ -191,3 +191,34 @@ describe("url-reader/readPublicUrls", () => {
 
 // Type-only smoke import to keep ExternalSource referenced in this file's surface.
 export type { ExternalSource };
+
+describe("url-reader/readPublicUrlOutcome", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("reports isEmpty=true for a readable HTML page with insufficient body", async () => {
+    const lookup = vi.fn(async () => [{ address: "93.184.216.34", family: 4 }]) as unknown as LookupFn;
+    const fetchOnce = vi.fn(async () => okResponse("<main></main>")) as unknown as FetchOnceFn;
+    const outcome = await readPublicUrlOutcome("https://example.com/", { lookup, fetchOnce });
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.isEmpty).toBe(true);
+      expect(outcome.contentType).toBe("text/html");
+    }
+  });
+
+  it("reports isEmpty=false for a substantial body", async () => {
+    const lookup = vi.fn(async () => [{ address: "93.184.216.34", family: 4 }]) as unknown as LookupFn;
+    const fetchOnce = vi.fn(async () => okResponse(`<main>${"x".repeat(300)}</main>`)) as unknown as FetchOnceFn;
+    const outcome = await readPublicUrlOutcome("https://example.com/", { lookup, fetchOnce });
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.isEmpty).toBe(false);
+  });
+
+  it("returns a typed failure for a blocked address without throwing", async () => {
+    const lookup = vi.fn(async () => [{ address: "127.0.0.1", family: 4 }]) as unknown as LookupFn;
+    const fetchOnce = vi.fn(async () => okResponse("x")) as unknown as FetchOnceFn;
+    const outcome = await readPublicUrlOutcome("https://bad.test/", { lookup, fetchOnce });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.code).toBe("blocked_address");
+  });
+});

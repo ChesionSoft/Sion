@@ -10,6 +10,8 @@ import { dedupeAndRank, normalizeResultUrl, type SearchEngineAdapter } from "./s
 export const baiduSearchAdapter: SearchEngineAdapter = {
   id: "baidu",
 
+  resultSelector: "div.result, div.c-container",
+
   buildUrl(query: string): string {
     return `https://www.baidu.com/s?wd=${encodeURIComponent(query)}`;
   },

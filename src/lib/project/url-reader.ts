@@ -147,10 +147,45 @@ function combineSignals(signals: AbortSignal[]): AbortSignal {
   return controller.signal;
 }
 
+export type UrlReadOutcome =
+  | {
+      ok: true;
+      url: string;
+      content: string;
+      contentType: string;
+      isEmpty: boolean;
+      source: ExternalSource;
+    }
+  | { ok: false; code: UrlReadErrorCode; message: string };
+
+const EMPTY_BODY_THRESHOLD = 200;
+
+export async function readPublicUrlOutcome(
+  rawUrl: string,
+  deps: UrlReaderDeps = {},
+): Promise<UrlReadOutcome> {
+  try {
+    const result = await readPublicUrl(rawUrl, deps);
+    return {
+      ok: true,
+      url: result.source.url,
+      content: result.content,
+      contentType: result.contentType,
+      isEmpty: result.content.trim().length < EMPTY_BODY_THRESHOLD,
+      source: result.source,
+    };
+  } catch (error) {
+    if (error instanceof UrlReadError) {
+      return { ok: false, code: error.code, message: error.message };
+    }
+    return { ok: false, code: "fetch_failed", message: "请求失败" };
+  }
+}
+
 export async function readPublicUrl(
   rawUrl: string,
   deps: UrlReaderDeps = {},
-): Promise<{ ok: true; source: ExternalSource; content: string }> {
+): Promise<{ ok: true; source: ExternalSource; content: string; contentType: string }> {
   const initialUrl = toPublicHttpTarget(rawUrl);
 
   const callerSignal = deps.signal;
@@ -203,7 +238,7 @@ export async function readPublicUrl(
         retrievedAt: new Date().toISOString(),
       });
       const content = extracted.text.slice(0, MAX_PAGE_CHARACTERS);
-      return { ok: true as const, source, content };
+      return { ok: true as const, source, content, contentType: ct };
     }
     throw new UrlReadError("redirect_loop", "重定向次数过多");
   } catch (error) {

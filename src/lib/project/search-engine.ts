@@ -10,6 +10,8 @@ export type SearchEngineAdapter = {
   buildUrl(query: string): string;
   parseHtml(html: string): SearchResult[];
   detectVerification(html: string): boolean;
+  /** Selector to wait for (rather than sleeping) before reading page content. */
+  resultSelector?: string;
 };
 
 export const MAX_RESULTS = 5;

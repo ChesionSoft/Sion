@@ -9,6 +9,8 @@ import { dedupeAndRank, normalizeResultUrl, type SearchEngineAdapter } from "./s
 export const googleSearchAdapter: SearchEngineAdapter = {
   id: "google",
 
+  resultSelector: "div.g",
+
   buildUrl(query: string): string {
     return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
   },
