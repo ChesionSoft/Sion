@@ -1,7 +1,13 @@
 import { z } from "zod";
-import { callOpenAICompatibleChat } from "./llm";
+import { callModelChat } from "./model-chat";
 import { getDeliverySchema, getDeliverySection } from "./node-delivery-schemas";
-import type { NodeFactDecision, NodeMarkdownPatch, WorkflowNodeId } from "./types";
+import type {
+  ApiUrlMode,
+  ModelProviderProtocol,
+  NodeFactDecision,
+  NodeMarkdownPatch,
+  WorkflowNodeId,
+} from "./types";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -13,12 +19,14 @@ export type JudgeNodeFactsResult =
 
 export type JudgeNodeFactsInput = {
   apiBaseUrl: string;
-  apiUrlMode?: "base" | "full";
+  apiUrlMode?: ApiUrlMode;
   apiKey: string;
   model: string;
+  protocol?: ModelProviderProtocol;
   nodeId: WorkflowNodeId;
   userMessage: string;
   assistantContent: string;
+  externalSources?: never;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 };
@@ -87,12 +95,16 @@ export async function judgeNodeFacts(
   // 1. Call the LLM
   let responseContent: string;
   try {
-    responseContent = await callOpenAICompatibleChat({
+    responseContent = await callModelChat({
       apiBaseUrl: input.apiBaseUrl,
       apiUrlMode: input.apiUrlMode,
       apiKey: input.apiKey,
       model: input.model,
+      protocol: input.protocol ?? "chat_completions",
       reasoningEffort: "low",
+      // Never enable Web Search for fact judging — the judge must reason only
+      // over the user's own message and the assistant's reply.
+      webSearchEnabled: false,
       messages: [
         { role: "system", content: systemPrompt },
         {

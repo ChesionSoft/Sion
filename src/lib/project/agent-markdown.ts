@@ -2,10 +2,16 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfmFromMarkdown } from "mdast-util-gfm";
 import { gfm } from "micromark-extension-gfm";
 import type { Heading, Root, Text } from "mdast";
-import { streamOpenAICompatibleChat } from "./llm";
+import { streamModelChat } from "./model-chat";
 import { getDeliverySchema } from "./node-delivery-schemas";
 import { getNodeDefinition, WORKFLOW_NODES } from "./nodes";
-import type { ApiUrlMode, ChatMessage, ReasoningEffort, WorkflowNodeId } from "./types";
+import type {
+  ApiUrlMode,
+  ChatMessage,
+  ModelProviderProtocol,
+  ReasoningEffort,
+  WorkflowNodeId,
+} from "./types";
 
 // ---------------------------------------------------------------------------
 // Stream node markdown rewrite
@@ -16,6 +22,7 @@ export type StreamNodeMarkdownRewriteInput = {
   apiUrlMode?: ApiUrlMode;
   apiKey: string;
   model: string;
+  protocol?: ModelProviderProtocol;
   reasoningEffort?: ReasoningEffort;
   nodeId: WorkflowNodeId;
   currentMarkdown: string;
@@ -85,11 +92,15 @@ export async function* streamNodeMarkdownRewrite(
     formattedMessages || "No recent messages.",
   ];
 
-  const stream = streamOpenAICompatibleChat({
+  const stream = streamModelChat({
     apiBaseUrl: input.apiBaseUrl,
     apiUrlMode: input.apiUrlMode,
     apiKey: input.apiKey,
     model: input.model,
+    protocol: input.protocol ?? "chat_completions",
+    // Never enable Web Search for Markdown rewriting — the rewrite must be
+    // grounded only in the current node and the chat transcript.
+    webSearchEnabled: false,
     reasoningEffort: input.reasoningEffort,
     fetchImpl: input.fetchImpl,
     signal: input.signal,
