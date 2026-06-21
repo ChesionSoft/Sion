@@ -69,6 +69,40 @@ describe("validateNodeMarkdownPatch", () => {
     ).toThrow(UnpatchableError);
   });
 
+  it("accepts external evidence with a sourceId", () => {
+    const result = validateNodeMarkdownPatch(featureDesignId, {
+      ...validPatch,
+      category: "assumption",
+      targetSectionKey: "assumptions",
+      evidence: { source: "external", quote: "外部片段", sourceId: "src-1" },
+    });
+    expect(result.evidence).toEqual({
+      source: "external",
+      quote: "外部片段",
+      sourceId: "src-1",
+    });
+  });
+
+  it("rejects external evidence without a sourceId", () => {
+    expect(() =>
+      validateNodeMarkdownPatch(featureDesignId, {
+        ...validPatch,
+        category: "assumption",
+        targetSectionKey: "assumptions",
+        evidence: { source: "external", quote: "外部片段" } as never,
+      }),
+    ).toThrow(UnpatchableError);
+  });
+
+  it("rejects an unknown evidence source", () => {
+    expect(() =>
+      validateNodeMarkdownPatch(featureDesignId, {
+        ...validPatch,
+        evidence: { source: "dream", quote: "x" } as never,
+      }),
+    ).toThrow(UnpatchableError);
+  });
+
   it("rejects wrong category", () => {
     expect(() =>
       validateNodeMarkdownPatch(featureDesignId, {

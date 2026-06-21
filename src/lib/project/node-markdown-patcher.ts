@@ -4,7 +4,7 @@ import { gfm } from "micromark-extension-gfm";
 import type { Heading, Root, Table, Text } from "mdast";
 import { getDeliverySchema, getDeliverySection } from "./node-delivery-schemas";
 import type { DeliverySection } from "./node-delivery-schemas";
-import type { NodeMarkdownPatch, PatchKind, WorkflowNodeId } from "./types";
+import type { NodeMarkdownPatch, PatchEvidence, PatchKind, WorkflowNodeId } from "./types";
 
 // ---------------------------------------------------------------------------
 // UnpatchableError
@@ -649,16 +649,26 @@ export function validateNodeMarkdownPatch(
     }
   }
 
-  // Validate evidence
+  // Validate evidence — PatchEvidence is a discriminated union on `source`.
   if (!p.evidence || typeof p.evidence !== "object") {
     throw new UnpatchableError("evidence must be an object");
   }
   const evidence = p.evidence as Record<string, unknown>;
-  if (evidence.source !== "user" && evidence.source !== "assistant") {
-    throw new UnpatchableError('evidence.source must be "user" or "assistant"');
-  }
+  const source = evidence.source;
   if (typeof evidence.quote !== "string" || evidence.quote.length === 0) {
     throw new UnpatchableError("evidence.quote must be a non-empty string");
+  }
+
+  let normalizedEvidence: PatchEvidence;
+  if (source === "user" || source === "assistant") {
+    normalizedEvidence = { source, quote: evidence.quote };
+  } else if (source === "external") {
+    if (typeof evidence.sourceId !== "string" || evidence.sourceId.length === 0) {
+      throw new UnpatchableError('evidence.sourceId is required when source is "external"');
+    }
+    normalizedEvidence = { source: "external", quote: evidence.quote, sourceId: evidence.sourceId };
+  } else {
+    throw new UnpatchableError('evidence.source must be "user", "assistant", or "external"');
   }
 
   return {
@@ -666,6 +676,6 @@ export function validateNodeMarkdownPatch(
     targetSectionKey: p.targetSectionKey,
     patchKind: p.patchKind as PatchKind,
     markdown: p.markdown,
-    evidence: { source: evidence.source as "user" | "assistant", quote: evidence.quote },
+    evidence: normalizedEvidence,
   };
 }
