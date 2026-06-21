@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertPublicAddress, readPublicUrl, readPublicUrls, UrlReadError } from "./url-reader";
+import { readPublicUrl, readPublicUrls, UrlReadError } from "./url-reader";
 import type { ExternalSource } from "./types";
 
 type LookupFn = (hostname: string) => Promise<{ address: string; family: number }[]>;
@@ -16,42 +16,6 @@ function okResponse(body: string, contentType = "text/html"): NonNullable<Awaite
     body: new TextEncoder().encode(body),
   };
 }
-
-describe("url-reader/assertPublicAddress", () => {
-  it("allows a public IPv4 address", () => {
-    expect(() => assertPublicAddress("93.184.216.34")).not.toThrow();
-  });
-
-  it("allows a public IPv6 address", () => {
-    expect(() => assertPublicAddress("2606:2800:220:1:248:1893:25c8:1946")).not.toThrow();
-  });
-
-  it("rejects IPv4 loopback", () => {
-    expect(() => assertPublicAddress("127.0.0.1")).toThrow(UrlReadError);
-  });
-
-  it("rejects RFC1918 private ranges", () => {
-    expect(() => assertPublicAddress("10.0.0.1")).toThrow(UrlReadError);
-    expect(() => assertPublicAddress("192.168.1.1")).toThrow(UrlReadError);
-    expect(() => assertPublicAddress("172.16.0.1")).toThrow(UrlReadError);
-  });
-
-  it("rejects IPv4-mapped IPv6 of a private address", () => {
-    expect(() => assertPublicAddress("::ffff:127.0.0.1")).toThrow(UrlReadError);
-  });
-
-  it("rejects link-local", () => {
-    expect(() => assertPublicAddress("169.254.169.254")).toThrow(UrlReadError);
-  });
-
-  it("rejects unique-local IPv6", () => {
-    expect(() => assertPublicAddress("fc00::1")).toThrow(UrlReadError);
-  });
-
-  it("rejects IPv6 loopback", () => {
-    expect(() => assertPublicAddress("::1")).toThrow(UrlReadError);
-  });
-});
 
 describe("url-reader/readPublicUrl", () => {
   afterEach(() => vi.restoreAllMocks());

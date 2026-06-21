@@ -1,5 +1,10 @@
-import ipaddr from "ipaddr.js";
 import { createExternalSource } from "./external-source";
+import {
+  assertPublicHttpTarget,
+  NetworkPolicyError,
+  resolvePublicTarget,
+  type DnsLookup,
+} from "./network-policy";
 import { extractPageText } from "./url-content";
 import type { ExternalSource } from "./types";
 
@@ -26,23 +31,8 @@ export class UrlReadError extends Error {
   }
 }
 
-export function assertPublicAddress(address: string): void {
-  let parsed: ipaddr.IPv4 | ipaddr.IPv6;
-  try {
-    parsed = ipaddr.parse(address);
-  } catch {
-    throw new UrlReadError("blocked_address", "不允许访问非公网地址");
-  }
-  if (parsed.kind() === "ipv6" && (parsed as ipaddr.IPv6).isIPv4MappedAddress()) {
-    parsed = (parsed as ipaddr.IPv6).toIPv4Address();
-  }
-  if (parsed.range() !== "unicast") {
-    throw new UrlReadError("blocked_address", "不允许访问非公网地址");
-  }
-}
-
 export type UrlReaderDeps = {
-  lookup?: (hostname: string) => Promise<{ address: string; family: number }[]>;
+  lookup?: DnsLookup;
   fetchOnce?: (
     url: string,
     init: { signal: AbortSignal; pinnedAddress: string; pinnedFamily: number },
@@ -70,41 +60,24 @@ export type UrlReadFailure = {
 
 export type UrlReadResult = UrlReadSuccess | UrlReadFailure;
 
-function assertValidRequestUrl(raw: string): URL {
-  let url: URL;
+function mapPolicyError<T>(promise: Promise<T>): Promise<T> {
+  return promise.catch((error) => {
+    if (error instanceof NetworkPolicyError) {
+      throw new UrlReadError(error.code, error.message);
+    }
+    throw error;
+  });
+}
+
+function toPublicHttpTarget(raw: string): URL {
   try {
-    url = new URL(raw);
-  } catch {
-    throw new UrlReadError("invalid_url", "URL 格式不正确");
+    return assertPublicHttpTarget(raw);
+  } catch (error) {
+    if (error instanceof NetworkPolicyError) {
+      throw new UrlReadError(error.code, error.message);
+    }
+    throw error;
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new UrlReadError("invalid_url", "仅支持 http/https 协议");
-  }
-  if (url.username || url.password) {
-    throw new UrlReadError("invalid_url", "URL 不允许包含用户名密码");
-  }
-  return url;
-}
-
-async function resolveAndValidate(
-  hostname: string,
-  deps: UrlReaderDeps,
-): Promise<{ address: string; family: number }> {
-  const lookup = deps.lookup ?? defaultLookup;
-  const answers = await lookup(hostname);
-  if (!answers.length) {
-    throw new UrlReadError("fetch_failed", "未能解析域名");
-  }
-  for (const answer of answers) {
-    assertPublicAddress(answer.address);
-  }
-  return answers[0];
-}
-
-async function defaultLookup(hostname: string): Promise<{ address: string; family: number }[]> {
-  const { promises } = await import("node:dns");
-  const results = await promises.lookup(hostname, { all: true });
-  return results.map((r) => ({ address: r.address, family: r.family }));
 }
 
 async function defaultFetchOnce(
@@ -178,7 +151,7 @@ export async function readPublicUrl(
   rawUrl: string,
   deps: UrlReaderDeps = {},
 ): Promise<{ ok: true; source: ExternalSource; content: string }> {
-  const initialUrl = assertValidRequestUrl(rawUrl);
+  const initialUrl = toPublicHttpTarget(rawUrl);
 
   const callerSignal = deps.signal;
   const timeoutController = new AbortController();
@@ -191,7 +164,7 @@ export async function readPublicUrl(
       if (combinedSignal.aborted) throw new UrlReadError("aborted", "请求已取消");
 
       // Re-resolve and revalidate on each hop (including the first).
-      const pinned = await resolveAndValidate(currentUrl.hostname, deps);
+      const pinned = await mapPolicyError(resolvePublicTarget(currentUrl.hostname, deps.lookup));
 
       const fetchOnce = deps.fetchOnce ?? defaultFetchOnce;
       const response = await fetchOnce(currentUrl.toString(), {
