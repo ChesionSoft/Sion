@@ -153,7 +153,11 @@ async function defaultRemove(target: string): Promise<void> {
 async function defaultRunInstall(opts: { env: NodeJS.ProcessEnv }): Promise<void> {
   const { spawn } = await import("node:child_process");
   const { createRequire } = await import("node:module");
-  const cliPath = createRequire(import.meta.url).resolve("playwright-core/cli.js");
+  // playwright-core's `exports` map does not expose ./cli.js, so resolve the
+  // package root via the exported package.json subpath and join cli.js.
+  const req = createRequire(import.meta.url);
+  const pkgPath = req.resolve("playwright-core/package.json");
+  const cliPath = path.join(path.dirname(pkgPath), "cli.js");
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, "install", "chromium"], {
       env: opts.env,
