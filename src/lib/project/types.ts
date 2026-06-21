@@ -92,6 +92,12 @@ export type ModelEntry = {
   name: string;
   contextLength?: ContextLength;
   isDefault?: boolean;
+  /**
+   * Whether this model accepts OpenAI-style function tool calls. Stored
+   * explicitly per model — never derived from protocol, provider URL, or
+   * model name. Models without it use the JSON planning fallback.
+   */
+  toolCalling?: boolean;
 };
 
 export type ModelProviderProtocol = "chat_completions" | "openai_responses";

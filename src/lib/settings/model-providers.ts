@@ -49,6 +49,7 @@ export class ModelProviderStore {
       ...m,
       name: m.name.trim(),
       isDefault: i === 0 ? true : m.isDefault ?? false,
+      toolCalling: normalizeToolCalling(m.toolCalling),
     }));
     const defaultIndex = models.findIndex((m) => m.isDefault);
     if (defaultIndex === -1) models[0].isDefault = true;
@@ -96,6 +97,7 @@ export class ModelProviderStore {
     };
 
     if (input.models) {
+      next.models = next.models.map((m) => ({ ...m, toolCalling: normalizeToolCalling(m.toolCalling) }));
       const defaultIdx = next.models.findIndex((m) => m.isDefault);
       if (defaultIdx === -1 && next.models.length > 0) next.models[0].isDefault = true;
       else next.models.forEach((m, i) => { m.isDefault = i === defaultIdx; });
@@ -178,6 +180,7 @@ function migrateProvider(raw: Record<string, unknown>): ModelProvider {
     raw.models = (models as string[]).map((name: string, i: number) => ({
       name,
       isDefault: i === 0,
+      toolCalling: false,
     }));
     if (raw.defaultModel && typeof raw.defaultModel === "string") {
       (raw.models as ModelEntry[]).forEach((m: ModelEntry) => {
@@ -185,6 +188,11 @@ function migrateProvider(raw: Record<string, unknown>): ModelProvider {
       });
       delete raw.defaultModel;
     }
+  } else if (Array.isArray(models)) {
+    raw.models = (models as ModelEntry[]).map((m) => ({
+      ...m,
+      toolCalling: normalizeToolCalling(m.toolCalling),
+    }));
   }
   return raw as unknown as ModelProvider;
 }
@@ -197,4 +205,10 @@ function normalizeProtocol(value: unknown): ModelProviderProtocol {
   if (value === undefined) return "chat_completions";
   if (value === "chat_completions" || value === "openai_responses") return value;
   throw new ValidationError("不支持的 API 协议");
+}
+
+function normalizeToolCalling(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "boolean") return value;
+  throw new ValidationError("模型 toolCalling 必须是布尔值");
 }

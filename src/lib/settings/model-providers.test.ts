@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ModelProviderStore } from "./model-providers";
+import { ModelProviderStore, ValidationError } from "./model-providers";
 
 let settingsDir: string;
 
@@ -31,8 +31,8 @@ describe("ModelProviderStore", () => {
     expect(provider.isDefault).toBe(true);
     expect(provider.apiUrlMode).toBe("base");
     expect(provider.models).toHaveLength(2);
-    expect(provider.models[0]).toEqual({ name: "gpt-4o", contextLength: 128000, isDefault: true });
-    expect(provider.models[1]).toEqual({ name: "gpt-4o-mini", contextLength: 128000, isDefault: false });
+    expect(provider.models[0]).toEqual({ name: "gpt-4o", contextLength: 128000, isDefault: true, toolCalling: false });
+    expect(provider.models[1]).toEqual({ name: "gpt-4o-mini", contextLength: 128000, isDefault: false, toolCalling: false });
   });
 
   it("creates a provider with a full API URL mode", async () => {
@@ -75,6 +75,61 @@ describe("ModelProviderStore", () => {
 
     const providers = await store.listProviders();
     expect(providers).toHaveLength(1);
+  });
+
+  it("normalizes a legacy model without toolCalling to false", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    await store.createProvider({
+      name: "Legacy",
+      apiBaseUrl: "https://api.example.com/v1",
+      apiKey: "sk-test",
+      models: [{ name: "old-model", isDefault: true }],
+    });
+    const [provider] = await store.listProviders();
+    expect(provider.models[0]).toMatchObject({ toolCalling: false });
+  });
+
+  it("persists toolCalling per model on create", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    await store.createProvider({
+      name: "Mixed",
+      apiBaseUrl: "https://api.example.com/v1",
+      apiKey: "sk-test",
+      models: [
+        { name: "tool-model", isDefault: true, toolCalling: true },
+        { name: "plain-model", toolCalling: false },
+      ],
+    });
+    const [provider] = await store.listProviders();
+    expect(provider.models[0]).toMatchObject({ name: "tool-model", toolCalling: true });
+    expect(provider.models[1]).toMatchObject({ name: "plain-model", toolCalling: false });
+  });
+
+  it("persists toolCalling on update", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    const created = await store.createProvider({
+      name: "Up",
+      apiBaseUrl: "https://api.example.com/v1",
+      apiKey: "sk-test",
+      models: [{ name: "m", isDefault: true }],
+    });
+    await store.updateProvider(created.id, {
+      models: [{ name: "m", isDefault: true, toolCalling: true }],
+    });
+    const [provider] = await store.listProviders();
+    expect(provider.models[0]).toMatchObject({ toolCalling: true });
+  });
+
+  it("rejects a non-boolean toolCalling on create", async () => {
+    const store = new ModelProviderStore(settingsDir);
+    await expect(
+      store.createProvider({
+        name: "Bad",
+        apiBaseUrl: "https://api.example.com/v1",
+        apiKey: "sk-test",
+        models: [{ name: "m", isDefault: true, toolCalling: "yes" as unknown as boolean }],
+      }),
+    ).rejects.toThrow(ValidationError);
   });
 
   it("updates a provider", async () => {
@@ -199,8 +254,8 @@ describe("ModelProviderStore", () => {
     expect(providers).toHaveLength(1);
     expect(providers[0].apiUrlMode).toBe("base");
     expect(providers[0].models).toEqual([
-      { name: "gpt-4o", isDefault: false },
-      { name: "gpt-4o-mini", isDefault: true },
+      { name: "gpt-4o", isDefault: false, toolCalling: false },
+      { name: "gpt-4o-mini", isDefault: true, toolCalling: false },
     ]);
   });
 

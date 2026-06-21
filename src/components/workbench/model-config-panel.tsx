@@ -232,6 +232,16 @@ function ModelEntryEditor({
               </option>
             ))}
           </select>
+          <label className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground" title="该模型是否支持函数工具调用（不支持则用规划器兜底）">
+            <input
+              aria-label={`工具调用：${model.name || `模型 ${index + 1}`}`}
+              checked={!!model.toolCalling}
+              onChange={(e) => updateModel(index, { toolCalling: e.target.checked })}
+              type="checkbox"
+              className="h-4 w-4"
+            />
+            工具
+          </label>
           <button
             className={`shrink-0 rounded p-1 ${model.isDefault ? "text-amber-500" : "text-muted-foreground hover:text-amber-500"}`}
             onClick={() => updateModel(index, { isDefault: true })}
@@ -317,8 +327,11 @@ function AddProviderDialog({
               value={protocol}
             >
               <option value="chat_completions">OpenAI-compatible Chat Completions</option>
-              <option value="openai_responses">OpenAI Responses（支持原生联网）</option>
+              <option value="openai_responses">OpenAI Responses</option>
             </select>
+            <p className="text-xs text-muted-foreground">
+              协议仅决定请求格式，不决定是否支持联网；联网能力按模型单独设置。
+            </p>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="mp-url-mode">API 链接模式</Label>
@@ -412,8 +425,11 @@ function EditProviderDialog({
               value={provider.protocol ?? "chat_completions"}
             >
               <option value="chat_completions">OpenAI-compatible Chat Completions</option>
-              <option value="openai_responses">OpenAI Responses（支持原生联网）</option>
+              <option value="openai_responses">OpenAI Responses</option>
             </select>
+            <p className="text-xs text-muted-foreground">
+              协议仅决定请求格式，不决定是否支持联网；联网能力按模型单独设置。
+            </p>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="edit-url-mode">API 链接模式</Label>
