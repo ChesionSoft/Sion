@@ -171,3 +171,28 @@ export type ChatStreamEvent =
   | { type: "markdown_error"; error: string }
   | { type: "done"; sessionId: string }
   | { type: "error"; error: string };
+
+// ---------------------------------------------------------------------------
+// Browser search — shared contracts reused across the foundation and
+// orchestration plans. See docs/superpowers/plans/2026-06-21-*-browser-search*.
+// ---------------------------------------------------------------------------
+
+export type SearchEngineId = "google" | "baidu";
+
+export type SearchResult = {
+  title: string;
+  url: string;
+  snippet?: string;
+  rank: number;
+};
+
+export type BrowserSearchPreferences = {
+  defaultEngine: SearchEngineId;
+  browserPreference: "system" | "chromium";
+};
+
+export type BrowserSearchStatus = {
+  systemBrowser: { kind: "chrome" | "edge"; version: string } | null;
+  managedChromiumInstalled: boolean;
+  profileConfigured: boolean;
+};
