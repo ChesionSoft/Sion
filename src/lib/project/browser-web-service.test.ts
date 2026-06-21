@@ -230,6 +230,62 @@ describe("BrowserWebService/fetch", () => {
     expect(manager.withPersistentContext).not.toHaveBeenCalled();
   });
 
+  it("falls back to the browser when the URL reader fails with a recoverable fetch_failed (e.g. 403)", async () => {
+    const readUrlOutcome = vi.fn(async () =>
+      outcome({ ok: false, code: "fetch_failed", message: "请求失败（状态 403）" }),
+    );
+    const page = fakePage({ content: vi.fn(async () => "<main>real browser content</main>") });
+    const extractText = vi.fn(() => ({ text: "real browser content", title: "Site" }));
+    const svc = createBrowserWebService({
+      browserManager: fakeManager(page),
+      readUrlOutcome,
+      extractText,
+    });
+    const result = await svc.fetch({ url: "https://site.test/article" });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.content).toBe("real browser content");
+    expect(page.goto).toHaveBeenCalledWith("https://site.test/article", expect.any(Object));
+  });
+
+  it("falls back to the browser when the URL reader times out", async () => {
+    const readUrlOutcome = vi.fn(async () =>
+      outcome({ ok: false, code: "timeout", message: "请求超时" }),
+    );
+    const page = fakePage({ content: vi.fn(async () => "<main>slow site</main>") });
+    const extractText = vi.fn(() => ({ text: "slow site", title: "Slow" }));
+    const svc = createBrowserWebService({
+      browserManager: fakeManager(page),
+      readUrlOutcome,
+      extractText,
+    });
+    const result = await svc.fetch({ url: "https://slow.test/" });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.content).toBe("slow site");
+  });
+
+  it("does not fall back to the browser for a too_large failure", async () => {
+    const readUrlOutcome = vi.fn(async () =>
+      outcome({ ok: false, code: "too_large", message: "响应体过大" }),
+    );
+    const manager = fakeManager(fakePage());
+    const svc = createBrowserWebService({ browserManager: manager, readUrlOutcome });
+    const result = await svc.fetch({ url: "https://big.test/" });
+    expect(result.ok).toBe(false);
+    expect(manager.withPersistentContext).not.toHaveBeenCalled();
+  });
+
+  it("returns a sanitized failure when both the URL reader and browser fallback fail", async () => {
+    const readUrlOutcome = vi.fn(async () =>
+      outcome({ ok: false, code: "fetch_failed", message: "请求失败（状态 403）" }),
+    );
+    const page = fakePage({ goto: vi.fn(async () => { throw new Error("nav failed /Users/secret"); }) });
+    const svc = createBrowserWebService({ browserManager: fakeManager(page), readUrlOutcome });
+    const result = await svc.fetch({ url: "https://site.test/article" });
+    expect(result.ok).toBe(false);
+    const text = JSON.stringify(result);
+    expect(text).not.toContain("/Users/secret");
+  });
+
   it("caps returned text at 20000 characters", async () => {
     const long = "x".repeat(30000);
     const readUrlOutcome = vi.fn(async () =>

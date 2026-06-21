@@ -98,6 +98,30 @@ describe("BrowserSearchConfigPanel", () => {
     });
   });
 
+  it("disables the install button when managed Chromium is already installed", async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings/browser-search" && !init) {
+        return new Response(
+          JSON.stringify({
+            preferences: { defaultEngine: "google", browserPreference: "system" },
+            status: {
+              systemBrowser: { kind: "chrome", version: "120.0" },
+              managedChromiumInstalled: true,
+              profileConfigured: true,
+            },
+          }),
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    }) as typeof fetch;
+
+    render(<BrowserSearchConfigPanel />);
+
+    const installButton = await screen.findByRole("button", { name: "已安装托管 Chromium" });
+    expect(installButton).toBeDisabled();
+  });
+
   it("shows sanitized mutation failures", async () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

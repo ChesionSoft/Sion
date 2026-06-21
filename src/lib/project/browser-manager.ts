@@ -153,12 +153,7 @@ async function defaultRemove(target: string): Promise<void> {
 
 async function defaultRunInstall(opts: { env: NodeJS.ProcessEnv }): Promise<void> {
   const { spawn } = await import("node:child_process");
-  const { createRequire } = await import("node:module");
-  // playwright-core's `exports` map does not expose ./cli.js, so resolve the
-  // package root via the exported package.json subpath and join cli.js.
-  const req = createRequire(import.meta.url);
-  const pkgPath = req.resolve("playwright-core/package.json");
-  const cliPath = path.join(path.dirname(pkgPath), "cli.js");
+  const cliPath = await resolvePlaywrightCliPath();
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, "install", "chromium"], {
       env: opts.env,
@@ -172,10 +167,46 @@ async function defaultRunInstall(opts: { env: NodeJS.ProcessEnv }): Promise<void
   });
 }
 
+/**
+ * Locate `playwright-core`'s `cli.js` on disk without going through
+ * `require.resolve`. Under Next.js 16 Turbopack the bundler intercepts
+ * `createRequire(import.meta.url).resolve("playwright-core/package.json")` and
+ * returns a virtual external descriptor string rather than a real path, so the
+ * spawned `node <cli.js>` fails with `Cannot find module`. Walking
+ * `node_modules` from the project root with plain `node:fs`/`node:path` is
+ * bundler-proof: the server runs from the project root, and no bare-specifier
+ * require is involved. Throws if the package cannot be found.
+ */
+export async function resolvePlaywrightCliPath(
+  fs: { existsSync(target: string): boolean } | undefined = undefined,
+  cwd: string = process.cwd(),
+): Promise<string> {
+  const exists = fs?.existsSync ?? (await import("node:fs")).existsSync;
+  let dir = cwd;
+  for (let i = 0; i < 32; i++) {
+    const cliPath = path.join(dir, "node_modules", "playwright-core", "cli.js");
+    if (exists(cliPath)) return cliPath;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error("playwright-core cli.js not found");
+}
+
 function defaultCacheDir(): string {
   const envCache = process.env.XDG_CACHE_HOME;
   if (envCache && envCache.trim()) return path.join(envCache.trim(), "sion");
   return path.join(os.homedir(), ".sion", "browser-cache");
+}
+
+/**
+ * The default managed-Chromium directory (`<cacheDir>/chromium`), used to pin
+ * `PLAYWRIGHT_BROWSERS_PATH` so Playwright's registry resolves to Sion's own
+ * Chromium rather than the default `ms-playwright` cache. Exported for the
+ * loader, which sets the env once when the real runtime is loaded.
+ */
+export function defaultManagedChromiumDir(): string {
+  return path.join(defaultCacheDir(), "chromium");
 }
 
 export class BrowserManager {

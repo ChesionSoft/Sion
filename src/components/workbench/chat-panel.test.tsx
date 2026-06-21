@@ -650,6 +650,237 @@ describe("ChatPanel", () => {
     expect(screen.getByText("example.com")).toBeInTheDocument();
   });
 
+  it("surfaces web_fetch progress and failure notices from the orchestrator", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/settings/model-providers")) {
+        return new Response(JSON.stringify({ providers: defaultProviders }));
+      }
+      if (url.includes("/files")) {
+        return new Response(JSON.stringify({ files: [] }));
+      }
+      if (url.includes("/chat/sessions/s-1")) {
+        return new Response(JSON.stringify({ messages: [] }));
+      }
+      if (url.includes("/chat/sessions")) {
+        return new Response(
+          JSON.stringify({
+            sessions: [
+              {
+                id: "s-1",
+                nodeId: "feature-design",
+                name: "6月14日 23:30",
+                messageCount: 2,
+                webSearchEnabled: false,
+                createdAt: "2026-06-14T15:30:00.000Z",
+                updatedAt: "2026-06-14T15:31:00.000Z",
+              },
+            ],
+          }),
+        );
+      }
+      if (url.includes("/chat") && init?.method === "POST") {
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ type: "web_fetch_start", url: "https://site.test/a" })}\n\n`,
+                ),
+              );
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    type: "web_fetch_result",
+                    url: "https://site.test/a",
+                    ok: false,
+                    code: "browser_unavailable",
+                    message: "抓取失败",
+                  })}\n\n`,
+                ),
+              );
+              controller.enqueue(
+                encoder.encode('data: {"type":"token","content":"已继续对话。"}\n\n'),
+              );
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ type: "done", sessionId: "s-1" })}\n\n`),
+              );
+              controller.close();
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({}));
+    }) as typeof fetch;
+
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "看 https://site.test/a 并总结");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    expect(await screen.findByText(/链接读取失败.*抓取失败/)).toBeInTheDocument();
+  });
+
+  it("allows interrupting generation even when the input is empty", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/settings/model-providers")) {
+        return new Response(JSON.stringify({ providers: defaultProviders }));
+      }
+      if (url.includes("/files")) {
+        return new Response(JSON.stringify({ files: [] }));
+      }
+      if (url.includes("/chat/sessions/s-1")) {
+        return new Response(JSON.stringify({ messages: [] }));
+      }
+      if (url.includes("/chat/sessions")) {
+        return new Response(
+          JSON.stringify({
+            sessions: [
+              {
+                id: "s-1",
+                nodeId: "feature-design",
+                name: "6月14日 23:30",
+                messageCount: 2,
+                webSearchEnabled: false,
+                createdAt: "2026-06-14T15:30:00.000Z",
+                updatedAt: "2026-06-14T15:31:00.000Z",
+              },
+            ],
+          }),
+        );
+      }
+      if (url.includes("/chat") && init?.method === "POST") {
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+              controller.enqueue(encoder.encode('data: {"type":"token","content":"生成中"}\n\n'));
+              // Intentionally do NOT close — keep sending=true so the interrupt
+              // button can be asserted mid-generation.
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({}));
+    }) as typeof fetch;
+
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText(/补充/) as HTMLTextAreaElement;
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(input, "请总结");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    // During generation the button becomes 中断 and must stay clickable.
+    const interruptButton = await screen.findByRole("button", { name: /中断/ });
+    expect(interruptButton).toBeEnabled();
+
+    // Clearing the input mid-generation must NOT disable the interrupt button.
+    await user.clear(input);
+    expect(screen.getByRole("button", { name: /中断/ })).toBeEnabled();
+
+    (streamController as ReadableStreamDefaultController<Uint8Array> | null)?.close();
+  });
+
+  it("shows a delivery-draft status notice while the agent updates the draft", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/settings/model-providers")) {
+        return new Response(JSON.stringify({ providers: defaultProviders }));
+      }
+      if (url.includes("/files")) {
+        return new Response(JSON.stringify({ files: [] }));
+      }
+      if (url.includes("/chat/sessions/s-1")) {
+        return new Response(JSON.stringify({ messages: [] }));
+      }
+      if (url.includes("/chat/sessions")) {
+        return new Response(
+          JSON.stringify({
+            sessions: [
+              {
+                id: "s-1",
+                nodeId: "feature-design",
+                name: "6月14日 23:30",
+                messageCount: 2,
+                webSearchEnabled: false,
+                createdAt: "2026-06-14T15:30:00.000Z",
+                updatedAt: "2026-06-14T15:31:00.000Z",
+              },
+            ],
+          }),
+        );
+      }
+      if (url.includes("/chat") && init?.method === "POST") {
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+              controller.enqueue(encoder.encode('data: {"type":"token","content":"回答中"}\n\n'));
+              controller.enqueue(
+                encoder.encode('data: {"type":"markdown_check_start"}\n\n'),
+              );
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({}));
+    }) as typeof fetch;
+
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "补充一点");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    expect(await screen.findByText("正在更新交付稿…")).toBeInTheDocument();
+
+    (streamController as ReadableStreamDefaultController<Uint8Array> | null)?.close();
+  });
+
   it("opens scoped browser verification with only sessionId and retries as a new turn", async () => {
     const user = userEvent.setup();
     const ctx = createMockSharedContext();

@@ -499,7 +499,7 @@ export function MarkdownPanel({
         <div className="flex items-center justify-between border-b bg-muted/20 px-5 py-2">
           <span className="text-xs text-muted-foreground">
             {genState.phase === "checking" && "正在判断是否需要更新交付稿..."}
-            {genState.phase === "previewing_increment" && "正在动画展示增量写入..."}
+            {genState.phase === "previewing_increment" && "正在修改交付稿…"}
             {genState.phase === "submitting_increment" && "正在提交增量写入..."}
             {genState.phase === "previewing_rewrite" && "按规则重写中..."}
           </span>

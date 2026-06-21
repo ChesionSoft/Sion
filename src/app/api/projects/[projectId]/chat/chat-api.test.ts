@@ -23,6 +23,11 @@ vi.mock("@/lib/project/browser-web-service", () => ({
   })),
 }));
 
+// Mock the Playwright loader so no real playwright-core runtime is imported.
+vi.mock("@/lib/project/playwright-loader", () => ({
+  loadPlaywright: vi.fn(async () => ({ chromium: {} })),
+}));
+
 // Capture the orchestrator input and yield a configurable event sequence.
 let orchestratorInput: Record<string, unknown> | null = null;
 let orchestratorEvents: WebOrchestratorEvent[] = [

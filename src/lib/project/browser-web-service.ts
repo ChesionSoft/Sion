@@ -3,7 +3,7 @@ import { baiduSearchAdapter } from "./baidu-search";
 import { BrowserLaunchError } from "./browser-manager";
 import { BrowserVerificationStore, browserVerificationStore } from "./browser-verification";
 import { extractPageText } from "./url-content";
-import { readPublicUrlOutcome, type UrlReadOutcome } from "./url-reader";
+import { readPublicUrlOutcome, type UrlReadOutcome, type UrlReadErrorCode } from "./url-reader";
 import type { BrowserWebErrorCode, SearchEngineId, SearchResult } from "./types";
 import type { SearchEngineAdapter } from "./search-engine";
 
@@ -67,6 +67,16 @@ const DEFAULT_SEARCH_TIMEOUT_MS = 12_000;
 const DEFAULT_MAX_QUERY_LENGTH = 200;
 const DEFAULT_MAX_FETCH_CHARS = 20_000;
 
+/**
+ * URL-reader failure codes worth retrying with a real browser. Many sites
+ * block bare HTTP clients (403/5xx → `fetch_failed`) or stall them
+ * (`timeout`), but serve a normal headed/headless browser that sends a real
+ * UA and runs JS. Policy/size/abort failures are NOT retried: the egress
+ * proxy enforces the same network policy, `too_large` is genuine, and
+ * `aborted` means the user cancelled.
+ */
+const RECOVERABLE_FETCH_CODES: ReadonlySet<UrlReadErrorCode> = new Set(["fetch_failed", "timeout"]);
+
 function defaultAdapters(): Record<SearchEngineId, SearchEngineAdapter> {
   return { google: googleSearchAdapter, baidu: baiduSearchAdapter };
 }
@@ -80,6 +90,31 @@ export function createBrowserWebService(deps: BrowserWebServiceDeps): BrowserWeb
   const searchTimeoutMs = deps.searchTimeoutMs ?? DEFAULT_SEARCH_TIMEOUT_MS;
   const maxQueryLength = deps.maxQueryLength ?? DEFAULT_MAX_QUERY_LENGTH;
   const maxFetchChars = deps.maxFetchChars ?? DEFAULT_MAX_FETCH_CHARS;
+
+  // Launch the browser and extract the page text. Used both for JS-rendered
+  // pages (URL reader returned an empty HTML body) and as a retry when the URL
+  // reader failed with a recoverable error (403/timeout). Page content is
+  // untrusted data. Returns a sanitized WebFetchResult on failure.
+  async function fetchViaBrowser(url: string, signal?: AbortSignal): Promise<WebFetchResult> {
+    try {
+      const content = await browserManager.withPersistentContext(
+        async (ctx) => {
+          const page = (await ctx.newPage()) as BrowserPageLike;
+          try {
+            await page.goto(url, { timeout: searchTimeoutMs, waitUntil: "domcontentloaded" });
+            const html = await page.content();
+            return extractText("text/html", html).text;
+          } finally {
+            await page.close().catch(() => {});
+          }
+        },
+        { signal },
+      );
+      return { ok: true, url, content };
+    } catch (error) {
+      return mapFetchError(error, signal);
+    }
+  }
 
   return {
     async search(input) {
@@ -136,32 +171,28 @@ export function createBrowserWebService(deps: BrowserWebServiceDeps): BrowserWeb
 
     async fetch(input) {
       const outcome = await readUrlOutcome(input.url, input.signal);
-      if (!outcome.ok) {
-        return { ok: false, code: mapFetchCode(outcome.code), message: sanitize(outcome.message) };
-      }
-      const isHtml = outcome.contentType.toLowerCase().includes("html");
-      if (isHtml && outcome.isEmpty) {
-        try {
-          const content = await browserManager.withPersistentContext(
-            async (ctx) => {
-              const page = (await ctx.newPage()) as BrowserPageLike;
-              try {
-                await page.goto(outcome.url, { timeout: searchTimeoutMs, waitUntil: "domcontentloaded" });
-                const html = await page.content();
-                const extracted = extractText("text/html", html);
-                return extracted.text;
-              } finally {
-                await page.close().catch(() => {});
-              }
-            },
-            { signal: input.signal },
-          );
-          return { ok: true, url: outcome.url, content: content.slice(0, maxFetchChars) };
-        } catch (error) {
-          return mapFetchError(error, input.signal);
+      if (outcome.ok) {
+        const isHtml = outcome.contentType.toLowerCase().includes("html");
+        if (isHtml && outcome.isEmpty) {
+          const browserResult = await fetchViaBrowser(outcome.url, input.signal);
+          if (browserResult.ok) {
+            return { ok: true, url: outcome.url, content: browserResult.content.slice(0, maxFetchChars) };
+          }
+          return browserResult;
         }
+        return { ok: true, url: outcome.url, content: outcome.content.slice(0, maxFetchChars) };
       }
-      return { ok: true, url: outcome.url, content: outcome.content.slice(0, maxFetchChars) };
+      // The URL reader failed. Retry with a real browser for recoverable
+      // failures (403 anti-bot, timeout) — many sites block bare HTTP clients
+      // but serve a browser. Policy/size/abort failures are not retried.
+      if (RECOVERABLE_FETCH_CODES.has(outcome.code)) {
+        const browserResult = await fetchViaBrowser(input.url, input.signal);
+        if (browserResult.ok) {
+          return { ok: true, url: input.url, content: browserResult.content.slice(0, maxFetchChars) };
+        }
+        return browserResult;
+      }
+      return { ok: false, code: mapFetchCode(outcome.code), message: sanitize(outcome.message) };
     },
   };
 }

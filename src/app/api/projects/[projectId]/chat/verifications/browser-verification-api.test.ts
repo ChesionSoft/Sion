@@ -16,6 +16,10 @@ vi.mock("@/lib/project/browser-manager", () => {
   return { BrowserManager };
 });
 
+vi.mock("@/lib/project/playwright-loader", () => ({
+  loadPlaywright: vi.fn(async () => ({ chromium: {} })),
+}));
+
 import { GET, POST } from "./[verificationId]/route";
 
 function post(verificationId: string, body: unknown, projectId = "p-1") {

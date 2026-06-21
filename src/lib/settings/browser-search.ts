@@ -100,14 +100,28 @@ function preferencesErrorMessage(error: z.ZodError): string {
 }
 
 /**
- * Placeholder status provider used until browser-manager is wired in. Reports
- * no system browser, no managed Chromium, and no configured profile. The real
- * derivation replaces this in the browser-runtime task.
+ * Real status provider: derives `BrowserSearchStatus` live from the filesystem
+ * via `BrowserManager.getStatus()` (system browser probe, managed-Chromium
+ * existence, profile existence). Used by `GET /api/settings/browser-search`,
+ * which the homepage panel loads on mount, so opening the homepage auto-detects
+ * current browser status without a manual "重新检测" click.
+ *
+ * `playwright-core` and `browser-manager` are imported lazily so the settings
+ * module's static import graph stays light and is never pulled into client
+ * bundles. If probing fails for any reason, fall back to the "nothing ready"
+ * status rather than 500-ing the settings read.
  */
-function defaultStatusProvider(): BrowserSearchStatus {
-  return {
-    systemBrowser: null,
-    managedChromiumInstalled: false,
-    profileConfigured: false,
-  };
+async function defaultStatusProvider(): Promise<BrowserSearchStatus> {
+  try {
+    const { BrowserManager } = await import("@/lib/project/browser-manager");
+    const { loadPlaywright } = await import("@/lib/project/playwright-loader");
+    const manager = new BrowserManager({ playwright: await loadPlaywright() });
+    return await manager.getStatus();
+  } catch {
+    return {
+      systemBrowser: null,
+      managedChromiumInstalled: false,
+      profileConfigured: false,
+    };
+  }
 }

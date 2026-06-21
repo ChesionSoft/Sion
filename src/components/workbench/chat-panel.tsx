@@ -220,6 +220,7 @@ export function ChatPanel({
   const [savingWebSearch, setSavingWebSearch] = useState(false);
   const [urlReadNotice, setUrlReadNotice] = useState<string | null>(null);
   const [webNotice, setWebNotice] = useState<string | null>(null);
+  const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [pendingVerification, setPendingVerification] = useState<PendingVerification | null>(null);
   const onGenStateChangeRef = useRef(onGenStateChange);
   useEffect(() => { onGenStateChangeRef.current = onGenStateChange; }, [onGenStateChange]);
@@ -418,6 +419,7 @@ export function ChatPanel({
     // Clear transient notices from the previous send.
     setUrlReadNotice(null);
     setWebNotice(null);
+    setDraftNotice(null);
     setPendingVerification(null);
 
     // Show user message immediately and clear input
@@ -521,6 +523,22 @@ export function ChatPanel({
                 }
               }
               setUrlReadNotice(null);
+            } else if (type === "web_fetch_start") {
+              const url = (event.url as string) ?? "";
+              setUrlReadNotice(`正在读取链接${url ? `：${url}` : ""}…`);
+            } else if (type === "web_fetch_result") {
+              if (event.ok !== true && event.message) {
+                setWebNotice(`链接读取失败：${event.message as string}`);
+              }
+              setUrlReadNotice(null);
+            } else if (type === "web_search_start") {
+              const query = (event.query as string) ?? "";
+              setUrlReadNotice(`正在搜索${query ? `“${query}”` : ""}…`);
+            } else if (type === "web_search_result") {
+              if (event.ok !== true && event.message) {
+                setWebNotice(`搜索失败：${event.message as string}`);
+              }
+              setUrlReadNotice(null);
             } else if (type === "notice" && event.message) {
               setWebNotice(event.message as string);
             } else if (type === "source" && event.source) {
@@ -545,15 +563,18 @@ export function ChatPanel({
               });
             } else if (type === "markdown_check_start") {
               onGenStateChangeRef.current({ phase: "checking" as const });
+              setDraftNotice("正在更新交付稿…");
             } else if (type === "markdown_unchanged") {
               if (event.warning) {
                 setError(event.warning as string);
               }
               onGenStateChangeRef.current({ phase: "idle" as const });
+              setDraftNotice(null);
             } else if (type === "markdown_start") {
               const mode = event.mode as string;
               if (mode === "increment") {
                 pendingPatchRevision = event.baseRevision as number;
+                setDraftNotice("正在生成交付稿修改…");
               }
             } else if (type === "markdown_patch_preview") {
               const patch = event.patch as import("@/lib/project/types").NodeMarkdownPatch;
@@ -566,6 +587,9 @@ export function ChatPanel({
                   baseRevision: pendingPatchRevision,
                 });
               }
+              // The markdown panel owns the write-animation status from here;
+              // clear the chat-side draft notice.
+              setDraftNotice(null);
               sharedContext.setActiveSessionId(event.sessionId as string);
               setSessions((current) =>
                 current.map((session) =>
@@ -578,6 +602,7 @@ export function ChatPanel({
             } else if (type === "markdown_error" && event.error) {
               setError(event.error as string);
               onGenStateChangeRef.current({ phase: "idle" });
+              setDraftNotice(null);
             } else if (type === "error" && event.error) {
               setError(event.error as string);
             }
@@ -721,6 +746,11 @@ export function ChatPanel({
         {webNotice ? (
           <p className="rounded-md border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
             {webNotice}
+          </p>
+        ) : null}
+        {draftNotice ? (
+          <p className="rounded-md border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
+            {draftNotice}
           </p>
         ) : null}
         {pendingVerification ? (
@@ -948,7 +978,10 @@ export function ChatPanel({
               ) : null}
               <Button
                 className={sending ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : ""}
-                disabled={!message.trim() || !sharedContext.providerId || !sharedContext.model || !sharedContext.activeSessionId}
+                disabled={
+                  (!sharedContext.providerId || !sharedContext.model || !sharedContext.activeSessionId) ||
+                  (!sending && !message.trim())
+                }
                 onClick={() => {
                   if (sending) abortSendMessage();
                   else void sendMessage();

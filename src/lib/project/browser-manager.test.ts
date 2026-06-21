@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,7 @@ import {
   BrowserLaunchError,
   BrowserManager,
   enforceEgressPolicy,
+  resolvePlaywrightCliPath,
   type BrowserManagerDeps,
   type PersistentContextLike,
   type RequestLike,
@@ -432,6 +433,43 @@ describe("BrowserManager/egress proxy wiring", () => {
     );
     await mgr.withPersistentContext(async () => "ok");
     expect(routeMock).toHaveBeenCalledWith("**/*", enforceEgressPolicy);
+  });
+});
+
+describe("resolvePlaywrightCliPath", () => {
+  it("walks node_modules from the given cwd and returns cli.js", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "Sion-pw-resolve-"));
+    const cliPath = path.join(root, "node_modules", "playwright-core", "cli.js");
+    await mkdir(path.dirname(cliPath), { recursive: true });
+    await writeFile(cliPath, "#!/usr/bin/env node\n");
+    try {
+      const resolved = await resolvePlaywrightCliPath(undefined, root);
+      expect(resolved).toBe(cliPath);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("finds cli.js in a parent directory's node_modules", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "Sion-pw-resolve-"));
+    const cliPath = path.join(root, "node_modules", "playwright-core", "cli.js");
+    await mkdir(path.dirname(cliPath), { recursive: true });
+    await writeFile(cliPath, "#!/usr/bin/env node\n");
+    const nested = path.join(root, "packages", "app");
+    await mkdir(nested, { recursive: true });
+    try {
+      const resolved = await resolvePlaywrightCliPath(undefined, nested);
+      expect(resolved).toBe(cliPath);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when playwright-core is not present anywhere up the tree", async () => {
+    const exists = vi.fn(() => false);
+    await expect(resolvePlaywrightCliPath({ existsSync: exists }, "/nonexistent-root")).rejects.toThrow(
+      "playwright-core cli.js not found",
+    );
   });
 });
 

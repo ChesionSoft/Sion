@@ -9,6 +9,7 @@ import { ProjectStore } from "@/lib/project/store";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
 import { BrowserSearchStore } from "@/lib/settings/browser-search";
 import { BrowserManager } from "@/lib/project/browser-manager";
+import { loadPlaywright } from "@/lib/project/playwright-loader";
 import { createBrowserWebService } from "@/lib/project/browser-web-service";
 import { runWebOrchestrator, type WebOrchestratorEvent } from "@/lib/project/web-tool-orchestrator";
 import { extractHttpUrls } from "@/lib/project/url-content";
@@ -165,7 +166,9 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   const browserSearchStore = new BrowserSearchStore();
   const preferences = await browserSearchStore.getPreferences();
 
-  const browserService = createBrowserWebService({ browserManager: new BrowserManager() });
+  const browserService = createBrowserWebService({
+    browserManager: new BrowserManager({ playwright: await loadPlaywright() }),
+  });
 
   const abortController = new AbortController();
   request.signal.addEventListener("abort", () => abortController.abort(), { once: true });

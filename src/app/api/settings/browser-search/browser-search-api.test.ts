@@ -1,7 +1,28 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BrowserSearchStatus } from "@/lib/project/types";
+
+// The default status provider derives status from BrowserManager + the
+// Playwright loader. Mock both so the GET/PATCH route stays deterministic and
+// never touches the real filesystem or playwright-core runtime.
+const fakeStatus: BrowserSearchStatus = {
+  systemBrowser: null,
+  managedChromiumInstalled: false,
+  profileConfigured: false,
+};
+
+vi.mock("@/lib/project/browser-manager", () => ({
+  BrowserManager: class {
+    getStatus = vi.fn(async () => ({ ...fakeStatus }));
+  },
+}));
+
+vi.mock("@/lib/project/playwright-loader", () => ({
+  loadPlaywright: vi.fn(async () => ({ chromium: {} })),
+}));
+
 import { GET, PATCH } from "./route";
 
 let tmpDir: string;

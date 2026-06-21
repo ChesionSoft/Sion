@@ -196,13 +196,20 @@ export function BrowserSearchConfigPanel() {
             <RefreshCwIcon data-icon="inline-start" />
             {mutation === "detect" ? "检测中..." : "重新检测"}
           </Button>
-          <Button disabled={busy} onClick={() => void runBrowserAction("install")} type="button" variant="outline">
+          <Button
+            disabled={busy || status.managedChromiumInstalled}
+            onClick={() => void runBrowserAction("install")}
+            type="button"
+            variant="outline"
+          >
             <CheckIcon data-icon="inline-start" />
             {mutation === "install"
               ? "安装中..."
-              : confirmInstall
-                ? "确认安装托管 Chromium"
-                : "安装托管 Chromium"}
+              : status.managedChromiumInstalled
+                ? "已安装托管 Chromium"
+                : confirmInstall
+                  ? "确认安装托管 Chromium"
+                  : "安装托管 Chromium"}
           </Button>
           <Button disabled={busy || !status.managedChromiumInstalled} onClick={() => void runBrowserAction("remove")} type="button" variant="outline">
             <Trash2Icon data-icon="inline-start" />

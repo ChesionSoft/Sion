@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { BrowserManager } from "@/lib/project/browser-manager";
+import { loadPlaywright } from "@/lib/project/playwright-loader";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
@@ -24,7 +25,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "不支持的操作" }, { status: 400, headers: NO_STORE });
   }
 
-  const manager = new BrowserManager();
+  const manager = new BrowserManager({ playwright: await loadPlaywright() });
 
   if (MUTATION_ACTIONS.has(action)) {
     if (mutationInFlight) {
@@ -35,8 +36,9 @@ export async function POST(request: Request) {
       if (action === "install") await manager.installManagedChromium();
       else if (action === "remove") await manager.removeManagedChromium();
       else await manager.clearProfile();
-    } catch {
+    } catch (err) {
       // Sanitized: never leak raw exception text or local paths.
+      console.error("[browser-action] install/remove/clear failed:", err);
       return NextResponse.json(
         { error: "浏览器操作失败" },
         { status: 500, headers: NO_STORE },

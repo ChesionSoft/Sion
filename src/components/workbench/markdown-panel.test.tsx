@@ -173,7 +173,7 @@ describe("MarkdownPanel", () => {
     renderPanel({
       genState: { phase: "previewing_increment", patches: [], baseRevision: 0 },
     });
-    expect(screen.getByText("正在动画展示增量写入...")).toBeInTheDocument();
+    expect(screen.getByText("正在修改交付稿…")).toBeInTheDocument();
   });
 
   it("shows submitting status during submitting_increment", () => {
