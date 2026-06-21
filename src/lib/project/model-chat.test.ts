@@ -1,6 +1,7 @@
 import { ReadableStream } from "node:stream/web";
 import { describe, expect, it, vi } from "vitest";
-import { callModelChat, streamModelChat } from "./model-chat";
+import { callModelChat, streamModelChat, streamModelTurn } from "./model-chat";
+import { toolDefinitions } from "./model-tools";
 
 function streamingResponse(chunks: string[]): Response {
   const encoder = new TextEncoder();
@@ -111,5 +112,35 @@ describe("callModelChat", () => {
     expect(text).toBe("resp");
     const [url] = fetchImpl.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/v1/responses");
+  });
+});
+
+describe("streamModelTurn", () => {
+  it("routes chat_completions with tools through the tool-aware turn", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      streamingResponse([
+        'data: {"choices":[{"delta":{"content":"ans"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    );
+
+    const events: { type: string }[] = [];
+    for await (const e of streamModelTurn({
+      apiBaseUrl: "https://api.example.com/v1",
+      apiKey: "sk-test",
+      model: "gpt-4o",
+      protocol: "chat_completions",
+      conversation: [{ type: "message", role: "user", content: "hi" }],
+      tools: toolDefinitions,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })) {
+      events.push(e as { type: string });
+    }
+
+    expect(events.map((e) => e.type)).toEqual(["content"]);
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(body.tools).toHaveLength(2);
+    expect(body.tool_choice).toBe("auto");
   });
 });

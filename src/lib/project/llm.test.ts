@@ -1,6 +1,12 @@
 import { ReadableStream } from "node:stream/web";
 import { describe, expect, it, vi } from "vitest";
-import { callOpenAICompatibleChat, resolveChatCompletionsUrl, streamOpenAICompatibleChat } from "./llm";
+import {
+  callOpenAICompatibleChat,
+  resolveChatCompletionsUrl,
+  streamChatCompletionsTurn,
+  streamOpenAICompatibleChat,
+} from "./llm";
+import { toolDefinitions, type ModelConversationItem } from "./model-tools";
 
 describe("callOpenAICompatibleChat", () => {
   it("sends OpenAI-compatible chat completions request", async () => {
@@ -279,5 +285,158 @@ describe("resolveChatCompletionsUrl", () => {
     expect(
       resolveChatCompletionsUrl("https://proxy.example.com/openai/chat/completions", "full"),
     ).toBe("https://proxy.example.com/openai/chat/completions");
+  });
+});
+
+describe("streamChatCompletionsTurn", () => {
+  it("sends tools, tool_choice auto, assistant tool_calls, and tool results", async () => {
+    const mockBody = createMockStreamBody(['data: [DONE]\n\n']);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+
+    const conversation: ModelConversationItem[] = [
+      { type: "message", role: "system", content: "sys" },
+      { type: "message", role: "user", content: "search it" },
+      { type: "tool_call", call: { id: "call_1", name: "web_search", argumentsJson: '{"query":"x"}' } },
+      { type: "tool_result", callId: "call_1", name: "web_search", output: '{"ok":true,"results":[]}' },
+    ];
+
+    for await (const _part of streamChatCompletionsTurn({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      conversation,
+      tools: toolDefinitions,
+    })) {
+      void _part;
+    }
+
+    const body = JSON.parse((fetchMock.mock.calls[0] as [string, { body: string }])[1].body);
+    expect(body.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "web_search",
+          description: expect.any(String),
+          parameters: expect.any(Object),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "web_fetch",
+          description: expect.any(String),
+          parameters: expect.any(Object),
+        },
+      },
+    ]);
+    expect(body.tool_choice).toBe("auto");
+    // assistant tool_call becomes assistant.tool_calls
+    const assistant = body.messages.find(
+      (m: { role: string; tool_calls?: unknown }) => m.role === "assistant" && m.tool_calls,
+    );
+    expect(assistant.tool_calls).toEqual([
+      { id: "call_1", type: "function", function: { name: "web_search", arguments: '{"query":"x"}' } },
+    ]);
+    // tool_result becomes role: tool with tool_call_id
+    const toolMsg = body.messages.find((m: { role: string }) => m.role === "tool");
+    expect(toolMsg).toEqual({
+      role: "tool",
+      tool_call_id: "call_1",
+      content: '{"ok":true,"results":[]}',
+    });
+  });
+
+  it("leaves the request body structurally unchanged when no tools are provided", async () => {
+    const mockBody = createMockStreamBody(['data: [DONE]\n\n']);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+
+    for await (const _part of streamChatCompletionsTurn({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      conversation: [{ type: "message", role: "user", content: "Hi" }],
+    })) {
+      void _part;
+    }
+
+    const body = JSON.parse((fetchMock.mock.calls[0] as [string, { body: string }])[1].body);
+    expect(body).not.toHaveProperty("tools");
+    expect(body).not.toHaveProperty("tool_choice");
+    expect(body.messages).toEqual([{ role: "user", content: "Hi" }]);
+  });
+
+  it("assembles interleaved tool_call fragments by index into complete calls", async () => {
+    const mockBody = createMockStreamBody([
+      'data: {"choices":[{"delta":{"content":"ans"}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"web_search","arguments":""}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"quer"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"y\\":\\"hi\\"}"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","function":{"name":"web_fetch","arguments":""}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\\"url\\":\\"https://x.com\\"}"}}]}}]}\n\n',
+      'data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+
+    const events = [];
+    for await (const e of streamChatCompletionsTurn({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      conversation: [{ type: "message", role: "user", content: "Hi" }],
+      tools: toolDefinitions,
+    })) {
+      events.push(e);
+    }
+
+    expect(events).toEqual([
+      { type: "content", delta: "ans" },
+      { type: "tool_call", call: { id: "call_1", name: "web_search", argumentsJson: '{"query":"hi"}' } },
+      { type: "tool_call", call: { id: "call_2", name: "web_fetch", argumentsJson: '{"url":"https://x.com"}' } },
+    ]);
+  });
+
+  it("preserves reasoning deltas alongside content", async () => {
+    const mockBody = createMockStreamBody([
+      'data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"ans"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+    const events = [];
+    for await (const e of streamChatCompletionsTurn({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      conversation: [{ type: "message", role: "user", content: "Hi" }],
+    })) {
+      events.push(e);
+    }
+    expect(events).toEqual([
+      { type: "reasoning", delta: "thinking" },
+      { type: "content", delta: "ans" },
+    ]);
+  });
+
+  it("throws a protocol error for an incomplete tool call (missing id)", async () => {
+    const mockBody = createMockStreamBody([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"web_search","arguments":"{}"}}]}}]}\n\n',
+      'data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+    const gen = streamChatCompletionsTurn({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      conversation: [{ type: "message", role: "user", content: "Hi" }],
+      tools: toolDefinitions,
+    });
+    await expect(gen.next()).rejects.toThrow();
   });
 });
