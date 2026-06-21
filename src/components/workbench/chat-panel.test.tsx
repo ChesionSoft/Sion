@@ -155,6 +155,23 @@ beforeEach(() => {
       );
     }
 
+    if (url.includes("/chat/sessions/s-1") && init?.method === "PATCH") {
+      const body = JSON.parse(String(init.body)) as { webSearchEnabled?: boolean };
+      return new Response(
+        JSON.stringify({
+          session: {
+            id: "s-1",
+            nodeId: "feature-design",
+            name: "6月14日 23:30",
+            messageCount: 2,
+            webSearchEnabled: body.webSearchEnabled === true,
+            createdAt: "2026-06-14T15:30:00.000Z",
+            updatedAt: "2026-06-14T15:31:00.000Z",
+          },
+        }),
+      );
+    }
+
     if (url.includes("/chat/sessions/s-1")) {
       return new Response(JSON.stringify({ messages: [] }));
     }
@@ -168,6 +185,7 @@ beforeEach(() => {
               nodeId: "feature-design",
               name: "6月14日 23:30",
               messageCount: 2,
+              webSearchEnabled: false,
               createdAt: "2026-06-14T15:30:00.000Z",
               updatedAt: "2026-06-14T15:31:00.000Z",
             },
@@ -427,5 +445,180 @@ describe("ChatPanel", () => {
       // There should be no idle calls (no markdown_unchanged event in mock)
       expect(idleCallsAfterChecking).toHaveLength(0);
     }
+  });
+
+  it("reflects and toggles the persisted session web search preference", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
+
+    const webButton = await screen.findByRole("button", { name: "联网搜索：关闭" });
+    expect(webButton).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(webButton);
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/chat/sessions/s-1"),
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ nodeId: "feature-design", webSearchEnabled: true }),
+        }),
+      );
+    });
+
+    expect(await screen.findByRole("button", { name: "联网搜索：开启" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("rolls back the toggle when the PATCH fails", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/chat/sessions/s-1") && init?.method === "PATCH") {
+        return new Response(JSON.stringify({ error: "会话不存在" }), { status: 404 });
+      }
+      return (original as unknown as (i: RequestInfo | URL, init?: RequestInit) => Promise<Response>)(input, init);
+    }) as typeof fetch;
+
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
+
+    const webButton = await screen.findByRole("button", { name: "联网搜索：关闭" });
+    await user.click(webButton);
+
+    expect(await screen.findByRole("button", { name: "联网搜索：关闭" })).toBeInTheDocument();
+  });
+
+  it("renders URL read status, web_search_unavailable notice, and deduped source links", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/settings/model-providers")) {
+        return new Response(JSON.stringify({ providers: defaultProviders }));
+      }
+      if (url.includes("/files")) {
+        return new Response(JSON.stringify({ files: [] }));
+      }
+      if (url.includes("/chat/sessions/s-1") && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as { webSearchEnabled?: boolean };
+        return new Response(
+          JSON.stringify({
+            session: {
+              id: "s-1",
+              nodeId: "feature-design",
+              name: "6月14日 23:30",
+              messageCount: 2,
+              webSearchEnabled: body.webSearchEnabled === true,
+              createdAt: "2026-06-14T15:30:00.000Z",
+              updatedAt: "2026-06-14T15:31:00.000Z",
+            },
+          }),
+        );
+      }
+      if (url.includes("/chat/sessions/s-1")) {
+        return new Response(JSON.stringify({ messages: [] }));
+      }
+      if (url.includes("/chat/sessions")) {
+        return new Response(
+          JSON.stringify({
+            sessions: [
+              {
+                id: "s-1",
+                nodeId: "feature-design",
+                name: "6月14日 23:30",
+                messageCount: 2,
+                webSearchEnabled: true,
+                createdAt: "2026-06-14T15:30:00.000Z",
+                updatedAt: "2026-06-14T15:31:00.000Z",
+              },
+            ],
+          }),
+        );
+      }
+      if (url.includes("/chat") && init?.method === "POST") {
+        const encoder = new TextEncoder();
+        const source = {
+          id: "src-1",
+          kind: "provided_url",
+          url: "https://example.com/",
+          title: "Example",
+          domain: "example.com",
+          snippet: "片段",
+          retrievedAt: "2026-06-21T00:00:00.000Z",
+        };
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ type: "url_read_start", urls: ["https://example.com/"] })}\n\n`,
+                ),
+              );
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ type: "url_read_result", url: "https://example.com/", ok: true, source })}\n\n`,
+                ),
+              );
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ type: "web_search_unavailable" })}\n\n`),
+              );
+              // Duplicate source event from the adapter — must dedupe to one link
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ type: "source", source })}\n\n`),
+              );
+              controller.enqueue(
+                encoder.encode('data: {"type":"token","content":"已总结。"}\n\n'),
+              );
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ type: "done", sessionId: "s-1" })}\n\n`),
+              );
+              controller.close();
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({}));
+    }) as typeof fetch;
+
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "看 https://example.com/ 并总结");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    expect(await screen.findByText("当前模型不支持原生联网，已继续普通对话")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /Example/ })).toHaveLength(1);
+    expect(screen.getByText("example.com")).toBeInTheDocument();
   });
 });

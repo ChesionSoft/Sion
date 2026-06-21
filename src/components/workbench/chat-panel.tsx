@@ -7,6 +7,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   FileIcon,
+  Globe2Icon,
   PaperclipIcon,
   PlusIcon,
   SendIcon,
@@ -18,7 +19,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { WORKFLOW_NODES } from "@/lib/project/nodes";
-import type { ChatMessage, ChatSession, ModelProvider, ProjectFile, ProjectNode, ReasoningEffort } from "@/lib/project/types";
+import type { ChatMessage, ChatSession, ExternalSource, ModelProvider, ProjectFile, ProjectNode, ReasoningEffort } from "@/lib/project/types";
 import type { MarkdownGenerationState, SharedWorkbenchContext } from "./markdown-generation-types";
 
 const REASONING_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
@@ -156,7 +157,28 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
         </details>
       ) : null}
       <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+      {msg.sources && msg.sources.length > 0 ? (
+        <div className="mt-1 flex flex-col gap-1 border-t pt-2">
+          {msg.sources.map((source) => (
+            <SourceLink key={source.id} source={source} />
+          ))}
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function SourceLink({ source }: { source: ExternalSource }) {
+  return (
+    <a
+      className="flex items-center justify-between gap-2 rounded-md bg-background/60 px-2 py-1 text-xs hover:underline"
+      href={source.url}
+      rel="noreferrer noopener"
+      target="_blank"
+    >
+      <span className="truncate">{source.title || source.url}</span>
+      <span className="shrink-0 text-muted-foreground">{source.domain}</span>
+    </a>
   );
 }
 
@@ -188,8 +210,51 @@ export function ChatPanel({
   const filePopoverRef = useRef<HTMLDivElement>(null);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const sessionMenuRef = useRef<HTMLDivElement>(null);
+  const [savingWebSearch, setSavingWebSearch] = useState(false);
+  const [urlReadNotice, setUrlReadNotice] = useState<string | null>(null);
+  const [webSearchUnavailableNotice, setWebSearchUnavailableNotice] = useState(false);
   const onGenStateChangeRef = useRef(onGenStateChange);
   useEffect(() => { onGenStateChangeRef.current = onGenStateChange; }, [onGenStateChange]);
+
+  const activeSession = sessions.find((s) => s.id === sharedContext.activeSessionId);
+  const webSearchEnabled = activeSession?.webSearchEnabled ?? false;
+
+  async function toggleWebSearch() {
+    if (!activeSession || savingWebSearch) return;
+    const next = !activeSession.webSearchEnabled;
+    const previous = activeSession;
+    setSavingWebSearch(true);
+    // Optimistic update
+    setSessions((current) =>
+      current.map((s) =>
+        s.id === activeSession.id ? { ...s, webSearchEnabled: next } : s,
+      ),
+    );
+    try {
+      const res = await fetch(
+        `/api/projects/${projectId}/chat/sessions/${activeSession.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nodeId: activeNode.id, webSearchEnabled: next }),
+        },
+      );
+      const data = (await res.json()) as { session?: ChatSession; error?: string };
+      if (!res.ok || !data.session) {
+        // Rollback
+        setSessions((current) =>
+          current.map((s) => (s.id === previous.id ? previous : s)),
+        );
+        setError(data.error ?? "切换联网搜索失败");
+        return;
+      }
+      setSessions((current) =>
+        current.map((s) => (s.id === data.session!.id ? data.session! : s)),
+      );
+    } finally {
+      setSavingWebSearch(false);
+    }
+  }
 
   async function loadSessionMessages(sessionId: string) {
     const response = await fetch(
@@ -336,6 +401,9 @@ export function ChatPanel({
   async function sendMessage() {
     if (!message.trim() || sending) return;
     setError("");
+    // Clear transient notices from the previous send.
+    setUrlReadNotice(null);
+    setWebSearchUnavailableNotice(false);
 
     const userContent = message.trim();
 
@@ -353,6 +421,8 @@ export function ChatPanel({
     let textBuffer: ReturnType<typeof createStreamingTextBuffer> | null = null;
     let pendingPatchRevision: number | null = null;
     const pendingPatches: import("@/lib/project/types").NodeMarkdownPatch[] = [];
+    const pendingSources: ExternalSource[] = [];
+    const seenSourceIds = new Set<string>();
 
     try {
       const res = await fetch(`/api/projects/${projectId}/chat`, {
@@ -419,6 +489,40 @@ export function ChatPanel({
               textBuffer.push("reasoning", event.content as string);
             } else if (type === "token" && event.content) {
               textBuffer.push("content", event.content as string);
+            } else if (type === "url_read_start") {
+              const urls = (event.urls as string[]) ?? [];
+              setUrlReadNotice(`正在读取 ${urls.length} 个网页…`);
+            } else if (type === "url_read_result") {
+              if (event.ok === true && event.source) {
+                const source = event.source as ExternalSource;
+                if (!seenSourceIds.has(source.id)) {
+                  seenSourceIds.add(source.id);
+                  pendingSources.push(source);
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantId
+                        ? { ...m, sources: [...(m.sources ?? []), source] }
+                        : m,
+                    ),
+                  );
+                }
+              }
+              setUrlReadNotice(null);
+            } else if (type === "web_search_unavailable") {
+              setWebSearchUnavailableNotice(true);
+            } else if (type === "source" && event.source) {
+              const source = event.source as ExternalSource;
+              if (!seenSourceIds.has(source.id)) {
+                seenSourceIds.add(source.id);
+                pendingSources.push(source);
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, sources: [...(m.sources ?? []), source] }
+                      : m,
+                  ),
+                );
+              }
             } else if (type === "markdown_check_start") {
               onGenStateChangeRef.current({ phase: "checking" as const });
             } else if (type === "markdown_unchanged") {
@@ -499,6 +603,23 @@ export function ChatPanel({
           <h2 className="truncate text-sm font-semibold">{activeNode.id}</h2>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            aria-label={`联网搜索：${webSearchEnabled ? "开启" : "关闭"}`}
+            aria-pressed={webSearchEnabled}
+            className={cn(
+              "inline-flex h-8 items-center justify-center rounded-md border px-2 text-xs font-medium transition",
+              webSearchEnabled
+                ? "border-primary bg-primary/10 text-primary"
+                : "bg-background text-muted-foreground hover:bg-muted/60",
+              (!activeSession || savingWebSearch) && "opacity-50",
+            )}
+            disabled={!activeSession || savingWebSearch}
+            onClick={toggleWebSearch}
+            title={webSearchEnabled ? "联网搜索已开启" : "联网搜索已关闭"}
+            type="button"
+          >
+            <Globe2Icon className="h-4 w-4" />
+          </button>
           <div className="relative" ref={sessionMenuRef}>
             <button
               aria-expanded={sessionMenuOpen}
@@ -552,6 +673,16 @@ export function ChatPanel({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-5">
+        {urlReadNotice ? (
+          <p className="rounded-md border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
+            {urlReadNotice}
+          </p>
+        ) : null}
+        {webSearchUnavailableNotice ? (
+          <p className="rounded-md border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
+            当前模型不支持原生联网，已继续普通对话
+          </p>
+        ) : null}
         <ScrollArea className="min-h-0 flex-1" ref={scrollRef}>
           {messages.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center text-center">
