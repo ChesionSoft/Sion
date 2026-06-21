@@ -681,7 +681,7 @@ describe("chat API", () => {
     expect(body.tools).toBeUndefined();
   });
 
-  it("enables Web Search for openai_responses providers only from the persisted session setting", async () => {
+  it("does not inject a hosted web_search tool for openai_responses even when the session switch is on", async () => {
     const settingsDir = path.join(tmpDir, "settings");
     await writeFile(
       path.join(settingsDir, "model-providers.json"),
@@ -732,12 +732,13 @@ describe("chat API", () => {
 
     const events = await readSseEvents(response);
     const types = events.map((e) => e.type);
-    expect(types).not.toContain("web_search_unavailable");
     expect(types).toContain("token");
 
     const [, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(String(init.body)) as { tools?: unknown[] };
-    expect(body.tools).toEqual([{ type: "web_search" }]);
+    // Hosted web_search is retired; protocol never injects it.
+    expect(body.tools).toBeUndefined();
+    expect(JSON.stringify(body.tools ?? [])).not.toContain('"web_search"');
   });
 
   it("does not add web_search tools for openai_responses when the session switch is off", async () => {

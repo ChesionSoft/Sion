@@ -8,6 +8,7 @@ import {
 import {
   callOpenAIResponses,
   streamOpenAIResponses,
+  streamOpenAIResponsesTurn,
   type ModelStreamPart,
   type ResponsesInput,
   type ResponsesMessage,
@@ -47,7 +48,6 @@ export function streamModelChat(input: ModelChatInput): AsyncGenerator<ModelStre
       model: input.model,
       protocol: input.protocol,
       reasoningEffort: input.reasoningEffort,
-      webSearchEnabled: input.webSearchEnabled,
       messages: toResponsesMessages(input.messages),
       fetchImpl: input.fetchImpl,
       signal: input.signal,
@@ -81,7 +81,6 @@ export async function callModelChat(input: ModelChatInput): Promise<string> {
       model: input.model,
       protocol: input.protocol,
       reasoningEffort: input.reasoningEffort,
-      webSearchEnabled: input.webSearchEnabled,
       messages: toResponsesMessages(input.messages),
       fetchImpl: input.fetchImpl,
       signal: input.signal,
@@ -119,10 +118,18 @@ export type ModelTurnInput = {
 
 export function streamModelTurn(input: ModelTurnInput): AsyncGenerator<ModelTurnEvent, void, void> {
   if (input.protocol === "openai_responses") {
-    // The Responses function-tool turn is added in a follow-up task.
-    return (async function* () {
-      throw new Error("Responses function-tool turn is not implemented yet");
-    })();
+    return streamOpenAIResponsesTurn({
+      apiBaseUrl: input.apiBaseUrl,
+      apiUrlMode: input.apiUrlMode,
+      apiKey: input.apiKey,
+      model: input.model,
+      protocol: input.protocol,
+      reasoningEffort: input.reasoningEffort,
+      conversation: input.conversation,
+      tools: input.tools,
+      fetchImpl: input.fetchImpl,
+      signal: input.signal,
+    });
   }
   return streamChatCompletionsTurn({
     apiBaseUrl: input.apiBaseUrl,

@@ -4,7 +4,9 @@ import {
   callOpenAIResponses,
   resolveResponsesUrl,
   streamOpenAIResponses,
+  streamOpenAIResponsesTurn,
 } from "./openai-responses";
+import { toolDefinitions, type ModelConversationItem } from "./model-tools";
 
 function streamingResponse(chunks: string[]): Response {
   const encoder = new TextEncoder();
@@ -36,7 +38,7 @@ describe("resolveResponsesUrl", () => {
 });
 
 describe("streamOpenAIResponses", () => {
-  it("sends the expected URL and body without web_search when disabled", async () => {
+  it("sends the expected URL and body without any hosted search tool", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       streamingResponse([
         'data: {"type":"response.completed","response":{"output":[],"id":"r-1"}}\n\n',
@@ -52,7 +54,6 @@ describe("streamOpenAIResponses", () => {
       model: "gpt-5",
       protocol: "openai_responses",
       reasoningEffort: "medium",
-      webSearchEnabled: false,
       messages: [
         { role: "system", content: "rules" },
         { role: "user", content: "question" },
@@ -75,31 +76,6 @@ describe("streamOpenAIResponses", () => {
       stream: true,
     });
     expect(body.tools).toBeUndefined();
-  });
-
-  it("adds web_search tool when enabled", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      streamingResponse([
-        'data: {"type":"response.completed","response":{"output":[],"id":"r-1"}}\n\n',
-        "data: [DONE]\n\n",
-      ]),
-    );
-
-    for await (const _ of streamOpenAIResponses({
-      apiBaseUrl: "https://api.openai.com",
-      apiKey: "sk-test",
-      model: "gpt-5",
-      protocol: "openai_responses",
-      webSearchEnabled: true,
-      messages: [{ role: "user", content: "q" }],
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    })) {
-      void _;
-    }
-
-    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(String(init.body)) as { tools: unknown[] };
-    expect(body.tools).toEqual([{ type: "web_search" }]);
   });
 
   it("parses text and reasoning-summary deltas split across chunks", async () => {
@@ -270,5 +246,140 @@ describe("callOpenAIResponses", () => {
         fetchImpl: fetchImpl as unknown as typeof fetch,
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe("streamOpenAIResponsesTurn", () => {
+  it("serializes function tools, prior function_call, and function_call_output; never web_search", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      streamingResponse(['data: [DONE]\n\n']),
+    );
+    const conversation: ModelConversationItem[] = [
+      { type: "message", role: "user", content: "search it" },
+      { type: "tool_call", call: { id: "call_1", name: "web_search", argumentsJson: '{"query":"x"}' } },
+      { type: "tool_result", callId: "call_1", name: "web_search", output: '{"ok":true}' },
+    ];
+
+    for await (const _ of streamOpenAIResponsesTurn({
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "sk-test",
+      model: "gpt-5",
+      protocol: "openai_responses",
+      conversation,
+      tools: toolDefinitions,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })) {
+      void _;
+    }
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as { tools: unknown[]; input: unknown[] };
+    expect(body.tools).toEqual([
+      expect.objectContaining({ type: "function", name: "web_search" }),
+      expect.objectContaining({ type: "function", name: "web_fetch" }),
+    ]);
+    expect(JSON.stringify(body.tools)).not.toContain("web_search\"}]"); // no hosted {type:"web_search"} tool
+    // prior function_call
+    expect(body.input).toContainEqual(
+      expect.objectContaining({ type: "function_call", call_id: "call_1", name: "web_search", arguments: '{"query":"x"}' }),
+    );
+    // result
+    expect(body.input).toContainEqual(
+      expect.objectContaining({ type: "function_call_output", call_id: "call_1", output: '{"ok":true}' }),
+    );
+  });
+
+  it("parses a function_call item and arguments delta into a tool_call event", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      streamingResponse([
+        'data: {"type":"response.output_text.delta","delta":"ans"}\n\n',
+        'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"web_search","arguments":""}}\n\n',
+        'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"quer"}\n\n',
+        'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"y\\":\\"hi\\"}"}\n\n',
+        'data: {"type":"response.completed","response":{"output":[]}}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    );
+    const events: { type: string }[] = [];
+    for await (const e of streamOpenAIResponsesTurn({
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "sk-test",
+      model: "gpt-5",
+      protocol: "openai_responses",
+      conversation: [{ type: "message", role: "user", content: "q" }],
+      tools: toolDefinitions,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })) {
+      events.push(e as { type: string });
+    }
+    expect(events).toEqual([
+      { type: "content", delta: "ans" } as unknown as { type: string },
+      { type: "tool_call", call: { id: "call_1", name: "web_search", argumentsJson: '{"query":"hi"}' } } as unknown as { type: string },
+    ]);
+  });
+
+  it("handles multiple function calls in one turn", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      streamingResponse([
+        'data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"c1","name":"web_search","arguments":"{\\"query\\":\\"a\\"}"}}\n\n',
+        'data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"c2","name":"web_fetch","arguments":"{\\"url\\":\\"https://x.com\\"}"}}\n\n',
+        'data: {"type":"response.completed","response":{"output":[]}}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    );
+    const calls: string[] = [];
+    for await (const e of streamOpenAIResponsesTurn({
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "sk-test",
+      model: "gpt-5",
+      protocol: "openai_responses",
+      conversation: [{ type: "message", role: "user", content: "q" }],
+      tools: toolDefinitions,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })) {
+      if (e.type === "tool_call") calls.push(e.call.id);
+    }
+    expect(calls).toEqual(["c1", "c2"]);
+  });
+
+  it("throws on response.failed", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      streamingResponse(['data: {"type":"response.failed","response":{"error":{"message":"boom"}}}\n\n']),
+    );
+    await expect(async () => {
+      for await (const _ of streamOpenAIResponsesTurn({
+        apiBaseUrl: "https://api.openai.com",
+        apiKey: "sk-test",
+        model: "gpt-5",
+        protocol: "openai_responses",
+        conversation: [{ type: "message", role: "user", content: "q" }],
+        tools: toolDefinitions,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })) {
+        void _;
+      }
+    }).rejects.toThrow("boom");
+  });
+
+  it("skips malformed SSE chunks", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      streamingResponse([
+        'data: not-json\n\n',
+        'data: {"type":"response.output_text.delta","delta":"ok"}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    );
+    const events: { type: string }[] = [];
+    for await (const e of streamOpenAIResponsesTurn({
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "sk-test",
+      model: "gpt-5",
+      protocol: "openai_responses",
+      conversation: [{ type: "message", role: "user", content: "q" }],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })) {
+      events.push(e as { type: string });
+    }
+    expect(events).toEqual([{ type: "content", delta: "ok" } as unknown as { type: string }]);
   });
 });

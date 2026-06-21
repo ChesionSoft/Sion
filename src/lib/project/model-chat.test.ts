@@ -56,7 +56,6 @@ describe("streamModelChat", () => {
       apiKey: "sk-test",
       model: "gpt-5",
       protocol: "openai_responses",
-      webSearchEnabled: false,
       messages: [{ role: "user", content: "hi" }],
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })) {
