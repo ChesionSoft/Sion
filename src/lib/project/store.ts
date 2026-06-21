@@ -177,6 +177,7 @@ export class ProjectStore {
       nodeId,
       name: formatSessionName(now),
       messageCount: 0,
+      webSearchEnabled: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -202,6 +203,27 @@ export class ProjectStore {
 
     await this.migrateLegacyChat(projectId, nodeId);
     return (await this.readSessionIndex(projectId, nodeId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async getSession(projectId: string, nodeId: WorkflowNodeId, sessionId: string): Promise<ChatSession> {
+    if (!isWorkflowNodeId(nodeId)) {
+      throw new Error(`Unknown workflow node: ${nodeId}`);
+    }
+    const sessions = await this.listSessions(projectId, nodeId);
+    const session = sessions.find((item) => item.id === sessionId);
+    if (!session) {
+      throw new Error("会话不存在");
+    }
+    return session;
+  }
+
+  async updateSessionWebSearch(
+    projectId: string,
+    nodeId: WorkflowNodeId,
+    sessionId: string,
+    enabled: boolean,
+  ): Promise<ChatSession> {
+    return this.updateSession(projectId, nodeId, sessionId, { webSearchEnabled: enabled });
   }
 
   async getChatMessages(projectId: string, nodeId: WorkflowNodeId, sessionId?: string): Promise<ChatMessage[]> {
@@ -317,7 +339,11 @@ export class ProjectStore {
 
   private async readSessionIndex(projectId: string, nodeId: WorkflowNodeId): Promise<ChatSession[]> {
     try {
-      return await readJson<ChatSession[]>(this.sessionIndexPath(projectId, nodeId));
+      const raw = await readJson<ChatSession[]>(this.sessionIndexPath(projectId, nodeId));
+      return raw.map((session) => ({
+        ...session,
+        webSearchEnabled: session.webSearchEnabled === true,
+      }));
     } catch {
       return [];
     }
@@ -346,8 +372,8 @@ export class ProjectStore {
     projectId: string,
     nodeId: WorkflowNodeId,
     sessionId: string,
-    patch: Pick<ChatSession, "messageCount" | "updatedAt">,
-  ): Promise<void> {
+    patch: Partial<Pick<ChatSession, "messageCount" | "updatedAt" | "webSearchEnabled">>,
+  ): Promise<ChatSession> {
     const sessions = await this.readSessionIndex(projectId, nodeId);
     const index = sessions.findIndex((session) => session.id === sessionId);
 
@@ -360,6 +386,7 @@ export class ProjectStore {
       ...patch,
     };
     await writeJson(this.sessionIndexPath(projectId, nodeId), sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+    return sessions[index];
   }
 
   private async migrateLegacyChat(projectId: string, nodeId: WorkflowNodeId): Promise<void> {
@@ -386,6 +413,7 @@ export class ProjectStore {
       nodeId,
       name: formatSessionName(firstMessageTime),
       messageCount: legacyMessages.length,
+      webSearchEnabled: false,
       createdAt: firstMessageTime,
       updatedAt: latestMessageTime,
     };

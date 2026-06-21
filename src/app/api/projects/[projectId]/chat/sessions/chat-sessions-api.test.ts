@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ProjectStore } from "@/lib/project/store";
 import { GET, POST } from "./route";
-import { DELETE, GET as GET_SESSION } from "./[sessionId]/route";
+import { DELETE, GET as GET_SESSION, PATCH } from "./[sessionId]/route";
 
 let tmpDir: string;
 const originalCwd = process.cwd;
@@ -152,5 +152,92 @@ describe("chat sessions API", () => {
     );
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "项目不存在" });
+  });
+
+  it("patches the session web search preference", async () => {
+    const store = new ProjectStore();
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    const response = await PATCH(
+      new Request(`http://localhost/api/projects/${project.id}/chat/sessions/${session.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ nodeId: "feature-design", webSearchEnabled: true }),
+      }),
+      { params: Promise.resolve({ projectId: project.id, sessionId: session.id }) },
+    );
+
+    expect(response.status).toBe(200);
+    const data = (await response.json()) as { session: { webSearchEnabled: boolean; id: string } };
+    expect(data.session.id).toBe(session.id);
+    expect(data.session.webSearchEnabled).toBe(true);
+
+    const fetched = await store.getSession(project.id, "feature-design", session.id);
+    expect(fetched.webSearchEnabled).toBe(true);
+  });
+
+  it("returns 400 when patching with an invalid body", async () => {
+    const store = new ProjectStore();
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    const response = await PATCH(
+      new Request(`http://localhost/api/projects/${project.id}/chat/sessions/${session.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ nodeId: "feature-design" }),
+      }),
+      { params: Promise.resolve({ projectId: project.id, sessionId: session.id }) },
+    );
+
+    expect(response.status).toBe(400);
+    const fetched = await store.getSession(project.id, "feature-design", session.id);
+    expect(fetched.webSearchEnabled).toBe(false);
+  });
+
+  it("returns 400 when patching an unknown node", async () => {
+    const store = new ProjectStore();
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    const response = await PATCH(
+      new Request(`http://localhost/api/projects/${project.id}/chat/sessions/${session.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ nodeId: "not-a-node", webSearchEnabled: true }),
+      }),
+      { params: Promise.resolve({ projectId: project.id, sessionId: session.id }) },
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 404 when patching a session that belongs to a different node", async () => {
+    const store = new ProjectStore();
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    const response = await PATCH(
+      new Request(`http://localhost/api/projects/${project.id}/chat/sessions/${session.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ nodeId: "basic-info", webSearchEnabled: true }),
+      }),
+      { params: Promise.resolve({ projectId: project.id, sessionId: session.id }) },
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it("returns 404 when patching a missing session in an existing project", async () => {
+    const store = new ProjectStore();
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+
+    const response = await PATCH(
+      new Request(`http://localhost/api/projects/${project.id}/chat/sessions/missing`, {
+        method: "PATCH",
+        body: JSON.stringify({ nodeId: "feature-design", webSearchEnabled: true }),
+      }),
+      { params: Promise.resolve({ projectId: project.id, sessionId: "missing" }) },
+    );
+
+    expect(response.status).toBe(404);
   });
 });

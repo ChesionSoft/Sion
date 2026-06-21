@@ -373,4 +373,108 @@ describe("ProjectStore", () => {
     expect((migrated as Record<string, unknown>).assumptions).toBeUndefined();
     expect((migrated as Record<string, unknown>).openQuestions).toBeUndefined();
   });
+
+  it("defaults legacy sessions to web search disabled", async () => {
+    const projectId = "legacy-session-project";
+    const projectDir = path.join(rootDir, projectId);
+    await mkdir(path.join(projectDir, "chat", "feature-design"), { recursive: true });
+    await writeFile(
+      path.join(projectDir, "chat", "feature-design", "index.json"),
+      JSON.stringify([
+        {
+          id: "s-legacy",
+          nodeId: "feature-design",
+          name: "Legacy",
+          messageCount: 0,
+          createdAt: "2026-06-14T10:00:00.000Z",
+          updatedAt: "2026-06-14T10:00:00.000Z",
+        },
+      ]),
+    );
+    await writeFile(
+      path.join(projectDir, "chat", "feature-design", "s-legacy.json"),
+      JSON.stringify([]),
+    );
+
+    const store = new ProjectStore(rootDir);
+    const sessions = await store.listSessions(projectId, "feature-design");
+    expect(sessions[0].webSearchEnabled).toBe(false);
+  });
+
+  it("defaults new sessions to web search disabled", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+    expect(session.webSearchEnabled).toBe(false);
+  });
+
+  it("updates web search without changing message metadata", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    await store.appendChatMessage(project.id, "feature-design", {
+      id: "m-1",
+      role: "user",
+      content: "问题",
+      createdAt: "2026-06-14T11:01:00.000Z",
+    }, session.id);
+
+    const updated = await store.updateSessionWebSearch(project.id, "feature-design", session.id, true);
+    expect(updated.webSearchEnabled).toBe(true);
+    expect(updated.messageCount).toBe(1);
+    expect(updated.updatedAt).toBe("2026-06-14T11:01:00.000Z");
+  });
+
+  it("persists assistant external sources", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    const source = {
+      id: "src-1",
+      kind: "provided_url" as const,
+      url: "https://example.com/",
+      title: "Example",
+      domain: "example.com",
+      snippet: "片段",
+      retrievedAt: "2026-06-14T11:01:00.000Z",
+    };
+
+    await store.appendChatMessage(project.id, "feature-design", {
+      id: "a-1",
+      role: "assistant",
+      content: "参考结论",
+      sources: [source],
+      createdAt: "2026-06-14T11:01:00.000Z",
+    }, session.id);
+
+    const messages = await store.getChatMessages(project.id, "feature-design", session.id);
+    expect(messages[0].sources).toEqual([source]);
+  });
+
+  it("getSession returns the matching session", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    const fetched = await store.getSession(project.id, "feature-design", session.id);
+    expect(fetched.id).toBe(session.id);
+  });
+
+  it("getSession rejects an unknown session id", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+
+    await expect(store.getSession(project.id, "feature-design", "missing")).rejects.toThrow("会话不存在");
+  });
+
+  it("updateSessionWebSearch rejects an unknown session id", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+
+    await expect(
+      store.updateSessionWebSearch(project.id, "feature-design", "missing", true),
+    ).rejects.toThrow("会话不存在");
+  });
 });

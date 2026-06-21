@@ -28,11 +28,22 @@ export type WorkflowNodeDefinition = {
 
 export type ChatRole = "user" | "assistant" | "system";
 
+export type ExternalSource = {
+  id: string;
+  kind: "provided_url" | "web_search";
+  url: string;
+  title: string;
+  domain: string;
+  snippet?: string;
+  retrievedAt: string;
+};
+
 export type ChatMessage = {
   id: string;
   role: ChatRole;
   content: string;
   reasoningContent?: string;
+  sources?: ExternalSource[];
   createdAt: string;
 };
 
@@ -41,6 +52,7 @@ export type ChatSession = {
   nodeId: WorkflowNodeId;
   name: string;
   messageCount: number;
+  webSearchEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 };
