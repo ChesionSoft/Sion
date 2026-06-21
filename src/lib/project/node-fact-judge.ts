@@ -41,17 +41,24 @@ const patchSchema = z.object({
   targetSectionKey: z.string(),
   patchKind: z.enum(["append_bullet", "append_block", "append_table_row"]),
   markdown: z.string(),
-  evidence: z.object({
-    source: z.enum(["user", "assistant"]),
-    quote: z.string(),
-  }),
+  evidence: z.discriminatedUnion("source", [
+    z.object({
+      source: z.enum(["user", "assistant"]),
+      quote: z.string(),
+    }),
+    z.object({
+      source: z.literal("external"),
+      quote: z.string(),
+      sourceId: z.string(),
+    }),
+  ]),
 });
 
 // ---------------------------------------------------------------------------
 // System prompt builder
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(nodeId: WorkflowNodeId): string {
+function buildSystemPrompt(nodeId: WorkflowNodeId, externalSources: ExternalSource[] | undefined): string {
   const schema = getDeliverySchema(nodeId);
   if (!schema) {
     throw new Error(`Unknown node id: ${nodeId}`);
@@ -64,15 +71,20 @@ function buildSystemPrompt(nodeId: WorkflowNodeId): string {
     )
     .join("\n");
 
+  const externalList = (externalSources ?? [])
+    .map((s) => `- sourceId: "${s.id}", title: "${s.title}", url: "${s.url}"`)
+    .join("\n");
+
   return `You are a fact-checking judge. Analyze the user's message and the assistant's response to extract structured facts.
 
 Output strict JSON only, with this shape:
-{"changes":[{"category":"confirmed_fact|assumption|open_question","targetSectionKey":"<sectionKey>","patchKind":"append_bullet|append_block|append_table_row","markdown":"<markdown content>","evidence":{"source":"user|assistant","quote":"<exact quote from user message>"}}]}
+{"changes":[{"category":"confirmed_fact|assumption|open_question","targetSectionKey":"<sectionKey>","patchKind":"append_bullet|append_block|append_table_row","markdown":"<markdown content>","evidence":{"source":"user|assistant|external","quote":"<exact quote>","sourceId":"<external source id, only when source=external>"}}]}
 
 Rules:
 - confirmed_fact: The user explicitly stated this. Requires evidence.source="user" and evidence.quote must be a verbatim substring from the user's message.
 - assumption: The assistant inferred or suggested something the user didn't explicitly confirm. evidence.source should be "assistant".
 - open_question: Something that needs clarification. evidence.source should be "assistant".
+- external: A claim sourced from an external URL the user pasted. Use evidence.source="external" with evidence.sourceId set to one of the listed external source ids. External evidence is never a confirmed fact.
 - If there are no changes, return {"changes":[]}.
 
 markdown format by patchKind:
@@ -81,7 +93,10 @@ markdown format by patchKind:
 - append_table_row: a single GFM table data row. The number of pipe-separated cells MUST exactly equal the section's tableColumns length. Example: if tableColumns is ["模块名","职责","优先级"], the row MUST be "| 客户管理 | 管理客户档案 | P0 |" (3 cells). Do NOT emit fewer or more cells. Do not include a header or separator row — only the data row.
 
 Available sections for this node:
-${sectionsList}`;
+${sectionsList}
+
+External sources referenced this turn (never treat as confirmed facts):
+${externalList || "(none)"}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +106,8 @@ ${sectionsList}`;
 export async function judgeNodeFacts(
   input: JudgeNodeFactsInput,
 ): Promise<JudgeNodeFactsResult> {
-  const systemPrompt = buildSystemPrompt(input.nodeId);
+  const externalSources = input.externalSources ?? [];
+  const systemPrompt = buildSystemPrompt(input.nodeId, externalSources);
 
   // 1. Call the LLM
   let responseContent: string;
@@ -180,12 +196,23 @@ export async function judgeNodeFacts(
     // 4e. markdown must NOT contain a heading line
     if (/^#{1,6}\s/.test(patch.markdown)) continue;
 
-    // 4f. Evidence source rule: confirmed_fact with non-user source → assumption
+    // 4f. External evidence: must reference a known external source id, else drop.
+    if (patch.evidence.source === "external") {
+      const evidence = patch.evidence;
+      const known = externalSources.some((s) => s.id === evidence.sourceId);
+      if (!known) continue;
+      // External evidence is never a confirmed fact — downgrade to assumption.
+      if (patch.category === "confirmed_fact") {
+        patch = { ...patch, category: "assumption" };
+      }
+    }
+
+    // 4g. Evidence source rule: confirmed_fact with non-user source → assumption
     if (patch.category === "confirmed_fact" && patch.evidence.source !== "user") {
       patch = { ...patch, category: "assumption" };
     }
 
-    // 4g. Quote substring rule: confirmed_fact with user source needs valid quote
+    // 4h. Quote substring rule: confirmed_fact with user source needs valid quote
     if (patch.category === "confirmed_fact" && patch.evidence.source === "user") {
       const quote = patch.evidence.quote.trim();
       if (!quote || !input.userMessage.includes(quote)) {

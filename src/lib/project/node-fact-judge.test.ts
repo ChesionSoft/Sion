@@ -295,4 +295,135 @@ describe("judgeNodeFacts", () => {
     if (!result.ok) return;
     expect(result.decision.changes).toEqual([]);
   });
+
+  it("accepts valid external assumptions", async () => {
+    const source = {
+      id: "src-1",
+      kind: "provided_url" as const,
+      url: "https://example.com/",
+      title: "Example",
+      domain: "example.com",
+      snippet: "片段",
+      retrievedAt: "2026-06-21T00:00:00.000Z",
+    };
+    const fetchImpl = makeFetchImpl(
+      JSON.stringify({
+        changes: [
+          {
+            category: "assumption",
+            targetSectionKey: "confirmed",
+            patchKind: "append_bullet",
+            markdown: "- 来自外部",
+            evidence: { source: "external", sourceId: "src-1", quote: "片段" },
+          },
+        ],
+      }),
+    );
+
+    const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl, externalSources: [source] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decision.changes).toHaveLength(1);
+    expect(result.decision.changes[0].category).toBe("assumption");
+    expect(result.decision.changes[0].targetSectionKey).toBe("assumptions");
+  });
+
+  it("downgrades externally sourced confirmed facts to assumptions", async () => {
+    const source = {
+      id: "src-1",
+      kind: "provided_url" as const,
+      url: "https://example.com/",
+      title: "Example",
+      domain: "example.com",
+      snippet: "片段",
+      retrievedAt: "2026-06-21T00:00:00.000Z",
+    };
+    const fetchImpl = makeFetchImpl(
+      JSON.stringify({
+        changes: [
+          {
+            category: "confirmed_fact",
+            targetSectionKey: "confirmed",
+            patchKind: "append_bullet",
+            markdown: "- 来自外部的结论",
+            evidence: { source: "external", sourceId: "src-1", quote: "外部结论" },
+          },
+        ],
+      }),
+    );
+
+    const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl, externalSources: [source] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decision.changes[0]).toMatchObject({
+      category: "assumption",
+      targetSectionKey: "assumptions",
+    });
+  });
+
+  it("drops external evidence with an unknown source id", async () => {
+    const source = {
+      id: "src-1",
+      kind: "provided_url" as const,
+      url: "https://example.com/",
+      title: "Example",
+      domain: "example.com",
+      snippet: "片段",
+      retrievedAt: "2026-06-21T00:00:00.000Z",
+    };
+    const fetchImpl = makeFetchImpl(
+      JSON.stringify({
+        changes: [
+          {
+            category: "confirmed_fact",
+            targetSectionKey: "confirmed",
+            patchKind: "append_bullet",
+            markdown: "- 伪造来源",
+            evidence: { source: "external", sourceId: "missing", quote: "外部结论" },
+          },
+        ],
+      }),
+    );
+
+    const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl, externalSources: [source] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decision.changes).toEqual([]);
+  });
+
+  it("later user confirmation of an external fact remains valid user evidence", async () => {
+    const source = {
+      id: "src-1",
+      kind: "provided_url" as const,
+      url: "https://example.com/",
+      title: "Example",
+      domain: "example.com",
+      snippet: "片段",
+      retrievedAt: "2026-06-21T00:00:00.000Z",
+    };
+    const fetchImpl = makeFetchImpl(
+      JSON.stringify({
+        changes: [
+          {
+            category: "confirmed_fact",
+            targetSectionKey: "confirmed",
+            patchKind: "append_bullet",
+            markdown: "- 客户确认采用 A 方案",
+            evidence: { source: "user", quote: "我们采用 A 方案" },
+          },
+        ],
+      }),
+    );
+
+    const result = await judgeNodeFacts({
+      ...BASE_INPUT,
+      userMessage: "我们采用 A 方案",
+      fetchImpl,
+      externalSources: [source],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decision.changes[0].category).toBe("confirmed_fact");
+    expect(result.decision.changes[0].targetSectionKey).toBe("confirmed");
+  });
 });

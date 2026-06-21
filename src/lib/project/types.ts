@@ -133,15 +133,16 @@ export type AgentOverrideSetting = {
 
 export type FactCategory = "confirmed_fact" | "assumption" | "open_question";
 
+export type PatchEvidence =
+  | { source: "user" | "assistant"; quote: string }
+  | { source: "external"; quote: string; sourceId: string };
+
 export type NodeMarkdownPatch = {
   category: FactCategory;
   targetSectionKey: string;
   patchKind: PatchKind;
   markdown: string;
-  evidence: {
-    source: "user" | "assistant";
-    quote: string;
-  };
+  evidence: PatchEvidence;
 };
 
 export type NodeFactDecision = {
