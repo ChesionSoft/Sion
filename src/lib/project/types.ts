@@ -170,6 +170,14 @@ export type ChatStreamEvent =
   | { type: "url_read_result"; url: string; ok: false; error: string }
   | { type: "web_search_unavailable" }
   | { type: "source"; source: ExternalSource }
+  | { type: "web_search_start"; query: string }
+  | { type: "web_search_result"; query: string; ok: true; results: SearchResult[] }
+  | { type: "web_search_result"; query: string; ok: false; code: BrowserWebErrorCode; message: string; verificationId?: string }
+  | { type: "web_fetch_start"; url: string }
+  | { type: "web_fetch_result"; url: string; ok: true; content: string }
+  | { type: "web_fetch_result"; url: string; ok: false; code: BrowserWebErrorCode; message: string }
+  | { type: "browser_verification_required"; verificationId: string; engine: SearchEngineId }
+  | { type: "notice"; message: string }
   | { type: "markdown_check_start" }
   | { type: "markdown_unchanged"; warning?: string }
   | { type: "markdown_start"; mode: "increment"; baseRevision: number }
@@ -184,6 +192,16 @@ export type ChatStreamEvent =
 // ---------------------------------------------------------------------------
 
 export type SearchEngineId = "google" | "baidu";
+
+export type BrowserWebErrorCode =
+  | "browser_unavailable"
+  | "browser_launch_failed"
+  | "search_timeout"
+  | "search_page_unrecognized"
+  | "verification_required"
+  | "blocked_address"
+  | "response_too_large"
+  | "aborted";
 
 export type SearchResult = {
   title: string;

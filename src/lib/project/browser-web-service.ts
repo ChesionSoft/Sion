@@ -4,7 +4,7 @@ import { BrowserLaunchError } from "./browser-manager";
 import { BrowserVerificationStore } from "./browser-verification";
 import { extractPageText } from "./url-content";
 import { readPublicUrlOutcome, type UrlReadOutcome } from "./url-reader";
-import type { SearchEngineId, SearchResult } from "./types";
+import type { BrowserWebErrorCode, SearchEngineId, SearchResult } from "./types";
 import type { SearchEngineAdapter } from "./search-engine";
 
 /**
@@ -14,15 +14,7 @@ import type { SearchEngineAdapter } from "./search-engine";
  * model/provider imports live here.
  */
 
-export type BrowserWebErrorCode =
-  | "browser_unavailable"
-  | "browser_launch_failed"
-  | "search_timeout"
-  | "search_page_unrecognized"
-  | "verification_required"
-  | "blocked_address"
-  | "response_too_large"
-  | "aborted";
+export type { BrowserWebErrorCode };
 
 export type BrowserWebSearchResult =
   | { ok: true; results: SearchResult[] }
@@ -51,7 +43,7 @@ export type BrowserPageLike = {
   close(): Promise<void>;
 };
 
-type BrowserContextLike = { newPage(): Promise<BrowserPageLike> };
+type BrowserContextLike = { newPage(): Promise<unknown> };
 
 export type BrowserManagerLike = {
   withPersistentContext<T>(
@@ -101,7 +93,7 @@ export function createBrowserWebService(deps: BrowserWebServiceDeps): BrowserWeb
       try {
         const outcome = await browserManager.withPersistentContext(
           async (ctx) => {
-            const page = await ctx.newPage();
+            const page = (await ctx.newPage()) as BrowserPageLike;
             try {
               await page.goto(adapter.buildUrl(query), {
                 timeout: searchTimeoutMs,
@@ -152,7 +144,7 @@ export function createBrowserWebService(deps: BrowserWebServiceDeps): BrowserWeb
         try {
           const content = await browserManager.withPersistentContext(
             async (ctx) => {
-              const page = await ctx.newPage();
+              const page = (await ctx.newPage()) as BrowserPageLike;
               try {
                 await page.goto(outcome.url, { timeout: searchTimeoutMs, waitUntil: "domcontentloaded" });
                 const html = await page.content();

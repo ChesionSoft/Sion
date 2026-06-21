@@ -3,14 +3,15 @@ import { NextResponse } from "next/server";
 import { AgentOverrideStore } from "@/lib/project/agent-overrides";
 import { dedupeExternalSources } from "@/lib/project/external-source";
 import { FileStore } from "@/lib/project/files";
-import { streamModelChat } from "@/lib/project/model-chat";
 import { judgeNodeFacts } from "@/lib/project/node-fact-judge";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
 import { ProjectStore } from "@/lib/project/store";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
-import { readPublicUrls } from "@/lib/project/url-reader";
+import { BrowserSearchStore } from "@/lib/settings/browser-search";
+import { BrowserManager } from "@/lib/project/browser-manager";
+import { createBrowserWebService } from "@/lib/project/browser-web-service";
+import { runWebOrchestrator, type WebOrchestratorEvent } from "@/lib/project/web-tool-orchestrator";
 import { extractHttpUrls } from "@/lib/project/url-content";
-import { formatUntrustedWebContext } from "@/lib/project/untrusted-web-context";
 import type {
   ChatStreamEvent,
   ExternalSource,
@@ -152,6 +153,20 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     createdAt: new Date().toISOString(),
   }, sessionId);
 
+  // Tool capability is stored per model — never derived from protocol.
+  const modelEntry = provider.models.find((m) => m.name === body.model);
+  const toolCalling = !!modelEntry?.toolCalling;
+
+  // Direct URLs in the user message are always fetched through the browser
+  // service, regardless of the search toggle.
+  const directUrls = extractHttpUrls(trimmedUserMessage);
+
+  // Search engine preference (Google/Baidu) from browser-search settings.
+  const browserSearchStore = new BrowserSearchStore();
+  const preferences = await browserSearchStore.getPreferences();
+
+  const browserService = createBrowserWebService({ browserManager: new BrowserManager() });
+
   const abortController = new AbortController();
   request.signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
@@ -166,82 +181,40 @@ export async function POST(request: Request, context: { params: Promise<{ projec
 
       let assistantContent = "";
       let assistantReasoningContent = "";
-      const adapterSources: ExternalSource[] = [];
-      const providedSources: ExternalSource[] = [];
+      const consumedSources: ExternalSource[] = [];
 
       try {
-        // 1. Extract URLs from the user message and read them server-side.
-        const urls = extractHttpUrls(trimmedUserMessage);
-        let externalContext = "";
-        if (urls.length > 0) {
-          sendEvent({ type: "url_read_start", urls });
-          const urlResults = await readPublicUrls(urls, { signal: abortController.signal });
-          for (const result of urlResults) {
-            if (result.ok) {
-              sendEvent({ type: "url_read_result", url: result.requestedUrl, ok: true, source: result.source });
-              providedSources.push(result.source);
-              externalContext += (externalContext ? "\n\n" : "") + formatUntrustedWebContext({
-                source: result.source,
-                content: result.content,
-              });
-            } else {
-              sendEvent({ type: "url_read_result", url: result.requestedUrl, ok: false, error: result.error });
-            }
-          }
-        }
-
-        // Abort guard: if the client disconnected during URL reads, do not call
-        // the model and do not persist any assistant message.
-        if (abortController.signal.aborted) return;
-
-        // 2. Compose the user content for the LLM. The persisted user message
-        // stays unchanged; only the LLM-facing copy gets the untrusted material
-        // appended.
-        const llmUserContent = externalContext
-          ? `${trimmedUserMessage}\n\n${externalContext}`
-          : trimmedUserMessage;
-
-        // 3. Dispatch by protocol. Web Search is enabled only for OpenAI
-        // Responses providers, and only when the session switch is on. A
-        // Chat Completions provider with the switch on gets a single
-        // web_search_unavailable notice and continues without search.
-        const isResponses = provider.protocol === "openai_responses";
-        const wantsWebSearch = webSearchEnabled;
-        if (!isResponses && wantsWebSearch) {
-          sendEvent({ type: "web_search_unavailable" });
-        }
-
-        for await (const part of streamModelChat({
+        for await (const e of runWebOrchestrator({
           apiBaseUrl: provider.apiBaseUrl,
           apiUrlMode: provider.apiUrlMode,
           apiKey: provider.apiKey,
           model: body.model!,
           protocol: provider.protocol,
           reasoningEffort,
-          webSearchEnabled: isResponses ? wantsWebSearch : false,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: llmUserContent },
-          ],
+          toolCalling,
+          systemPrompt,
+          userMessage: trimmedUserMessage,
+          directUrls,
+          searchEnabled: webSearchEnabled,
+          engine: preferences.defaultEngine,
+          projectId,
+          sessionId,
+          browserService,
           signal: abortController.signal,
         })) {
-          if (part.type === "reasoning") {
-            assistantReasoningContent += part.content;
-            sendEvent({ type: "reasoning", content: part.content });
-            continue;
+          for (const sse of mapOrchestratorEvent(e)) {
+            if (sse.type === "token") assistantContent += sse.content;
+            else if (sse.type === "reasoning") assistantReasoningContent += sse.content;
+            else if (sse.type === "source") consumedSources.push(sse.source);
+            sendEvent(sse);
           }
-          if (part.type === "source") {
-            adapterSources.push(part.source);
-            sendEvent({ type: "source", source: part.source });
-            continue;
-          }
-          assistantContent += part.content;
-          sendEvent({ type: "token", content: part.content });
         }
 
-        // 4. Persist assistant message with deduped sources (provided URL
-        // reads first, then adapter-sourced citations).
-        const sources = dedupeExternalSources([...providedSources, ...adapterSources]);
+        if (abortController.signal.aborted) return;
+
+        // Persist assistant message with deduped sources actually supplied to
+        // the answer model.
+        const sources = dedupeExternalSources(consumedSources);
         await projectStore.appendChatMessage(projectId, nodeId, {
           id: randomUUID(),
           role: "assistant",
@@ -251,10 +224,8 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           createdAt: new Date().toISOString(),
         }, sessionId);
 
-        // 5. Emit markdown_check_start
         sendEvent({ type: "markdown_check_start" });
 
-        // 6. Call judgeNodeFacts to decide if patches are needed
         const result = await judgeNodeFacts({
           apiBaseUrl: provider.apiBaseUrl,
           apiUrlMode: provider.apiUrlMode,
@@ -268,10 +239,8 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           signal: abortController.signal,
         });
 
-        // If the client disconnected during the judge call, do not emit.
         if (abortController.signal.aborted) return;
 
-        // 7. Branch on result
         if (!result.ok) {
           sendEvent({ type: "markdown_unchanged", warning: result.error });
         } else if (result.decision.changes.length === 0) {
@@ -283,11 +252,10 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           }
         }
 
-        // 8. Emit done with sessionId only (no updatedNode)
         sendEvent({ type: "done", sessionId });
       } catch (error) {
         if (assistantContent || assistantReasoningContent) {
-          const sources = dedupeExternalSources([...providedSources, ...adapterSources]);
+          const sources = dedupeExternalSources(consumedSources);
           await projectStore.appendChatMessage(projectId, nodeId, {
             id: randomUUID(),
             role: "assistant",
@@ -299,10 +267,11 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         }
 
         if (abortController.signal.aborted) {
-          return; // let finally close
+          return;
         }
 
-        const message = error instanceof Error ? error.message : "LLM 请求失败";
+        const rawMessage = error instanceof Error ? error.message : "LLM 请求失败";
+        const message = rawMessage.replace(/(?:\/[\w.\-]+)+|[A-Za-z]:\\[^\s]*/g, "").slice(0, 200) || "请求失败";
         let errorMessage = `模型请求失败：${message}`;
         if (message.includes("context") || message.includes("length") || message.includes("token")) {
           errorMessage = "上下文长度超出模型限制，请减少引用文件或选择更大上下文的模型。";
@@ -326,4 +295,33 @@ export async function POST(request: Request, context: { params: Promise<{ projec
       "X-Accel-Buffering": "no",
     },
   });
+}
+
+function mapOrchestratorEvent(e: WebOrchestratorEvent): ChatStreamEvent[] {
+  switch (e.type) {
+    case "content":
+      return [{ type: "token", content: e.delta }];
+    case "reasoning":
+      return [{ type: "reasoning", content: e.delta }];
+    case "web_search_start":
+      return [{ type: "web_search_start", query: e.query }];
+    case "web_search_result":
+      return e.ok
+        ? [{ type: "web_search_result", query: e.query, ok: true, results: e.results }]
+        : [{ type: "web_search_result", query: e.query, ok: false, code: e.code, message: e.message, ...(e.verificationId ? { verificationId: e.verificationId } : {}) }];
+    case "web_fetch_start":
+      return [{ type: "web_fetch_start", url: e.url }];
+    case "web_fetch_result":
+      return e.ok
+        ? [{ type: "web_fetch_result", url: e.url, ok: true, content: e.content }]
+        : [{ type: "web_fetch_result", url: e.url, ok: false, code: e.code, message: e.message }];
+    case "browser_verification_required":
+      return [{ type: "browser_verification_required", verificationId: e.verificationId, engine: e.engine }];
+    case "source":
+      return [{ type: "source", source: e.source }];
+    case "notice":
+      return [{ type: "notice", message: e.message }];
+    default:
+      return [];
+  }
 }

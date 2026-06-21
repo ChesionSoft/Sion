@@ -427,3 +427,92 @@ describe("judgeNodeFacts", () => {
     expect(result.decision.changes[0].targetSectionKey).toBe("confirmed");
   });
 });
+
+describe("judgeNodeFacts/browser source fact rules", () => {
+  const browserSource = {
+    id: "bw-1",
+    kind: "web_search" as const,
+    url: "https://example.com/article",
+    title: "Article",
+    domain: "example.com",
+    snippet: "据文章称",
+    retrievedAt: "2026-06-21T00:00:00.000Z",
+  };
+
+  it("a browser-sourced confirmed_fact is downgraded to an assumption", async () => {
+    const fetchImpl = makeFetchImpl(
+      JSON.stringify({
+        changes: [
+          {
+            category: "confirmed_fact",
+            targetSectionKey: "confirmed",
+            patchKind: "append_bullet",
+            markdown: "- 据文章的结论",
+            evidence: { source: "external", sourceId: "bw-1", quote: "据文章称" },
+          },
+        ],
+      }),
+    );
+    const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl, externalSources: [browserSource] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decision.changes[0]).toMatchObject({ category: "assumption", targetSectionKey: "assumptions" });
+  });
+
+  it("a browser-sourced open_question stays an open_question and preserves the source id", async () => {
+    const fetchImpl = makeFetchImpl(
+      JSON.stringify({
+        changes: [
+          {
+            category: "open_question",
+            targetSectionKey: "confirmed",
+            patchKind: "append_bullet",
+            markdown: "- 文章的说法是否适用于本项目？",
+            evidence: { source: "external", sourceId: "bw-1", quote: "据文章称" },
+          },
+        ],
+      }),
+    );
+    const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl, externalSources: [browserSource] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const patch = result.decision.changes[0];
+    expect(patch.category).toBe("open_question");
+    expect(patch.targetSectionKey).toBe("open_questions");
+    expect(patch.evidence.source).toBe("external");
+    if (patch.evidence.source === "external") {
+      expect(patch.evidence.sourceId).toBe("bw-1");
+    }
+  });
+
+  it("browser sources can never yield a confirmed_fact; confirmed_fact still requires explicit user evidence", async () => {
+    const fetchImpl = makeFetchImpl(
+      JSON.stringify({
+        changes: [
+          // assistant-sourced confirmed_fact -> downgraded to assumption
+          {
+            category: "confirmed_fact",
+            targetSectionKey: "confirmed",
+            patchKind: "append_bullet",
+            markdown: "- 助手推断",
+            evidence: { source: "assistant", quote: "推断" },
+          },
+          // browser-sourced confirmed_fact -> downgraded to assumption
+          {
+            category: "confirmed_fact",
+            targetSectionKey: "confirmed",
+            patchKind: "append_bullet",
+            markdown: "- 浏览器结论",
+            evidence: { source: "external", sourceId: "bw-1", quote: "据文章称" },
+          },
+        ],
+      }),
+    );
+    const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl, externalSources: [browserSource] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    for (const patch of result.decision.changes) {
+      expect(patch.category).not.toBe("confirmed_fact");
+    }
+  });
+});
