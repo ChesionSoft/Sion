@@ -158,6 +158,11 @@ export type RewriteStreamEvent =
 export type ChatStreamEvent =
   | { type: "reasoning"; content: string }
   | { type: "token"; content: string }
+  | { type: "url_read_start"; urls: string[] }
+  | { type: "url_read_result"; url: string; ok: true; source: ExternalSource }
+  | { type: "url_read_result"; url: string; ok: false; error: string }
+  | { type: "web_search_unavailable" }
+  | { type: "source"; source: ExternalSource }
   | { type: "markdown_check_start" }
   | { type: "markdown_unchanged"; warning?: string }
   | { type: "markdown_start"; mode: "increment"; baseRevision: number }

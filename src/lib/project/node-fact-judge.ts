@@ -3,6 +3,7 @@ import { callModelChat } from "./model-chat";
 import { getDeliverySchema, getDeliverySection } from "./node-delivery-schemas";
 import type {
   ApiUrlMode,
+  ExternalSource,
   ModelProviderProtocol,
   NodeFactDecision,
   NodeMarkdownPatch,
@@ -26,7 +27,7 @@ export type JudgeNodeFactsInput = {
   nodeId: WorkflowNodeId;
   userMessage: string;
   assistantContent: string;
-  externalSources?: never;
+  externalSources?: ExternalSource[];
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 };

@@ -4,7 +4,7 @@ import path from "node:path";
 import { ReadableStream } from "node:stream/web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectStore } from "@/lib/project/store";
-import type { NodeMarkdownPatch } from "@/lib/project/types";
+import type { ExternalSource, NodeMarkdownPatch } from "@/lib/project/types";
 import { POST } from "./route";
 
 let tmpDir: string;
@@ -13,6 +13,17 @@ const originalCwd = process.cwd;
 // Mock judgeNodeFacts so we control its results without real LLM calls
 vi.mock("@/lib/project/node-fact-judge", () => ({
   judgeNodeFacts: vi.fn(),
+}));
+
+// Mock URL reader so we control read results without real network calls
+vi.mock("@/lib/project/url-reader", () => ({
+  readPublicUrls: vi.fn(async () => [] as unknown[]),
+  UrlReadError: class UrlReadError extends Error {
+    constructor(public code: string, message: string) {
+      super(message);
+      this.name = "UrlReadError";
+    }
+  },
 }));
 
 beforeEach(async () => {
@@ -546,5 +557,326 @@ describe("chat API", () => {
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "会话不存在" });
+  });
+
+  it("reads URLs from the user message and emits url_read_start/result with search disabled", async () => {
+    const { readPublicUrls } = await import("@/lib/project/url-reader");
+    const source: ExternalSource = {
+      id: "src-1",
+      kind: "provided_url",
+      url: "https://example.com/",
+      title: "Example",
+      domain: "example.com",
+      snippet: "片段",
+      retrievedAt: "2026-06-21T00:00:00.000Z",
+    };
+    vi.mocked(readPublicUrls).mockResolvedValueOnce([
+      { ok: true, requestedUrl: "https://example.com/", source, content: "正文" },
+    ]);
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "看下 https://example.com/ 这个文档",
+          providerId: "mp-1",
+          model: "test-model",
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    const events = await readSseEvents(response);
+    const types = events.map((e) => e.type);
+
+    expect(types).toContain("url_read_start");
+    expect(types).toContain("url_read_result");
+    expect(types).toContain("token");
+    expect(types).toContain("done");
+    // Chat completions + no search enabled → no web_search_unavailable, no source events from search
+    expect(types).not.toContain("web_search_unavailable");
+
+    const startEvent = events.find((e) => e.type === "url_read_start") as { urls: string[] };
+    expect(startEvent.urls).toEqual(["https://example.com/"]);
+
+    const resultEvent = events.find((e) => e.type === "url_read_result") as {
+      url: string;
+      ok: boolean;
+      source?: ExternalSource;
+    };
+    expect(resultEvent.ok).toBe(true);
+    expect(resultEvent.source?.url).toBe("https://example.com/");
+
+    // External context is appended after user message — check fetch body includes UNTRUSTED EXTERNAL MATERIAL
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as { messages: Array<{ role: string; content: string }> };
+    const userContent = body.messages.find((m) => m.role === "user")?.content ?? "";
+    expect(userContent).toContain("UNTRUSTED EXTERNAL MATERIAL");
+    expect(userContent).toContain("https://example.com/");
+  });
+
+  it("emits url_read_result failure without aborting the chat", async () => {
+    const { readPublicUrls } = await import("@/lib/project/url-reader");
+    vi.mocked(readPublicUrls).mockResolvedValueOnce([
+      { ok: false, requestedUrl: "https://bad.test/", error: "不允许访问非公网地址", code: "blocked_address" },
+    ]);
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "读一下 https://bad.test/",
+          providerId: "mp-1",
+          model: "test-model",
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    const events = await readSseEvents(response);
+    const types = events.map((e) => e.type);
+
+    expect(types).toContain("url_read_start");
+    const resultEvent = events.find((e) => e.type === "url_read_result") as {
+      url: string;
+      ok: boolean;
+      error?: string;
+    };
+    expect(resultEvent.ok).toBe(false);
+    expect(resultEvent.error).toBe("不允许访问非公网地址");
+    expect(types).toContain("token");
+    expect(types).toContain("done");
+  });
+
+  it("emits web_search_unavailable for chat_completions providers when the session switch is on", async () => {
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+    await store.updateSessionWebSearch("test-project", "feature-design", session.id, true);
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "查一下客户管理的最佳实践",
+          providerId: "mp-1",
+          model: "test-model",
+          sessionId: session.id,
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    const events = await readSseEvents(response);
+    const types = events.map((e) => e.type);
+    expect(types).toContain("web_search_unavailable");
+    expect(types).toContain("token");
+    expect(types).toContain("done");
+
+    // The chat completions request body must NOT include tools
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as { tools?: unknown };
+    expect(body.tools).toBeUndefined();
+  });
+
+  it("enables Web Search for openai_responses providers only from the persisted session setting", async () => {
+    const settingsDir = path.join(tmpDir, "settings");
+    await writeFile(
+      path.join(settingsDir, "model-providers.json"),
+      JSON.stringify([
+        {
+          id: "mp-resp",
+          name: "OpenAI Responses",
+          apiBaseUrl: "https://api.openai.com",
+          apiKey: "sk-test",
+          protocol: "openai_responses",
+          models: [{ name: "gpt-5", isDefault: true }],
+          isDefault: false,
+          createdAt: "2026-06-14T10:00:00.000Z",
+          updatedAt: "2026-06-14T10:00:00.000Z",
+        },
+      ], null, 2),
+      "utf8",
+    );
+
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+    await store.updateSessionWebSearch("test-project", "feature-design", session.id, true);
+
+    const encoder = new TextEncoder();
+    const sseBody = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"答案"}\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"response.completed","response":{"id":"r","output":[{"id":"i","type":"message","content":[{"type":"output_text","text":"答案"}]}]}}\n\n'));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, body: sseBody });
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "查一下 gpt-5 的最新用法",
+          providerId: "mp-resp",
+          model: "gpt-5",
+          sessionId: session.id,
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    const events = await readSseEvents(response);
+    const types = events.map((e) => e.type);
+    expect(types).not.toContain("web_search_unavailable");
+    expect(types).toContain("token");
+
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as { tools?: unknown[] };
+    expect(body.tools).toEqual([{ type: "web_search" }]);
+  });
+
+  it("does not add web_search tools for openai_responses when the session switch is off", async () => {
+    const settingsDir = path.join(tmpDir, "settings");
+    await writeFile(
+      path.join(settingsDir, "model-providers.json"),
+      JSON.stringify([
+        {
+          id: "mp-resp",
+          name: "OpenAI Responses",
+          apiBaseUrl: "https://api.openai.com",
+          apiKey: "sk-test",
+          protocol: "openai_responses",
+          models: [{ name: "gpt-5", isDefault: true }],
+          isDefault: false,
+          createdAt: "2026-06-14T10:00:00.000Z",
+          updatedAt: "2026-06-14T10:00:00.000Z",
+        },
+      ], null, 2),
+      "utf8",
+    );
+
+    const encoder = new TextEncoder();
+    const sseBody = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"答案"}\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"response.completed","response":{"id":"r","output":[{"id":"i","type":"message","content":[{"type":"output_text","text":"答案"}]}]}}\n\n'));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, body: sseBody });
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "你好",
+          providerId: "mp-resp",
+          model: "gpt-5",
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+    await readSseEvents(response);
+
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as { tools?: unknown[] };
+    expect(body.tools).toBeUndefined();
+  });
+
+  it("persists assistant sources from URL reads and adapter", async () => {
+    const { readPublicUrls } = await import("@/lib/project/url-reader");
+    const source: ExternalSource = {
+      id: "src-1",
+      kind: "provided_url",
+      url: "https://example.com/",
+      title: "Example",
+      domain: "example.com",
+      snippet: "片段",
+      retrievedAt: "2026-06-21T00:00:00.000Z",
+    };
+    vi.mocked(readPublicUrls).mockResolvedValueOnce([
+      { ok: true, requestedUrl: "https://example.com/", source, content: "正文" },
+    ]);
+
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+
+    const response = await POST(
+      new Request("http://localhost/api/projects/test-project/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          nodeId: "feature-design",
+          message: "看 https://example.com/ 并总结",
+          providerId: "mp-1",
+          model: "test-model",
+          sessionId: session.id,
+        }),
+      }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+    await readSseEvents(response);
+
+    const messages = await store.getChatMessages("test-project", "feature-design", session.id);
+    const assistant = messages.find((m) => m.role === "assistant");
+    expect(assistant?.sources).toBeDefined();
+    expect(assistant?.sources?.map((s) => s.url)).toContain("https://example.com/");
+  });
+
+  it("abort stops URL reads and does not append unseen sources", async () => {
+    const { readPublicUrls } = await import("@/lib/project/url-reader");
+    const ac = new AbortController();
+
+    // URL read resolves only after abort fires
+    vi.mocked(readPublicUrls).mockImplementationOnce(async () => {
+      return new Promise((resolve) => {
+        ac.signal.addEventListener("abort", () => {
+          resolve([]);
+        });
+      });
+    });
+
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/test-project/chat",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            nodeId: "feature-design",
+            message: "查 https://example.com/",
+            providerId: "mp-1",
+            model: "test-model",
+            sessionId: session.id,
+          }),
+          signal: ac.signal,
+        },
+      ),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+
+    // Start reading, then abort before URLs resolve
+    const reader = response.body!.getReader();
+    const { value } = await reader.read();
+    expect(value).toBeDefined();
+    ac.abort();
+    // Drain to completion
+    while (true) {
+      const { done } = await reader.read().catch(() => ({ done: true } as ReadableStreamReadResult<Uint8Array>));
+      if (done) break;
+    }
+
+    const messages = await store.getChatMessages("test-project", "feature-design", session.id);
+    const assistant = messages.find((m) => m.role === "assistant");
+    // No assistant message persisted (URL read never resolved, model never called)
+    expect(assistant).toBeUndefined();
   });
 });

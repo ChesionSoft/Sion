@@ -1,13 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { AgentOverrideStore } from "@/lib/project/agent-overrides";
+import { dedupeExternalSources } from "@/lib/project/external-source";
 import { FileStore } from "@/lib/project/files";
-import { streamOpenAICompatibleChat } from "@/lib/project/llm";
+import { streamModelChat } from "@/lib/project/model-chat";
 import { judgeNodeFacts } from "@/lib/project/node-fact-judge";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
 import { ProjectStore } from "@/lib/project/store";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
-import type { ReasoningEffort, WorkflowNodeId } from "@/lib/project/types";
+import { readPublicUrls } from "@/lib/project/url-reader";
+import { extractHttpUrls } from "@/lib/project/url-content";
+import { formatUntrustedWebContext } from "@/lib/project/untrusted-web-context";
+import type {
+  ChatStreamEvent,
+  ExternalSource,
+  ReasoningEffort,
+  WorkflowNodeId,
+} from "@/lib/project/types";
 
 const REASONING_EFFORTS = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 
@@ -117,116 +126,174 @@ export async function POST(request: Request, context: { params: Promise<{ projec
 
   const systemPrompt = systemPromptParts.join("\n");
 
+  // Resolve or create the session BEFORE streaming so we can read the persisted
+  // webSearchEnabled preference. The chat POST body never carries the switch —
+  // only the session PATCH endpoint can change it.
   let sessionId = body.sessionId;
+  let webSearchEnabled = false;
   if (sessionId) {
     try {
-      await projectStore.getChatMessages(projectId, nodeId, sessionId);
+      const session = await projectStore.getSession(projectId, nodeId, sessionId);
+      webSearchEnabled = session.webSearchEnabled;
     } catch {
       return NextResponse.json({ error: "会话不存在" }, { status: 404 });
     }
   } else {
     const session = await projectStore.createSession(projectId, nodeId);
     sessionId = session.id;
+    webSearchEnabled = session.webSearchEnabled;
   }
 
+  const trimmedUserMessage = body.message.trim();
   await projectStore.appendChatMessage(projectId, nodeId, {
     id: randomUUID(),
     role: "user",
-    content: body.message.trim(),
+    content: trimmedUserMessage,
     createdAt: new Date().toISOString(),
   }, sessionId);
 
   const abortController = new AbortController();
   request.signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
-  let assistantContent = "";
-  let assistantReasoningContent = "";
-
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
 
+      const sendEvent = (event: ChatStreamEvent) => {
+        if (abortController.signal.aborted) return;
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      };
+
+      let assistantContent = "";
+      let assistantReasoningContent = "";
+      const adapterSources: ExternalSource[] = [];
+      const providedSources: ExternalSource[] = [];
+
       try {
-        // 1. Stream conversation
-        for await (const part of streamOpenAICompatibleChat({
+        // 1. Extract URLs from the user message and read them server-side.
+        const urls = extractHttpUrls(trimmedUserMessage);
+        let externalContext = "";
+        if (urls.length > 0) {
+          sendEvent({ type: "url_read_start", urls });
+          const urlResults = await readPublicUrls(urls, { signal: abortController.signal });
+          for (const result of urlResults) {
+            if (result.ok) {
+              sendEvent({ type: "url_read_result", url: result.requestedUrl, ok: true, source: result.source });
+              providedSources.push(result.source);
+              externalContext += (externalContext ? "\n\n" : "") + formatUntrustedWebContext({
+                source: result.source,
+                content: result.content,
+              });
+            } else {
+              sendEvent({ type: "url_read_result", url: result.requestedUrl, ok: false, error: result.error });
+            }
+          }
+        }
+
+        // Abort guard: if the client disconnected during URL reads, do not call
+        // the model and do not persist any assistant message.
+        if (abortController.signal.aborted) return;
+
+        // 2. Compose the user content for the LLM. The persisted user message
+        // stays unchanged; only the LLM-facing copy gets the untrusted material
+        // appended.
+        const llmUserContent = externalContext
+          ? `${trimmedUserMessage}\n\n${externalContext}`
+          : trimmedUserMessage;
+
+        // 3. Dispatch by protocol. Web Search is enabled only for OpenAI
+        // Responses providers, and only when the session switch is on. A
+        // Chat Completions provider with the switch on gets a single
+        // web_search_unavailable notice and continues without search.
+        const isResponses = provider.protocol === "openai_responses";
+        const wantsWebSearch = webSearchEnabled;
+        if (!isResponses && wantsWebSearch) {
+          sendEvent({ type: "web_search_unavailable" });
+        }
+
+        for await (const part of streamModelChat({
           apiBaseUrl: provider.apiBaseUrl,
           apiUrlMode: provider.apiUrlMode,
           apiKey: provider.apiKey,
           model: body.model!,
+          protocol: provider.protocol,
           reasoningEffort,
+          webSearchEnabled: isResponses ? wantsWebSearch : false,
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: body.message!.trim() },
+            { role: "user", content: llmUserContent },
           ],
           signal: abortController.signal,
         })) {
           if (part.type === "reasoning") {
             assistantReasoningContent += part.content;
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "reasoning", content: part.content })}\n\n`));
+            sendEvent({ type: "reasoning", content: part.content });
             continue;
           }
-
+          if (part.type === "source") {
+            adapterSources.push(part.source);
+            sendEvent({ type: "source", source: part.source });
+            continue;
+          }
           assistantContent += part.content;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "token", content: part.content })}\n\n`));
+          sendEvent({ type: "token", content: part.content });
         }
 
-        // 2. Persist assistant message
+        // 4. Persist assistant message with deduped sources (provided URL
+        // reads first, then adapter-sourced citations).
+        const sources = dedupeExternalSources([...providedSources, ...adapterSources]);
         await projectStore.appendChatMessage(projectId, nodeId, {
           id: randomUUID(),
           role: "assistant",
           content: assistantContent,
           ...(assistantReasoningContent ? { reasoningContent: assistantReasoningContent } : {}),
+          ...(sources.length ? { sources } : {}),
           createdAt: new Date().toISOString(),
         }, sessionId);
 
-        // 3. Emit markdown_check_start
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "markdown_check_start" })}\n\n`));
+        // 5. Emit markdown_check_start
+        sendEvent({ type: "markdown_check_start" });
 
-        // 4. Call judgeNodeFacts to decide if patches are needed
+        // 6. Call judgeNodeFacts to decide if patches are needed
         const result = await judgeNodeFacts({
           apiBaseUrl: provider.apiBaseUrl,
           apiUrlMode: provider.apiUrlMode,
           apiKey: provider.apiKey,
           model: body.model!,
+          protocol: provider.protocol,
           nodeId,
-          userMessage: body.message!.trim(),
+          userMessage: trimmedUserMessage,
           assistantContent,
+          externalSources: sources,
           signal: abortController.signal,
         });
 
-        // If the client disconnected during the judge call (judge's own catch
-        // turns AbortError into { ok:false }, so we must not then emit to a
-        // cancelled stream — let finally close it).
+        // If the client disconnected during the judge call, do not emit.
         if (abortController.signal.aborted) return;
 
-        // 5. Branch on result
+        // 7. Branch on result
         if (!result.ok) {
-          // Judge failure — emit warning
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "markdown_unchanged", warning: result.error })}\n\n`));
+          sendEvent({ type: "markdown_unchanged", warning: result.error });
         } else if (result.decision.changes.length === 0) {
-          // No changes needed
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "markdown_unchanged" })}\n\n`));
+          sendEvent({ type: "markdown_unchanged" });
         } else {
-          // Emit patch previews
-          controller.enqueue(encoder.encode(
-            `data: ${JSON.stringify({ type: "markdown_start", mode: "increment", baseRevision: currentNode.revision })}\n\n`,
-          ));
+          sendEvent({ type: "markdown_start", mode: "increment", baseRevision: currentNode.revision });
           for (const patch of result.decision.changes) {
-            controller.enqueue(encoder.encode(
-              `data: ${JSON.stringify({ type: "markdown_patch_preview", patch })}\n\n`,
-            ));
+            sendEvent({ type: "markdown_patch_preview", patch });
           }
         }
 
-        // 6. Emit done with sessionId only (no updatedNode)
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", sessionId })}\n\n`));
+        // 8. Emit done with sessionId only (no updatedNode)
+        sendEvent({ type: "done", sessionId });
       } catch (error) {
         if (assistantContent || assistantReasoningContent) {
+          const sources = dedupeExternalSources([...providedSources, ...adapterSources]);
           await projectStore.appendChatMessage(projectId, nodeId, {
             id: randomUUID(),
             role: "assistant",
             content: assistantContent,
             ...(assistantReasoningContent ? { reasoningContent: assistantReasoningContent } : {}),
+            ...(sources.length ? { sources } : {}),
             createdAt: new Date().toISOString(),
           }, sessionId);
         }
@@ -245,7 +312,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           errorMessage = "API 认证失败，请检查模型提供商的 API Key 是否正确。";
         }
 
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: errorMessage })}\n\n`));
+        sendEvent({ type: "error", error: errorMessage });
       } finally {
         controller.close();
       }

@@ -96,6 +96,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           apiUrlMode: provider.apiUrlMode,
           apiKey: provider.apiKey,
           model: body.model!,
+          protocol: provider.protocol,
           reasoningEffort,
           nodeId: nodeId as WorkflowNodeId,
           currentMarkdown: currentNode.markdown,
