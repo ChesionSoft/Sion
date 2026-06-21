@@ -1,0 +1,47 @@
+<!doctype html><html><body>
+<!-- 1 -->
+<div class="g">
+  <a href="/url?q=https://example.com/page1&sa=U&ved=0abc"><h3>Example Page 1</h3></a>
+  <span class="st">Snippet one about page one</span>
+</div>
+<!-- 2 -->
+<div class="g">
+  <a href="/url?q=https://example.com/page2&sa=U"><h3>Example Page 2</h3></a>
+  <span class="st">Snippet two</span>
+</div>
+<!-- 3 (no snippet) -->
+<div class="g">
+  <a href="/url?q=https://example.com/page3&sa=U"><h3>Example Page 3</h3></a>
+</div>
+<!-- 4 -->
+<div class="g">
+  <a href="/url?q=https://example.com/page4&sa=U"><h3>Example Page 4</h3></a>
+  <span class="st">Snippet four</span>
+</div>
+<!-- 5 -->
+<div class="g">
+  <a href="/url?q=https://example.com/page5&sa=U"><h3>Example Page 5</h3></a>
+  <span class="st">Snippet five</span>
+</div>
+<!-- 6 (should be dropped by 5-result cap) -->
+<div class="g">
+  <a href="/url?q=https://example.com/page6&sa=U"><h3>Example Page 6</h3></a>
+</div>
+<!-- ad (sponsored) -->
+<div class="g" data-sponsored="1">
+  <a href="/url?q=https://ad.example.com/buy&sa=U"><h3>Buy Now Ad</h3></a>
+  <span class="st">Ad snippet</span>
+</div>
+<!-- internal google link -->
+<div class="g">
+  <a href="/url?q=https://www.google.com/help&sa=U"><h3>Google Help</h3></a>
+</div>
+<!-- duplicate of page1 -->
+<div class="g">
+  <a href="/url?q=https://example.com/page1&sa=U"><h3>Duplicate Title</h3></a>
+</div>
+<!-- malformed link -->
+<div class="g">
+  <a href="/url?q=not-a-valid-url&sa=U"><h3>Bad Link</h3></a>
+</div>
+</body></html>
