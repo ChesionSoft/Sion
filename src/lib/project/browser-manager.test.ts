@@ -5,8 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BrowserLaunchError,
   BrowserManager,
+  enforceEgressPolicy,
   type BrowserManagerDeps,
   type PersistentContextLike,
+  type RequestLike,
+  type RouteLike,
 } from "./browser-manager";
 
 let cacheDir: string;
@@ -29,8 +32,26 @@ function makeDeps(overrides: Partial<BrowserManagerDeps> = {}): BrowserManagerDe
     },
     spawn: vi.fn(async () => ({ stdout: "", status: 1 })),
     playwright: undefined,
+    proxyFactory: () => ({
+      start: vi.fn(async () => ({
+        server: "http://127.0.0.1:59999",
+        port: 59999,
+        close: vi.fn(async () => {}),
+      })),
+    }),
     ...overrides,
   };
+}
+
+function recordingProxyFactory() {
+  const closeMock = vi.fn(async () => {});
+  const startMock = vi.fn(async () => ({
+    server: "http://127.0.0.1:59998",
+    port: 59998,
+    close: closeMock,
+  }));
+  const factory = vi.fn(() => ({ start: startMock }));
+  return { factory, startMock, closeMock };
 }
 
 function fakeContext(): PersistentContextLike & { closeCalls: number; newPageMock: unknown } {
@@ -324,5 +345,133 @@ describe("BrowserManager/managed mutations", () => {
     const mgr = new BrowserManager(makeDeps({ fs: { exists: async () => false, remove } }));
     await mgr.clearProfile();
     expect(removed).toEqual([path.join(cacheDir, "profile")]);
+  });
+});
+
+describe("BrowserManager/egress proxy wiring", () => {
+  it("passes proxy.server, loopback-bypass arg, and acceptDownloads to launch", async () => {
+    const { factory } = recordingProxyFactory();
+    const seen: Record<string, unknown> = {};
+    const launch = vi.fn(async (_dir: string, opts?: Record<string, unknown>) => {
+      Object.assign(seen, opts ?? {});
+      return ({ close: vi.fn(async () => {}), newPage: vi.fn(async () => ({})) } as PersistentContextLike);
+    });
+    const mgr = new BrowserManager(
+      makeDeps({
+        proxyFactory: factory,
+        playwright: { chromium: { launchPersistentContext: launch, executablePath: () => "x" } },
+      }),
+    );
+    await mgr.withPersistentContext(async () => "ok");
+    expect(seen.acceptDownloads).toBe(false);
+    expect((seen.proxy as { server: string }).server).toBe("http://127.0.0.1:59998");
+    expect((seen.args as string[])).toContain("--proxy-bypass-list=<-loopback>");
+  });
+
+  it("closes the proxy in finally on success", async () => {
+    const { factory, closeMock } = recordingProxyFactory();
+    const launch = vi.fn(async () => ({
+      close: vi.fn(async () => {}),
+      newPage: vi.fn(async () => ({})),
+    } as PersistentContextLike));
+    const mgr = new BrowserManager(
+      makeDeps({
+        proxyFactory: factory,
+        playwright: { chromium: { launchPersistentContext: launch, executablePath: () => "x" } },
+      }),
+    );
+    await mgr.withPersistentContext(async () => "ok");
+    expect(closeMock).toHaveBeenCalled();
+  });
+
+  it("closes the proxy in finally when work throws", async () => {
+    const { factory, closeMock } = recordingProxyFactory();
+    const launch = vi.fn(async () => ({
+      close: vi.fn(async () => {}),
+      newPage: vi.fn(async () => ({})),
+    } as PersistentContextLike));
+    const mgr = new BrowserManager(
+      makeDeps({
+        proxyFactory: factory,
+        playwright: { chromium: { launchPersistentContext: launch, executablePath: () => "x" } },
+      }),
+    );
+    await expect(mgr.withPersistentContext(async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+    expect(closeMock).toHaveBeenCalled();
+  });
+
+  it("prevents launch and throws BrowserLaunchError when the proxy fails to start", async () => {
+    const startMock = vi.fn(async () => {
+      throw new Error("bind failed");
+    });
+    const factory = vi.fn(() => ({ start: startMock }));
+    const launch = vi.fn(async () => ({}) as PersistentContextLike);
+    const mgr = new BrowserManager(
+      makeDeps({
+        proxyFactory: factory,
+        playwright: { chromium: { launchPersistentContext: launch, executablePath: () => "x" } },
+      }),
+    );
+    await expect(mgr.withPersistentContext(async () => "x")).rejects.toThrow(BrowserLaunchError);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it("registers the egress policy route handler on the context", async () => {
+    const { factory } = recordingProxyFactory();
+    const routeMock = vi.fn(async () => {});
+    const launch = vi.fn(async () => ({
+      close: vi.fn(async () => {}),
+      newPage: vi.fn(async () => ({})),
+      route: routeMock,
+    } as PersistentContextLike));
+    const mgr = new BrowserManager(
+      makeDeps({
+        proxyFactory: factory,
+        playwright: { chromium: { launchPersistentContext: launch, executablePath: () => "x" } },
+      }),
+    );
+    await mgr.withPersistentContext(async () => "ok");
+    expect(routeMock).toHaveBeenCalledWith("**/*", enforceEgressPolicy);
+  });
+});
+
+describe("enforceEgressPolicy", () => {
+  function fakeRoute(): RouteLike {
+    return {
+      abort: vi.fn(async () => {}),
+      continue: vi.fn(async () => {}),
+    };
+  }
+  function req(opts: { url: string; nav: boolean; type: string }): RequestLike {
+    return {
+      url: () => opts.url,
+      isNavigationRequest: () => opts.nav,
+      resourceType: () => opts.type,
+    };
+  }
+
+  it("aborts websocket requests", async () => {
+    const route = fakeRoute();
+    await enforceEgressPolicy(route, req({ url: "wss://target.test/socket", nav: false, type: "websocket" }));
+    expect(route.abort).toHaveBeenCalled();
+    expect(route.continue).not.toHaveBeenCalled();
+  });
+
+  it("aborts non-http(s) top-level navigation", async () => {
+    const route = fakeRoute();
+    await enforceEgressPolicy(route, req({ url: "file:///etc/passwd", nav: true, type: "document" }));
+    expect(route.abort).toHaveBeenCalled();
+  });
+
+  it("continues https navigation", async () => {
+    const route = fakeRoute();
+    await enforceEgressPolicy(route, req({ url: "https://target.test/", nav: true, type: "document" }));
+    expect(route.continue).toHaveBeenCalled();
+  });
+
+  it("continues a non-navigation http subresource", async () => {
+    const route = fakeRoute();
+    await enforceEgressPolicy(route, req({ url: "http://target.test/img.png", nav: false, type: "image" }));
+    expect(route.continue).toHaveBeenCalled();
   });
 });

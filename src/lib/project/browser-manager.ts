@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { BrowserEgressProxy, type EgressProxyHandle } from "./browser-egress-proxy";
 import type { BrowserSearchStatus } from "./types";
 
 /**
@@ -31,7 +32,47 @@ export type ResolvedExecutable = {
 export type PersistentContextLike = {
   newPage(): Promise<unknown>;
   close(): Promise<void>;
+  route?(
+    pattern: string,
+    handler: (route: RouteLike, request: RequestLike) => Promise<void> | void,
+  ): Promise<void>;
 };
+
+export type RouteLike = {
+  abort(code?: string): Promise<void>;
+  continue(): Promise<void>;
+};
+
+export type RequestLike = {
+  url(): string;
+  isNavigationRequest(): boolean;
+  resourceType(): string;
+};
+
+/**
+ * Route handler that blocks WebSockets and aborts top-level navigation to
+ * non-HTTP(S) targets. Every other request is allowed through (the egress
+ * proxy validates the actual network target).
+ */
+export async function enforceEgressPolicy(route: RouteLike, request: RequestLike): Promise<void> {
+  if (request.resourceType() === "websocket") {
+    await route.abort();
+    return;
+  }
+  if (request.isNavigationRequest()) {
+    try {
+      const target = new URL(request.url());
+      if (target.protocol !== "http:" && target.protocol !== "https:") {
+        await route.abort();
+        return;
+      }
+    } catch {
+      await route.abort();
+      return;
+    }
+  }
+  await route.continue();
+}
 
 export type PlaywrightLike = {
   chromium: {
@@ -54,6 +95,7 @@ export type BrowserManagerDeps = {
   spawn?: (cmd: string, args: string[]) => Promise<{ stdout: string; status: number | null }>;
   runInstall?: (opts: { env: NodeJS.ProcessEnv }) => Promise<void>;
   playwright?: PlaywrightLike;
+  proxyFactory?: () => { start(): Promise<EgressProxyHandle> };
 };
 
 const MACOS_CANDIDATES: { kind: "chrome" | "edge"; path: string }[] = [
@@ -143,6 +185,7 @@ export class BrowserManager {
     spawn: (cmd: string, args: string[]) => Promise<{ stdout: string; status: number | null }>;
     runInstall: (opts: { env: NodeJS.ProcessEnv }) => Promise<void>;
     playwright?: PlaywrightLike;
+    proxyFactory: () => { start(): Promise<EgressProxyHandle> };
   };
   private mutex: Promise<unknown> = Promise.resolve();
 
@@ -159,6 +202,7 @@ export class BrowserManager {
       spawn: deps.spawn ?? defaultSpawn,
       runInstall: deps.runInstall ?? defaultRunInstall,
       playwright: deps.playwright,
+      proxyFactory: deps.proxyFactory ?? (() => new BrowserEgressProxy()),
     };
   }
 
@@ -286,22 +330,38 @@ export class BrowserManager {
       throw new BrowserLaunchError("browser_launch_failed", "浏览器运行时不可用");
     }
     const run = this.mutex.then(async () => {
+      // Start the safe egress proxy first; a startup failure prevents launch.
+      const proxy = this.deps.proxyFactory();
+      let proxyHandle: EgressProxyHandle;
+      try {
+        proxyHandle = await proxy.start();
+      } catch {
+        throw new BrowserLaunchError("browser_launch_failed", "安全代理启动失败");
+      }
+
       let ctx: PersistentContextLike;
       try {
         ctx = await this.deps.playwright!.chromium.launchPersistentContext(this.profileDir(), {
           acceptDownloads: false,
+          proxy: { server: proxyHandle.server },
+          args: ["--proxy-bypass-list=<-loopback>"],
           ...(opts.launchOptions ?? {}),
         });
       } catch (error) {
-        throw new BrowserLaunchError(
-          "browser_launch_failed",
-          sanitizeLaunchError(error),
-        );
+        await proxyHandle.close().catch(() => {});
+        throw new BrowserLaunchError("browser_launch_failed", sanitizeLaunchError(error));
       }
+
       try {
+        // Block WebSockets and reject non-HTTP(S) top-level navigation. The
+        // egress proxy validates every actual network target.
+        if (typeof ctx.route === "function") {
+          await ctx.route("**/*", enforceEgressPolicy).catch(() => {});
+        }
         return await work(ctx);
       } finally {
         await ctx.close().catch(() => {});
+        await proxyHandle.close().catch(() => {});
       }
     });
     this.mutex = run.catch(() => {});
