@@ -509,6 +509,34 @@ describe("ChatPanel", () => {
     expect(await screen.findByRole("button", { name: "联网搜索：关闭" })).toBeInTheDocument();
   });
 
+  it("rolls back the toggle when the PATCH request rejects", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/chat/sessions/s-1") && init?.method === "PATCH") {
+        throw new Error("network down");
+      }
+      return (original as unknown as (i: RequestInfo | URL, init?: RequestInit) => Promise<Response>)(input, init);
+    }) as typeof fetch;
+
+    render(
+      <ChatPanel
+        activeNode={activeNode}
+        projectId="p-1"
+        sharedContext={ctx}
+        onGenStateChange={onGenStateChange}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "联网搜索：关闭" }));
+
+    expect(await screen.findByRole("button", { name: "联网搜索：关闭" })).toBeInTheDocument();
+    expect(screen.getByText("切换联网搜索失败")).toBeInTheDocument();
+  });
+
   it("renders URL read status, web_search_unavailable notice, and deduped source links", async () => {
     const user = userEvent.setup();
     const ctx = createMockSharedContext();

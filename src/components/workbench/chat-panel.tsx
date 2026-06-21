@@ -230,6 +230,11 @@ export function ChatPanel({
         s.id === activeSession.id ? { ...s, webSearchEnabled: next } : s,
       ),
     );
+    const rollback = () => {
+      setSessions((current) =>
+        current.map((s) => (s.id === previous.id ? previous : s)),
+      );
+    };
     try {
       const res = await fetch(
         `/api/projects/${projectId}/chat/sessions/${activeSession.id}`,
@@ -241,16 +246,16 @@ export function ChatPanel({
       );
       const data = (await res.json()) as { session?: ChatSession; error?: string };
       if (!res.ok || !data.session) {
-        // Rollback
-        setSessions((current) =>
-          current.map((s) => (s.id === previous.id ? previous : s)),
-        );
+        rollback();
         setError(data.error ?? "切换联网搜索失败");
         return;
       }
       setSessions((current) =>
         current.map((s) => (s.id === data.session!.id ? data.session! : s)),
       );
+    } catch {
+      rollback();
+      setError("切换联网搜索失败");
     } finally {
       setSavingWebSearch(false);
     }

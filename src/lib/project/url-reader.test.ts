@@ -71,6 +71,18 @@ describe("url-reader/readPublicUrl", () => {
     expect(lookup).toHaveBeenCalledWith("example.com");
   });
 
+  it("preserves the DNS family when pinning an IPv6 address", async () => {
+    const lookup = vi.fn(async () => [
+      { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
+    ]) as unknown as LookupFn;
+    const fetchOnce = vi.fn(async (_url, init) => {
+      expect((init as { pinnedFamily?: number }).pinnedFamily).toBe(6);
+      return okResponse("<main>IPv6</main>");
+    }) as unknown as FetchOnceFn;
+
+    await readPublicUrl("https://ipv6.test/", { lookup, fetchOnce });
+  });
+
   it("rejects embedded credentials", async () => {
     const lookup = vi.fn(async () => [{ address: "93.184.216.34", family: 4 }]) as unknown as LookupFn;
     const fetchOnce = vi.fn(async () => okResponse("x")) as unknown as FetchOnceFn;

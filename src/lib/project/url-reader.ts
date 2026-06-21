@@ -45,7 +45,7 @@ export type UrlReaderDeps = {
   lookup?: (hostname: string) => Promise<{ address: string; family: number }[]>;
   fetchOnce?: (
     url: string,
-    init: { signal: AbortSignal; pinnedAddress: string },
+    init: { signal: AbortSignal; pinnedAddress: string; pinnedFamily: number },
   ) => Promise<{
     status: number;
     headers: { location?: string; "content-type"?: string };
@@ -89,7 +89,7 @@ function assertValidRequestUrl(raw: string): URL {
 async function resolveAndValidate(
   hostname: string,
   deps: UrlReaderDeps,
-): Promise<string> {
+): Promise<{ address: string; family: number }> {
   const lookup = deps.lookup ?? defaultLookup;
   const answers = await lookup(hostname);
   if (!answers.length) {
@@ -98,7 +98,7 @@ async function resolveAndValidate(
   for (const answer of answers) {
     assertPublicAddress(answer.address);
   }
-  return answers[0].address;
+  return answers[0];
 }
 
 async function defaultLookup(hostname: string): Promise<{ address: string; family: number }[]> {
@@ -109,7 +109,7 @@ async function defaultLookup(hostname: string): Promise<{ address: string; famil
 
 async function defaultFetchOnce(
   url: string,
-  init: { signal: AbortSignal; pinnedAddress: string },
+  init: { signal: AbortSignal; pinnedAddress: string; pinnedFamily: number },
 ): Promise<{
   status: number;
   headers: { location?: string; "content-type"?: string };
@@ -121,7 +121,12 @@ async function defaultFetchOnce(
   const agent = new Agent({
     connect: {
       lookup: (_hostname, _opts, cb) => {
-        cb(null, [{ address: init.pinnedAddress, family: 4 }], 4);
+        const address = { address: init.pinnedAddress, family: init.pinnedFamily };
+        if (_opts.all) {
+          cb(null, [address], init.pinnedFamily);
+        } else {
+          cb(null, init.pinnedAddress, init.pinnedFamily);
+        }
       },
     },
   });
@@ -182,17 +187,17 @@ export async function readPublicUrl(
 
   try {
     let currentUrl: URL = initialUrl;
-    let pinnedAddress: string | undefined;
     for (let i = 0; i <= MAX_REDIRECTS; i++) {
       if (combinedSignal.aborted) throw new UrlReadError("aborted", "请求已取消");
 
       // Re-resolve and revalidate on each hop (including the first).
-      pinnedAddress = await resolveAndValidate(currentUrl.hostname, deps);
+      const pinned = await resolveAndValidate(currentUrl.hostname, deps);
 
       const fetchOnce = deps.fetchOnce ?? defaultFetchOnce;
       const response = await fetchOnce(currentUrl.toString(), {
         signal: combinedSignal,
-        pinnedAddress,
+        pinnedAddress: pinned.address,
+        pinnedFamily: pinned.family,
       });
 
       if (response.status >= 300 && response.status < 400) {

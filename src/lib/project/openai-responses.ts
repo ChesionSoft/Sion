@@ -137,6 +137,19 @@ export async function* streamOpenAIResponses(
       throw new Error(message);
     }
 
+    if (type === "response.failed") {
+      const response = (parsed as { response?: { error?: { message?: string } } }).response;
+      throw new Error(response?.error?.message ?? "Responses request failed");
+    }
+
+    if (type === "response.incomplete") {
+      const response = (parsed as {
+        response?: { incomplete_details?: { reason?: string } };
+      }).response;
+      const reason = response?.incomplete_details?.reason;
+      throw new Error(reason ? `Responses request incomplete: ${reason}` : "Responses request incomplete");
+    }
+
     if (type === "response.reasoning_summary_text.delta") {
       const delta = (parsed as { delta?: string }).delta;
       if (delta) yield { type: "reasoning", content: delta };

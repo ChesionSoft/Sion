@@ -188,6 +188,44 @@ describe("streamOpenAIResponses", () => {
       }
     }).rejects.toThrow("rate limited");
   });
+
+  it("throws when the Responses stream ends with response.failed", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(streamingResponse([
+      'data: {"type":"response.failed","response":{"error":{"message":"quota exceeded"}}}\n\n',
+    ]));
+
+    await expect(async () => {
+      for await (const _ of streamOpenAIResponses({
+        apiBaseUrl: "https://api.openai.com",
+        apiKey: "sk-test",
+        model: "gpt-5",
+        protocol: "openai_responses",
+        messages: [{ role: "user", content: "q" }],
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })) {
+        void _;
+      }
+    }).rejects.toThrow("quota exceeded");
+  });
+
+  it("throws when the Responses stream ends incomplete", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(streamingResponse([
+      'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}\n\n',
+    ]));
+
+    await expect(async () => {
+      for await (const _ of streamOpenAIResponses({
+        apiBaseUrl: "https://api.openai.com",
+        apiKey: "sk-test",
+        model: "gpt-5",
+        protocol: "openai_responses",
+        messages: [{ role: "user", content: "q" }],
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })) {
+        void _;
+      }
+    }).rejects.toThrow("max_output_tokens");
+  });
 });
 
 describe("callOpenAIResponses", () => {
