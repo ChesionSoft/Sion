@@ -48,7 +48,11 @@ export function ChatMessageView({ message, activity }: ChatMessageViewProps) {
 
   if (message.role === "user") {
     return (
-      <div className="chat-message chat-message-user self-end" data-role="user">
+      <div
+        className="chat-message chat-message-user flex max-w-[85%] flex-col gap-1 self-end rounded-xl bg-foreground p-3.5 text-sm text-background"
+        data-role="user"
+      >
+        <span className="text-xs text-background/70">你</span>
         <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
       </div>
     );
@@ -60,7 +64,11 @@ export function ChatMessageView({ message, activity }: ChatMessageViewProps) {
   const showReasoning = hasReasoning || active;
 
   return (
-    <div className="chat-message chat-message-assistant self-start" data-role="assistant">
+    <div
+      className="chat-message chat-message-assistant flex max-w-[85%] flex-col gap-1 self-start rounded-xl border bg-muted/40 p-3.5 text-sm text-foreground"
+      data-role="assistant"
+    >
+      <span className="text-xs text-muted-foreground">Agent</span>
       {showReasoning ? (
         <details className="chat-reasoning group mb-2 rounded-md border bg-background/60 px-2 py-1.5" open={false}>
           <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground">

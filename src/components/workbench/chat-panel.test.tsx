@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatPanel, createStreamingTextBuffer } from "./chat-panel";
@@ -91,11 +91,52 @@ beforeEach(() => {
 
     if (url.includes("/chat") && init?.method === "POST") {
       const encoder = new TextEncoder();
+      const assistantMessage = {
+        id: "server-assistant",
+        role: "assistant",
+        content: "这是最终回复。",
+        reasoningContent: "先理解节点上下文。",
+        createdAt: "2026-06-14T15:31:00.000Z",
+        turnId: "t-1",
+        reasoningDurationMs: 800,
+        usage: {
+          turnId: "t-1",
+          inputTokens: 18,
+          outputTokens: 7,
+          totalTokens: 25,
+          source: "exact",
+          callCount: 2,
+          calls: [
+            { id: "c-1", category: "answer", providerId: "mp-1", model: "GPT-5.5", source: "exact", status: "completed", inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+            { id: "c-2", category: "fact_judge", providerId: "mp-1", model: "GPT-5.5", source: "exact", status: "completed", inputTokens: 8, outputTokens: 2, totalTokens: 10 },
+          ],
+        },
+      };
       return new Response(
         new ReadableStream({
           start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ type: "activity", stage: "thinking", summary: "正在分析需求", at: "x" })}\n\n`,
+              ),
+            );
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ type: "activity", stage: "generating_answer", summary: "正在生成回复", at: "x" })}\n\n`,
+              ),
+            );
             controller.enqueue(encoder.encode('data: {"type":"reasoning","content":"先理解节点上下文。"}\n\n'));
             controller.enqueue(encoder.encode('data: {"type":"token","content":"这是最终回复。"}\n\n'));
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  type: "activity",
+                  stage: "updating_document",
+                  summary: "正在检查交付稿更新",
+                  at: "x",
+                })}\n\n`,
+              ),
+            );
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify({
@@ -142,9 +183,15 @@ beforeEach(() => {
             );
             controller.enqueue(
               encoder.encode(
+                `data: ${JSON.stringify({ type: "activity", stage: "completed", summary: "已完成", at: "x" })}\n\n`,
+              ),
+            );
+            controller.enqueue(
+              encoder.encode(
                 `data: ${JSON.stringify({
                   type: "done",
                   sessionId: "s-1",
+                  assistantMessage,
                 })}\n\n`,
               ),
             );
@@ -358,7 +405,9 @@ describe("ChatPanel", () => {
     await user.type(screen.getByPlaceholderText(/补充需求、追问边界/), "请分析");
     await user.click(screen.getByRole("button", { name: /发送/ }));
 
-    expect(await screen.findByText("思考过程")).toBeInTheDocument();
+    // After the turn, reasoning lives in a closed disclosure (historical
+    // "已思考 N 秒") and the final answer renders separately as Markdown.
+    expect(await screen.findByText(/已思考/)).toBeInTheDocument();
     expect(await screen.findByText("先理解节点上下文。")).toBeInTheDocument();
     expect(await screen.findByText("这是最终回复。")).toBeInTheDocument();
   });
@@ -853,6 +902,11 @@ describe("ChatPanel", () => {
               streamController = controller;
               controller.enqueue(encoder.encode('data: {"type":"token","content":"回答中"}\n\n'));
               controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ type: "activity", stage: "updating_document", summary: "正在检查交付稿更新", at: "x" })}\n\n`,
+                ),
+              );
+              controller.enqueue(
                 encoder.encode('data: {"type":"markdown_check_start"}\n\n'),
               );
             },
@@ -876,7 +930,11 @@ describe("ChatPanel", () => {
     await user.type(screen.getByPlaceholderText(/补充/), "补充一点");
     await user.click(screen.getByRole("button", { name: /发送/ }));
 
-    expect(await screen.findByText("正在更新交付稿…")).toBeInTheDocument();
+    // The updating_document activity stage is shown by the activity indicator
+    // (replacing the old draft-notice strip).
+    await waitFor(() => {
+      expect(document.querySelector('.agent-activity[data-stage="updating_document"]')).not.toBeNull();
+    });
 
     (streamController as ReadableStreamDefaultController<Uint8Array> | null)?.close();
   });
@@ -972,5 +1030,253 @@ describe("ChatPanel", () => {
     );
     expect(chatPosts).toHaveLength(2);
     expect(chatPosts[1].message).toBe("请搜索需要验证的内容");
+  });
+
+  // Build a fetch mock whose POST stream is held open by a controller so the
+  // test can emit events progressively and assert mid-stream state.
+  function createHeldStreamMock(events: (controller: ReadableStreamDefaultController<Uint8Array>) => void) {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/settings/model-providers")) {
+        return new Response(JSON.stringify({ providers: defaultProviders }));
+      }
+      if (url.includes("/files")) {
+        return new Response(JSON.stringify({ files: [] }));
+      }
+      if (url.includes("/chat/sessions/s-1") && init?.method === "PATCH") {
+        return new Response(
+          JSON.stringify({
+            session: { id: "s-1", nodeId: "feature-design", name: "n", messageCount: 2, webSearchEnabled: false, createdAt: "x", updatedAt: "x" },
+          }),
+        );
+      }
+      if (url.includes("/chat/sessions/s-1")) {
+        return new Response(JSON.stringify({ messages: [] }));
+      }
+      if (url.includes("/chat/sessions")) {
+        return new Response(
+          JSON.stringify({
+            sessions: [{ id: "s-1", nodeId: "feature-design", name: "6月14日 23:30", messageCount: 2, webSearchEnabled: false, createdAt: "x", updatedAt: "x" }],
+          }),
+        );
+      }
+      if (url.includes("/chat") && init?.method === "POST") {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+              events(controller);
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({}));
+    }) as typeof fetch;
+    return {
+      fetchMock,
+      getController: () => streamController,
+    };
+  }
+
+  it("shows the live activity stage in the closed reasoning header while tokens stream", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    const { fetchMock, getController } = createHeldStreamMock((controller) => {
+      const encoder = new TextEncoder();
+      controller.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({ type: "activity", stage: "generating_answer", summary: "正在生成回复", at: "x" })}\n\n`,
+        ),
+      );
+      controller.enqueue(encoder.encode('data: {"type":"reasoning","content":"思考中"}\n\n'));
+      controller.enqueue(encoder.encode('data: {"type":"token","content":"回答"}\n\n'));
+      // Intentionally do NOT close — keep the stream mid-generation.
+    });
+    globalThis.fetch = fetchMock;
+
+    render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "请继续");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.agent-activity[data-stage="generating_answer"]')).not.toBeNull();
+    });
+    // The reasoning disclosure stays closed while streaming.
+    const details = document.querySelector(".chat-reasoning") as HTMLDetailsElement;
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+
+    (getController() as ReadableStreamDefaultController<Uint8Array> | null)?.close();
+  });
+
+  it("changes the visible stage as search and document-update events arrive", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    const { fetchMock, getController } = createHeldStreamMock((controller) => {
+      const encoder = new TextEncoder();
+      controller.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({ type: "activity", stage: "searching_web", summary: "正在检索外部资料", at: "x" })}\n\n`,
+        ),
+      );
+    });
+    globalThis.fetch = fetchMock;
+
+    render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "搜一下");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.agent-activity[data-stage="searching_web"]')).not.toBeNull();
+    });
+
+    // Emit a later document-update stage.
+    const controller = getController() as ReadableStreamDefaultController<Uint8Array> | null;
+    const encoder = new TextEncoder();
+    controller?.enqueue(
+      encoder.encode(
+        `data: ${JSON.stringify({ type: "activity", stage: "updating_document", summary: "正在检查交付稿更新", at: "x" })}\n\n`,
+      ),
+    );
+    await waitFor(() => {
+      expect(document.querySelector('.agent-activity[data-stage="updating_document"]')).not.toBeNull();
+    });
+
+    controller?.close();
+  });
+
+  it("replaces the optimistic assistant message with the server message on done", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "hi");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    // After done, the authoritative server message carries per-turn usage.
+    await waitFor(() => {
+      const assistant = document.querySelector('[data-role="assistant"]') as HTMLElement | null;
+      expect(assistant).not.toBeNull();
+      expect(within(assistant!).getByText(/共 25 token/)).toBeInTheDocument();
+    });
+  });
+
+  it("lets the user expand single-turn usage to see the source label", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "hi");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    const assistant = await waitFor(() => {
+      const el = document.querySelector('[data-role="assistant"]') as HTMLElement | null;
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    const trigger = within(assistant).getByText(/共 25 token/);
+    await user.click(trigger);
+    expect(await within(assistant).findByText("精确")).toBeInTheDocument();
+  });
+
+  it("shows session usage totaling all loaded assistant messages", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "hi");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    await waitFor(() => {
+      const sessionUsage = screen.getByTestId("session-usage");
+      expect(within(sessionUsage).getByText(/共 25 token/)).toBeInTheDocument();
+    });
+  });
+
+  it("pressing stop marks the turn interrupted and clears the active animation", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    const { fetchMock, getController } = createHeldStreamMock((controller) => {
+      const encoder = new TextEncoder();
+      controller.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({ type: "activity", stage: "generating_answer", summary: "正在生成回复", at: "x" })}\n\n`,
+        ),
+      );
+      controller.enqueue(encoder.encode('data: {"type":"token","content":"部分"}\n\n'));
+    });
+    globalThis.fetch = fetchMock;
+
+    render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "请继续");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.agent-activity[data-stage="generating_answer"]')).not.toBeNull();
+    });
+
+    await user.click(screen.getByRole("button", { name: /中断/ }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.agent-activity[data-stage="interrupted"]')).not.toBeNull();
+    });
+
+    (getController() as ReadableStreamDefaultController<Uint8Array> | null)?.close();
+  });
+
+  it("falls back to 处理中 for an unknown activity stage without crashing", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    const { fetchMock, getController } = createHeldStreamMock((controller) => {
+      const encoder = new TextEncoder();
+      controller.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({ type: "activity", stage: "weird_stage", summary: "未知阶段", at: "x" })}\n\n`,
+        ),
+      );
+    });
+    globalThis.fetch = fetchMock;
+
+    render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "hi");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    expect(await screen.findByText("处理中")).toBeInTheDocument();
+
+    (getController() as ReadableStreamDefaultController<Uint8Array> | null)?.close();
   });
 });

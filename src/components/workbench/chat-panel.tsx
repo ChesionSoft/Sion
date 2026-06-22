@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircleIcon,
   CheckIcon,
@@ -19,8 +19,21 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { WORKFLOW_NODES } from "@/lib/project/nodes";
-import type { ChatMessage, ChatSession, ExternalSource, ModelProvider, ProjectFile, ProjectNode, ReasoningEffort } from "@/lib/project/types";
+import { aggregateUsageFromMessages } from "@/lib/project/token-usage";
+import type {
+  AgentActivityStage,
+  ChatMessage,
+  ChatSession,
+  ExternalSource,
+  ModelProvider,
+  ProjectFile,
+  ProjectNode,
+  ReasoningEffort,
+} from "@/lib/project/types";
 import type { MarkdownGenerationState, SharedWorkbenchContext } from "./markdown-generation-types";
+import { AgentActivity } from "./agent-activity";
+import { ChatMessageView, type ChatMessageActivity } from "./chat-message";
+import { TokenUsageDetails } from "./token-usage-details";
 
 const REASONING_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
   { value: "low", label: "低" },
@@ -130,65 +143,6 @@ export function createStreamingTextBuffer(
   };
 }
 
-function MessageBubble({ msg }: { msg: ChatMessage }) {
-  if (msg.role === "system") {
-    return (
-      <div className="mx-auto max-w-[90%] rounded-lg bg-muted/20 px-3 py-2 text-center text-xs text-muted-foreground">
-        {msg.content}
-      </div>
-    );
-  }
-
-  const isUser = msg.role === "user";
-
-  return (
-    <div
-      className={cn(
-        "flex max-w-[85%] flex-col gap-1 rounded-xl p-3.5 text-sm",
-        isUser ? "self-end bg-foreground text-background" : "self-start border bg-muted/40 text-foreground"
-      )}
-    >
-      <span className={cn("text-xs", isUser ? "text-background/70" : "text-muted-foreground")}>
-        {isUser ? "你" : "Agent"}
-      </span>
-      {msg.reasoningContent ? (
-        <details className="group mb-2 rounded-md border bg-background/60 px-2 py-1.5" open={false}>
-          <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground">
-            <ChevronRightIcon className="h-3 w-3 group-open:hidden" />
-            <ChevronDownIcon className="hidden h-3 w-3 group-open:block" />
-            思考过程
-          </summary>
-          <div className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-            {msg.reasoningContent}
-          </div>
-        </details>
-      ) : null}
-      <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
-      {msg.sources && msg.sources.length > 0 ? (
-        <div className="mt-1 flex flex-col gap-1 border-t pt-2">
-          {msg.sources.map((source) => (
-            <SourceLink key={source.id} source={source} />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function SourceLink({ source }: { source: ExternalSource }) {
-  return (
-    <a
-      className="flex items-center justify-between gap-2 rounded-md bg-background/60 px-2 py-1 text-xs hover:underline"
-      href={source.url}
-      rel="noreferrer noopener"
-      target="_blank"
-    >
-      <span className="truncate">{source.title || source.url}</span>
-      <span className="shrink-0 text-muted-foreground">{source.domain}</span>
-    </a>
-  );
-}
-
 export function ChatPanel({
   activeNode,
   projectId,
@@ -218,12 +172,29 @@ export function ChatPanel({
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const sessionMenuRef = useRef<HTMLDivElement>(null);
   const [savingWebSearch, setSavingWebSearch] = useState(false);
-  const [urlReadNotice, setUrlReadNotice] = useState<string | null>(null);
   const [webNotice, setWebNotice] = useState<string | null>(null);
-  const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [pendingVerification, setPendingVerification] = useState<PendingVerification | null>(null);
+  // Authoritative agent activity for the current turn. Structured activity
+  // events from the route drive this; legacy web events only update webNotice.
+  const [activity, setActivity] = useState<{
+    stage: AgentActivityStage;
+    summary: string;
+    startedAt: number | null;
+  }>({ stage: "idle", summary: "等待输入", startedAt: null });
+  const [now, setNow] = useState(() => Date.now());
+  const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const onGenStateChangeRef = useRef(onGenStateChange);
   useEffect(() => { onGenStateChangeRef.current = onGenStateChange; }, [onGenStateChange]);
+
+  // Tick the clock once per second while a turn is active so the reasoning
+  // header can show a live duration.
+  useEffect(() => {
+    if (activity.stage === "idle") return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [activity.stage]);
+
+  const sessionUsage = useMemo(() => aggregateUsageFromMessages(messages), [messages]);
 
   const activeSession = sessions.find((s) => s.id === sharedContext.activeSessionId);
   const webSearchEnabled = activeSession?.webSearchEnabled ?? false;
@@ -416,11 +387,10 @@ export function ChatPanel({
     const userContent = (overrideMessage ?? message).trim();
     if (!userContent || sending) return;
     setError("");
-    // Clear transient notices from the previous send.
-    setUrlReadNotice(null);
+    // Clear transient notices from the previous send and start the turn.
     setWebNotice(null);
-    setDraftNotice(null);
     setPendingVerification(null);
+    setActivity({ stage: "thinking", summary: "正在分析需求", startedAt: Date.now() });
 
     // Show user message immediately and clear input
     const userMessageId = crypto.randomUUID();
@@ -458,10 +428,12 @@ export function ChatPanel({
       if (!res.ok) {
         const data = (await res.json()) as { error?: string };
         setError(data.error ?? "发送失败");
+        setActivity({ stage: "failed", summary: "发送失败", startedAt: null });
         return;
       }
 
       const assistantId = crypto.randomUUID();
+      setStreamingAssistantId(assistantId);
       setMessages((prev) => [
         ...prev,
         { id: assistantId, role: "assistant" as const, content: "", createdAt: new Date().toISOString() },
@@ -500,45 +472,37 @@ export function ChatPanel({
             const event = JSON.parse(payload) as Record<string, unknown>;
             const type = event.type as string;
 
-            if (type === "reasoning" && event.content) {
+            if (type === "activity" && event.stage) {
+              // Structured activity is authoritative — preserve the first
+              // active startedAt so the elapsed timer is continuous.
+              const stage = event.stage as AgentActivityStage;
+              const summary = (event.summary as string) ?? "";
+              setActivity((prev) => ({
+                stage,
+                summary,
+                startedAt: prev.startedAt ?? (stage === "idle" ? null : Date.now()),
+              }));
+            } else if (type === "reasoning" && event.content) {
               textBuffer.push("reasoning", event.content as string);
             } else if (type === "token" && event.content) {
               textBuffer.push("content", event.content as string);
-            } else if (type === "url_read_start") {
-              const urls = (event.urls as string[]) ?? [];
-              setUrlReadNotice(`正在读取 ${urls.length} 个网页…`);
-            } else if (type === "url_read_result") {
-              if (event.ok === true && event.source) {
-                const source = event.source as ExternalSource;
-                if (!seenSourceIds.has(source.id)) {
-                  seenSourceIds.add(source.id);
-                  pendingSources.push(source);
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantId
-                        ? { ...m, sources: [...(m.sources ?? []), source] }
-                        : m,
-                    ),
-                  );
-                }
+            } else if (type === "url_read_result" && event.ok === true && event.source) {
+              const source = event.source as ExternalSource;
+              if (!seenSourceIds.has(source.id)) {
+                seenSourceIds.add(source.id);
+                pendingSources.push(source);
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, sources: [...(m.sources ?? []), source] }
+                      : m,
+                  ),
+                );
               }
-              setUrlReadNotice(null);
-            } else if (type === "web_fetch_start") {
-              const url = (event.url as string) ?? "";
-              setUrlReadNotice(`正在读取链接${url ? `：${url}` : ""}…`);
-            } else if (type === "web_fetch_result") {
-              if (event.ok !== true && event.message) {
-                setWebNotice(`链接读取失败：${event.message as string}`);
-              }
-              setUrlReadNotice(null);
-            } else if (type === "web_search_start") {
-              const query = (event.query as string) ?? "";
-              setUrlReadNotice(`正在搜索${query ? `“${query}”` : ""}…`);
-            } else if (type === "web_search_result") {
-              if (event.ok !== true && event.message) {
-                setWebNotice(`搜索失败：${event.message as string}`);
-              }
-              setUrlReadNotice(null);
+            } else if (type === "web_fetch_result" && event.ok !== true && event.message) {
+              setWebNotice(`链接读取失败：${event.message as string}`);
+            } else if (type === "web_search_result" && event.ok !== true && event.message) {
+              setWebNotice(`搜索失败：${event.message as string}`);
             } else if (type === "notice" && event.message) {
               setWebNotice(event.message as string);
             } else if (type === "source" && event.source) {
@@ -563,18 +527,15 @@ export function ChatPanel({
               });
             } else if (type === "markdown_check_start") {
               onGenStateChangeRef.current({ phase: "checking" as const });
-              setDraftNotice("正在更新交付稿…");
             } else if (type === "markdown_unchanged") {
               if (event.warning) {
                 setError(event.warning as string);
               }
               onGenStateChangeRef.current({ phase: "idle" as const });
-              setDraftNotice(null);
             } else if (type === "markdown_start") {
               const mode = event.mode as string;
               if (mode === "increment") {
                 pendingPatchRevision = event.baseRevision as number;
-                setDraftNotice("正在生成交付稿修改…");
               }
             } else if (type === "markdown_patch_preview") {
               const patch = event.patch as import("@/lib/project/types").NodeMarkdownPatch;
@@ -587,9 +548,14 @@ export function ChatPanel({
                   baseRevision: pendingPatchRevision,
                 });
               }
-              // The markdown panel owns the write-animation status from here;
-              // clear the chat-side draft notice.
-              setDraftNotice(null);
+              // Replace the optimistic assistant message with the server's
+              // authoritative message (carrying turnId/usage/reasoningDurationMs).
+              const serverMessage = event.assistantMessage as ChatMessage | undefined;
+              if (serverMessage) {
+                setMessages((prev) =>
+                  prev.map((m) => (m.id === assistantId ? serverMessage : m)),
+                );
+              }
               sharedContext.setActiveSessionId(event.sessionId as string);
               setSessions((current) =>
                 current.map((session) =>
@@ -602,9 +568,15 @@ export function ChatPanel({
             } else if (type === "markdown_error" && event.error) {
               setError(event.error as string);
               onGenStateChangeRef.current({ phase: "idle" });
-              setDraftNotice(null);
             } else if (type === "error" && event.error) {
               setError(event.error as string);
+              const serverMessage = event.assistantMessage as ChatMessage | undefined;
+              if (serverMessage) {
+                setMessages((prev) =>
+                  prev.map((m) => (m.id === assistantId ? serverMessage : m)),
+                );
+              }
+              setActivity({ stage: "failed", summary: "生成失败", startedAt: null });
             }
           } catch {
             // skip malformed events
@@ -613,20 +585,30 @@ export function ChatPanel({
       }
 
       await textBuffer.waitUntilIdle();
+      // Briefly show the completed stage, then return to idle so the activity
+      // indicator clears between turns.
+      setActivity((prev) => ({ stage: "completed", summary: "已完成", startedAt: prev.startedAt }));
+      setTimeout(() => setActivity({ stage: "idle", summary: "等待输入", startedAt: null }), 1200);
     } catch (error) {
       textBuffer?.stop();
       if (error instanceof DOMException && error.name === "AbortError") {
+        setActivity({ stage: "interrupted", summary: "已中断", startedAt: null });
         return;
       }
       setError("请求失败，请检查网络连接");
+      setActivity({ stage: "failed", summary: "生成失败", startedAt: null });
     } finally {
       setSending(false);
+      setStreamingAssistantId(null);
       abortControllerRef.current = null;
     }
   }
 
   function abortSendMessage() {
     abortControllerRef.current?.abort();
+    // Stop the text buffer immediately so streaming animation ends, and mark
+    // the turn interrupted so the activity indicator stops pulsing.
+    setActivity({ stage: "interrupted", summary: "已中断", startedAt: null });
   }
 
   async function openBrowserVerification() {
@@ -734,23 +716,26 @@ export function ChatPanel({
             <PlusIcon data-icon="inline-start" />
             新会话
           </Button>
+          {sessionUsage ? (
+            <div className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="session-usage">
+              <span>会话用量</span>
+              <TokenUsageDetails usage={sessionUsage} />
+            </div>
+          ) : null}
         </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-5">
-        {urlReadNotice ? (
-          <p className="rounded-md border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
-            {urlReadNotice}
-          </p>
+        {activity.stage !== "idle" ? (
+          <AgentActivity
+            stage={activity.stage}
+            summary={activity.summary}
+            startedAt={activity.startedAt}
+          />
         ) : null}
         {webNotice ? (
           <p className="rounded-md border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
             {webNotice}
-          </p>
-        ) : null}
-        {draftNotice ? (
-          <p className="rounded-md border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
-            {draftNotice}
           </p>
         ) : null}
         {pendingVerification ? (
@@ -795,9 +780,23 @@ export function ChatPanel({
             </div>
           ) : (
             <div className="flex flex-col gap-4">
-              {messages.map((msg) => (
-                <MessageBubble key={msg.id} msg={msg} />
-              ))}
+              {messages.map((msg) => {
+                const isStreaming = sending && msg.id === streamingAssistantId;
+                const activityForMessage: ChatMessageActivity | null =
+                  isStreaming && activity.stage !== "idle" && activity.stage !== "completed"
+                    ? {
+                        stage: activity.stage,
+                        summary: activity.summary,
+                        elapsedSeconds:
+                          activity.startedAt != null
+                            ? Math.max(0, Math.floor((now - activity.startedAt) / 1000))
+                            : null,
+                      }
+                    : null;
+                return (
+                  <ChatMessageView key={msg.id} message={msg} activity={activityForMessage} />
+                );
+              })}
             </div>
           )}
         </ScrollArea>
