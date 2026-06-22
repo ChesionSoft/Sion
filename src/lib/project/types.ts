@@ -45,6 +45,41 @@ export type ChatMessage = {
   reasoningContent?: string;
   sources?: ExternalSource[];
   createdAt: string;
+  /** Server-generated id shared by every model call in one user turn. */
+  turnId?: string;
+  /** Wall-clock ms from turn start to first content token (or completion). */
+  reasoningDurationMs?: number;
+  /** Whole-turn token usage persisted on the assistant message. */
+  usage?: TurnTokenUsage;
+};
+
+// ---------------------------------------------------------------------------
+// Token usage — normalized across Chat Completions and Responses providers.
+// ---------------------------------------------------------------------------
+
+export type TokenUsageSource = "exact" | "estimated" | "mixed";
+export type ModelCallCategory = "answer" | "tool_planning" | "fact_judge" | "document_update";
+
+export type ProviderTokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+export type ModelCallUsage = ProviderTokenUsage & {
+  id: string;
+  category: ModelCallCategory;
+  providerId: string;
+  model: string;
+  source: Exclude<TokenUsageSource, "mixed">;
+  status: "completed" | "interrupted" | "failed";
+};
+
+export type TurnTokenUsage = ProviderTokenUsage & {
+  turnId: string;
+  source: TokenUsageSource;
+  callCount: number;
+  calls: ModelCallUsage[];
 };
 
 export type ChatSession = {
