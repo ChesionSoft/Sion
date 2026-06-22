@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { callModelChat } from "./model-chat";
+import { callModelChat, type ModelUsageContext } from "./model-chat";
 import { getDeliverySchema, getDeliverySection } from "./node-delivery-schemas";
 import type {
   ApiUrlMode,
@@ -30,6 +30,10 @@ export type JudgeNodeFactsInput = {
   externalSources?: ExternalSource[];
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+  /** Whole-turn identity + callback for reporting the judge's token usage. */
+  turnId?: string;
+  providerId?: string;
+  onUsage?: (usage: import("./types").ModelCallUsage) => void;
 };
 
 // ---------------------------------------------------------------------------
@@ -109,6 +113,11 @@ export async function judgeNodeFacts(
   const externalSources = input.externalSources ?? [];
   const systemPrompt = buildSystemPrompt(input.nodeId, externalSources);
 
+  const usageContext: ModelUsageContext | undefined =
+    input.turnId && input.providerId && input.onUsage
+      ? { turnId: input.turnId, category: "fact_judge", providerId: input.providerId, onUsage: input.onUsage }
+      : undefined;
+
   // 1. Call the LLM
   let responseContent: string;
   try {
@@ -137,6 +146,7 @@ export async function judgeNodeFacts(
       ],
       fetchImpl: input.fetchImpl,
       signal: input.signal,
+      usageContext,
     });
   } catch (err) {
     return {

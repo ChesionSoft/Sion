@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { judgeNodeFacts } from "./node-fact-judge";
+import type { ModelCallUsage } from "./types";
 
 const BASE_INPUT = {
   apiBaseUrl: "https://api.example.com",
@@ -252,6 +253,20 @@ describe("judgeNodeFacts", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.decision.changes).toHaveLength(0);
+  });
+
+  it("reports fact_judge usage into the supplied turn", async () => {
+    const fetchImpl = makeFetchImpl(JSON.stringify({ changes: [] }));
+    const calls: ModelCallUsage[] = [];
+    await judgeNodeFacts({
+      ...BASE_INPUT,
+      fetchImpl,
+      turnId: "t1",
+      providerId: "p1",
+      onUsage: (u) => calls.push(u),
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ category: "fact_judge", providerId: "p1" });
   });
 
   it("uses low reasoning effort", async () => {

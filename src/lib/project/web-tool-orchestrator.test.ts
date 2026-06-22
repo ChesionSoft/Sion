@@ -1,8 +1,9 @@
+import { ReadableStream } from "node:stream/web";
 import { describe, expect, it, vi } from "vitest";
 import { runWebOrchestrator, type WebOrchestratorEvent, type StreamTurnArgs } from "./web-tool-orchestrator";
 import type { BrowserWebSearchResult, BrowserWebService, WebFetchResult } from "./browser-web-service";
 import type { ModelTurnEvent } from "./model-tools";
-import type { SearchEngineId, SearchResult } from "./types";
+import type { ModelCallUsage, SearchEngineId, SearchResult } from "./types";
 
 function makeBrowserService(opts: {
   search?: (query: string) => BrowserWebSearchResult;
@@ -35,6 +36,21 @@ async function collect(gen: AsyncGenerator<WebOrchestratorEvent>): Promise<WebOr
   const out: WebOrchestratorEvent[] = [];
   for await (const e of gen) out.push(e);
   return out;
+}
+
+/** Returns a fetch Response that streams SSE chunks (for the default turn path). */
+function sseResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  return {
+    ok: true,
+    status: 200,
+    body: new ReadableStream({
+      start(controller) {
+        for (const c of chunks) controller.enqueue(encoder.encode(c));
+        controller.close();
+      },
+    }),
+  } as unknown as Response;
 }
 
 const baseInput = {
@@ -383,5 +399,44 @@ describe("runWebOrchestrator/direct URLs", () => {
     expect(note).toBeDefined();
     // Must tell the model the link could NOT be read, not just stay silent.
     expect(note!.content).toMatch(/未能|无法|失败|读不到|读不了|不可用/);
+  });
+});
+
+describe("runWebOrchestrator/usage tracking", () => {
+  it("categorizes the planning call as tool_planning and the final answer as answer", async () => {
+    const calls: ModelCallUsage[] = [];
+    const onUsage = (u: ModelCallUsage) => calls.push(u);
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { stream?: boolean };
+      if (body.stream) {
+        return sseResponse([
+          'data: {"choices":[{"delta":{"content":"答案"}}]}\n\n',
+          'data: [DONE]\n\n',
+        ]);
+      }
+      // Non-stream planning call (defaultCallText -> callModelChat).
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: '{"queries":["q1"]}' } }] }),
+        { status: 200 },
+      );
+    });
+    const browserService = makeBrowserService({
+      search: () => ({ ok: true, results: [{ title: "t", url: "https://example.com/p", rank: 1 }] }),
+      fetch: (url) => ({ ok: true, url, content: "body" }),
+    });
+
+    await collect(
+      runWebOrchestrator({
+        ...baseInput,
+        toolCalling: false,
+        browserService,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        turnId: "t1",
+        providerId: "p1",
+        onUsage,
+      }),
+    );
+
+    expect(calls.map((c) => c.category)).toEqual(["tool_planning", "answer"]);
   });
 });

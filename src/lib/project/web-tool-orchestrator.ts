@@ -12,12 +12,20 @@ import {
 } from "./model-tools";
 import { planSearchQueries, selectPages } from "./search-planner";
 import { WebToolBudget } from "./web-tool-budget";
-import { streamModelTurn } from "./model-chat";
+import { streamModelTurn, type ModelUsageContext } from "./model-chat";
 import type {
   BrowserWebErrorCode,
   BrowserWebService,
 } from "./browser-web-service";
-import type { ExternalSource, ModelProviderProtocol, ReasoningEffort, SearchEngineId, SearchResult } from "./types";
+import type {
+  ExternalSource,
+  ModelCallCategory,
+  ModelCallUsage,
+  ModelProviderProtocol,
+  ReasoningEffort,
+  SearchEngineId,
+  SearchResult,
+} from "./types";
 
 /**
  * Provider-neutral orchestrator that owns per-turn budgets and emits one
@@ -67,7 +75,20 @@ export type WebOrchestratorInput = {
   callText?: (prompt: string, signal?: AbortSignal) => Promise<string>;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+  /** Whole-turn identity + callback for provider-neutral usage tracking. */
+  turnId?: string;
+  providerId?: string;
+  onUsage?: (usage: ModelCallUsage) => void;
 };
+
+/** Build a usage context for a call category, or undefined when tracking is off. */
+function usageContextFor(
+  input: WebOrchestratorInput,
+  category: ModelCallCategory,
+): ModelUsageContext | undefined {
+  if (!input.turnId || !input.providerId || !input.onUsage) return undefined;
+  return { turnId: input.turnId, category, providerId: input.providerId, onUsage: input.onUsage };
+}
 
 const MAX_TOOL_ROUNDS = 2;
 
@@ -137,7 +158,7 @@ async function* runToolCapablePath(
   sources: ExternalSource[],
   conversation: ModelConversationItem[],
 ): AsyncGenerator<WebOrchestratorEvent, void, void> {
-  const streamTurn = input.streamTurn ?? defaultStreamTurn(input);
+  const streamTurn = input.streamTurn ?? defaultStreamTurn(input, "tool_planning");
   let rounds = 0;
 
   while (rounds < MAX_TOOL_ROUNDS) {
@@ -322,7 +343,7 @@ async function* runFinalAnswer(
   input: WebOrchestratorInput,
   conversation: ModelConversationItem[],
 ): AsyncGenerator<WebOrchestratorEvent, void, void> {
-  const streamTurn = input.streamTurn ?? defaultStreamTurn(input);
+  const streamTurn = input.streamTurn ?? defaultStreamTurn(input, "answer");
   for await (const e of streamTurn({ conversation, signal: input.signal })) {
     if (e.type === "content") yield { type: "content", delta: e.delta };
     else if (e.type === "reasoning") yield { type: "reasoning", delta: e.delta };
@@ -330,7 +351,7 @@ async function* runFinalAnswer(
   }
 }
 
-function defaultStreamTurn(input: WebOrchestratorInput) {
+function defaultStreamTurn(input: WebOrchestratorInput, category: ModelCallCategory) {
   return (args: StreamTurnArgs): AsyncGenerator<ModelTurnEvent, void, void> =>
     streamModelTurn({
       apiBaseUrl: input.apiBaseUrl,
@@ -343,6 +364,7 @@ function defaultStreamTurn(input: WebOrchestratorInput) {
       tools: args.tools,
       fetchImpl: input.fetchImpl,
       signal: args.signal,
+      usageContext: usageContextFor(input, category),
     });
 }
 
@@ -358,6 +380,7 @@ async function defaultCallText(input: WebOrchestratorInput, prompt: string, sign
     messages: [{ role: "user", content: prompt }],
     fetchImpl: input.fetchImpl,
     signal,
+    usageContext: usageContextFor(input, "tool_planning"),
   });
 }
 
