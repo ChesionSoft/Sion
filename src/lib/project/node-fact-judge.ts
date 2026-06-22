@@ -145,19 +145,29 @@ export async function judgeNodeFacts(
     };
   }
 
-  // 2. Parse JSON (try direct, then try ```json fence)
+  // 2. Parse JSON. Reasoning models (e.g. minimax m3 via Ollama) often prepend
+  //    prose or thinking tags before the JSON and may not use a code fence, so
+  //    try several recovery strategies before giving up.
   let parsed: unknown;
   try {
     parsed = JSON.parse(responseContent);
   } catch {
     const fenceMatch = responseContent.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenceMatch) {
+    const candidates = [
+      fenceMatch ? fenceMatch[1].trim() : null,
+      extractFirstJsonObject(responseContent),
+    ].filter((s): s is string => !!s);
+    let parsedOk = false;
+    for (const candidate of candidates) {
       try {
-        parsed = JSON.parse(fenceMatch[1].trim());
+        parsed = JSON.parse(candidate);
+        parsedOk = true;
+        break;
       } catch {
-        return { ok: false, error: "judge response was not valid JSON" };
+        // try the next candidate
       }
-    } else {
+    }
+    if (!parsedOk) {
       return { ok: false, error: "judge response was not valid JSON" };
     }
   }
@@ -248,4 +258,44 @@ export async function judgeNodeFacts(
   }
 
   return { ok: true, decision: { changes } };
+}
+
+/**
+ * Extract the first balanced `{...}` JSON object from `text`, tolerating prose
+ * or thinking tags around it. Scans for the first `{`, then tracks brace depth
+ * while respecting string literals and escapes so braces inside strings don't
+ * break the count. Returns null if no balanced object is found. Used to recover
+ * JSON that reasoning models wrap in prose or emit after thinking tags.
+ */
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+      if (depth < 0) return null;
+    }
+  }
+  return null;
 }

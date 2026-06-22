@@ -207,6 +207,25 @@ describe("chat API routing", () => {
     expect(orchestratorInput?.directUrls).toEqual(["https://example.com/a", "https://example.com/b"]);
   });
 
+  it("adds link-read guidance to the system prompt when the message contains a URL", async () => {
+    // Without this, models that pattern-match on the raw link reply
+    // "I can't access links" even though the fetched content is provided.
+    await readSseEvents(
+      await POST(baseRequest({ message: "测试 https://example.com/a 你能访问吗" }), { params: Promise.resolve({ projectId: "test-project" }) }),
+    );
+    const sys = orchestratorInput?.systemPrompt as string;
+    expect(sys).toContain("链接读取说明");
+    expect(sys).toMatch(/不要.*无法访问|不要.*没有联网|不要.*联网功能/);
+  });
+
+  it("does not add link-read guidance when the message has no URL", async () => {
+    await readSseEvents(
+      await POST(baseRequest({ message: "请优化功能模块设计" }), { params: Promise.resolve({ projectId: "test-project" }) }),
+    );
+    const sys = orchestratorInput?.systemPrompt as string;
+    expect(sys).not.toContain("链接读取说明");
+  });
+
   it("passes the configured search engine", async () => {
     await readSseEvents(await POST(baseRequest(), { params: Promise.resolve({ projectId: "test-project" }) }));
     expect(orchestratorInput?.engine).toBe("google"); // default preference

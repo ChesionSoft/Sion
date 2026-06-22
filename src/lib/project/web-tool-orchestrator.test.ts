@@ -314,4 +314,74 @@ describe("runWebOrchestrator/direct URLs", () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(3); // a, b, c; d skipped by budget
   });
+
+  it("labels fetched direct-URL content as the page content of that link", async () => {
+    // Regression: models that pattern-match on the raw link in the user
+    // message reply "I can't access links" and ignore the fetched text below.
+    // The user message sent to the model must explicitly tie the fetched
+    // content to the link so the model answers from it instead of refusing.
+    const browserService = makeBrowserService({
+      fetch: (url) => ({ ok: true, url, content: "合同演示文档正文" }),
+    });
+    const captured: { conversation?: StreamTurnArgs["conversation"] } = {};
+    const streamTurn = vi.fn(async function* (args: StreamTurnArgs): AsyncGenerator<ModelTurnEvent> {
+      captured.conversation = args.conversation;
+      yield { type: "content", delta: "答案" };
+    });
+
+    await collect(
+      runWebOrchestrator({
+        ...baseInput,
+        searchEnabled: false,
+        toolCalling: false,
+        userMessage: "测试，https://project.hsxlian.com/index.html 你能访问这个网站吗",
+        directUrls: ["https://project.hsxlian.com/index.html"],
+        browserService,
+        streamTurn,
+      }),
+    );
+
+    const userMessages = (captured.conversation ?? []).filter(
+      (m) => m.type === "message" && m.role === "user",
+    ) as { content: string }[];
+    // The user message to the answer model is the first one; it must carry the
+    // fetched content, the link, and an explicit marker connecting the two.
+    const answerUserContent = userMessages[0]?.content ?? "";
+    expect(answerUserContent).toContain("https://project.hsxlian.com/index.html");
+    expect(answerUserContent).toContain("合同演示文档正文");
+    expect(answerUserContent).toMatch(/链接|网页内容|抓取/);
+  });
+
+  it("injects a model-facing note when a direct-URL fetch fails", async () => {
+    // When the link can't be read, the model must be told (in the conversation)
+    // so it reports the failure honestly instead of claiming "no web access".
+    const browserService = makeBrowserService({
+      fetch: () => ({ ok: false, code: "blocked_address", message: "抓取失败" }),
+    });
+    const captured: { conversation?: StreamTurnArgs["conversation"] } = {};
+    const streamTurn = vi.fn(async function* (args: StreamTurnArgs): AsyncGenerator<ModelTurnEvent> {
+      captured.conversation = args.conversation;
+      yield { type: "content", delta: "答案" };
+    });
+
+    await collect(
+      runWebOrchestrator({
+        ...baseInput,
+        searchEnabled: false,
+        toolCalling: false,
+        userMessage: "https://example.com/down 你能访问吗",
+        directUrls: ["https://example.com/down"],
+        browserService,
+        streamTurn,
+      }),
+    );
+
+    const userMessages = (captured.conversation ?? []).filter(
+      (m) => m.type === "message" && m.role === "user",
+    ) as { content: string }[];
+    const note = userMessages.find((m) => m.content.includes("https://example.com/down"));
+    expect(note).toBeDefined();
+    // Must tell the model the link could NOT be read, not just stay silent.
+    expect(note!.content).toMatch(/未能|无法|失败|读不到|读不了|不可用/);
+  });
 });

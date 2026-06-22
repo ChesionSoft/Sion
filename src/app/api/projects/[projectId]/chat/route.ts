@@ -84,6 +84,15 @@ export async function POST(request: Request, context: { params: Promise<{ projec
 
   const agentRuleContent = await agentStore.getActiveRuleContent(projectId, nodeId);
 
+  const trimmedUserMessage = body.message.trim();
+
+  // Direct URLs in the user message are always fetched through the browser
+  // service, regardless of the search toggle. Extracted here so the system
+  // prompt can tell the model the link content is provided below — otherwise
+  // models that pattern-match on the raw link reply "I can't access links"
+  // and ignore the fetched text.
+  const directUrls = extractHttpUrls(trimmedUserMessage);
+
   const systemPromptParts: string[] = [
     `当前项目：${project.name}`,
     "",
@@ -97,6 +106,17 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     "",
     contextMarkdown.trim() || "暂无已确认上下文。",
   ];
+
+  if (directUrls.length > 0) {
+    systemPromptParts.push(
+      "",
+      "## 链接读取说明",
+      "",
+      "- 用户消息中若包含链接，系统会自动抓取该链接的网页内容，并附在用户消息末尾、标注为「链接网页内容」。",
+      "- 请直接基于已抓取的内容回答用户问题，不要回答「我无法访问链接」「我没有联网功能」或同类说辞。",
+      "- 若消息中出现「链接读取失败」说明，请如实告知用户该链接暂无法读取，并基于已有信息继续，不要声称自己没有联网功能。",
+    );
+  }
 
   if (body.fileIds?.length) {
     const fileContents: string[] = [];
@@ -146,7 +166,6 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     webSearchEnabled = session.webSearchEnabled;
   }
 
-  const trimmedUserMessage = body.message.trim();
   await projectStore.appendChatMessage(projectId, nodeId, {
     id: randomUUID(),
     role: "user",
@@ -157,10 +176,6 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   // Tool capability is stored per model — never derived from protocol.
   const modelEntry = provider.models.find((m) => m.name === body.model);
   const toolCalling = !!modelEntry?.toolCalling;
-
-  // Direct URLs in the user message are always fetched through the browser
-  // service, regardless of the search toggle.
-  const directUrls = extractHttpUrls(trimmedUserMessage);
 
   // Search engine preference (Google/Baidu) from browser-search settings.
   const browserSearchStore = new BrowserSearchStore();

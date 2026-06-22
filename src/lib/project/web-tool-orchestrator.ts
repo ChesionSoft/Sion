@@ -1,5 +1,5 @@
 import { createExternalSource } from "./external-source";
-import { formatUntrustedWebContext } from "./untrusted-web-context";
+import { formatUntrustedWebContext, formatUnreadableLinkNote } from "./untrusted-web-context";
 import {
   parseToolCall,
   toolDefinitions,
@@ -102,14 +102,18 @@ export async function* runWebOrchestrator(
       yield { type: "source", source };
       contextBlocks.push(formatUntrustedWebContext({ source, content: result!.content }));
     } else {
+      const failMessage = result && !result.ok ? result.message : "抓取失败";
       yield {
         type: "web_fetch_result",
         url,
         ok: false,
         code: result && !result.ok ? result.code : "blocked_address",
-        message: result && !result.ok ? result.message : "抓取失败",
+        message: failMessage,
       };
       yield { type: "notice", message: "部分链接无法读取，已继续对话" };
+      // Tell the model (not just the UI) that the link could not be read, so it
+      // reports the failure honestly instead of claiming "no web access".
+      contextBlocks.push(formatUnreadableLinkNote(url, failMessage));
     }
   }
 

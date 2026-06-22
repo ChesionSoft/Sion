@@ -296,6 +296,29 @@ describe("judgeNodeFacts", () => {
     expect(result.decision.changes).toEqual([]);
   });
 
+  it("parses JSON wrapped in prose without a fence", async () => {
+    // Reasoning models (e.g. minimax m3 via Ollama) often prepend a sentence
+    // before the JSON and never use a code fence. The judge must still recover
+    // the JSON object instead of erroring "judge response was not valid JSON".
+    const fetchImpl = makeFetchImpl(
+      "基于以上分析，未发现需要记录的事实，结果如下：\n{\"changes\":[]}\n以上。",
+    );
+
+    const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decision.changes).toEqual([]);
+  });
+
+  it("parses JSON after inline thinking tags", async () => {
+    const fetchImpl = makeFetchImpl("<think>我先分析一下用户消息</think>\n{\"changes\":[]}");
+
+    const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decision.changes).toEqual([]);
+  });
+
   it("accepts valid external assumptions", async () => {
     const source = {
       id: "src-1",
