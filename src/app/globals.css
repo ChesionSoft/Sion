@@ -130,55 +130,143 @@
 }
 
 @layer components {
-  .markdown-preview h1,
-  .markdown-preview h2,
-  .markdown-preview h3 {
+  .markdown-content {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--foreground);
+  }
+  .markdown-content h1,
+  .markdown-content h2,
+  .markdown-content h3,
+  .markdown-content h4 {
     font-weight: 600;
     color: var(--foreground);
     margin-top: 1.25em;
     margin-bottom: 0.5em;
   }
-  .markdown-preview h1 {
+  .markdown-content h1 {
     font-size: 1.25rem;
   }
-  .markdown-preview h2 {
+  .markdown-content h2 {
     font-size: 1.125rem;
   }
-  .markdown-preview h3 {
+  .markdown-content h3 {
     font-size: 1rem;
   }
-  .markdown-preview p {
+  .markdown-content p {
     margin-bottom: 0.75em;
   }
-  .markdown-preview ul,
-  .markdown-preview ol {
+  .markdown-content ul,
+  .markdown-content ol {
     margin-left: 1.25em;
     margin-bottom: 0.75em;
   }
-  .markdown-preview li {
+  .markdown-content li {
     margin-bottom: 0.25em;
   }
-  .markdown-preview code {
+  .markdown-content a {
+    color: var(--primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .markdown-content code {
     background: var(--muted);
     padding: 0.125em 0.375em;
     border-radius: 0.25rem;
     font-size: 0.875em;
+    font-family: var(--font-geist-mono);
   }
-  .markdown-preview pre {
-    background: var(--muted);
-    padding: 0.75rem;
-    border-radius: 0.5rem;
-    overflow-x: auto;
-    margin-bottom: 0.75em;
-  }
-  .markdown-preview pre code {
-    background: transparent;
-    padding: 0;
-  }
-  .markdown-preview blockquote {
+  .markdown-content blockquote {
     border-left: 3px solid var(--border);
     padding-left: 0.75rem;
     color: var(--muted-foreground);
     margin-bottom: 0.75em;
+  }
+  .markdown-content hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 1em 0;
+  }
+
+  /* Tables scroll locally so wide rows never push the chat/document width. */
+  .markdown-table-scroll {
+    min-width: 0;
+    overflow-x: auto;
+    margin-bottom: 0.75em;
+  }
+  .markdown-table-scroll table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85em;
+  }
+  .markdown-table-scroll th,
+  .markdown-table-scroll td {
+    border: 1px solid var(--border);
+    padding: 0.375em 0.625em;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+  .markdown-table-scroll th {
+    background: var(--muted);
+    font-weight: 600;
+  }
+
+  /* Code blocks keep their own horizontal scroller and a copy button. */
+  .markdown-code-block {
+    position: relative;
+    min-width: 0;
+    margin-bottom: 0.75em;
+  }
+  .markdown-code-block pre {
+    background: var(--muted);
+    padding: 0.75rem;
+    padding-top: 2rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    min-width: 0;
+    margin: 0;
+  }
+  .markdown-code-block pre code {
+    background: transparent;
+    padding: 0;
+    font-family: var(--font-geist-mono);
+  }
+  .markdown-code-copy {
+    position: absolute;
+    top: 0.375rem;
+    right: 0.375rem;
+    font-size: 0.7rem;
+    line-height: 1;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    background: var(--background);
+    color: var(--muted-foreground);
+    border: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .markdown-code-copy:hover {
+    color: var(--foreground);
+  }
+
+  /* Chat variant: compact, wraps anywhere to fit the narrow chat column. */
+  .markdown-chat {
+    overflow-wrap: anywhere;
+  }
+
+  /* Document variant: paper-style, wider measure for the delivery preview. */
+  .markdown-document {
+    font-size: 0.9rem;
+    line-height: 1.7;
+  }
+  .markdown-document h1 {
+    font-size: 1.4rem;
+  }
+  .markdown-document h2 {
+    font-size: 1.2rem;
+  }
+  .markdown-document h3 {
+    font-size: 1.05rem;
   }
 }
