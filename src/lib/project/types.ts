@@ -217,8 +217,24 @@ export type ChatStreamEvent =
   | { type: "markdown_start"; mode: "increment"; baseRevision: number }
   | { type: "markdown_patch_preview"; patch: NodeMarkdownPatch }
   | { type: "markdown_error"; error: string }
-  | { type: "done"; sessionId: string }
-  | { type: "error"; error: string };
+  | { type: "activity"; stage: Exclude<AgentActivityStage, "idle">; summary: string; at: string }
+  | { type: "done"; sessionId: string; assistantMessage: ChatMessage }
+  | { type: "error"; error: string; assistantMessage?: ChatMessage };
+
+// ---------------------------------------------------------------------------
+// Agent activity — authoritative stage feedback streamed to the chat UI.
+// ---------------------------------------------------------------------------
+
+export type AgentActivityStage =
+  | "idle"
+  | "thinking"
+  | "reading_files"
+  | "searching_web"
+  | "generating_answer"
+  | "updating_document"
+  | "completed"
+  | "failed"
+  | "interrupted";
 
 // ---------------------------------------------------------------------------
 // Browser search — shared contracts reused across the foundation and

@@ -13,9 +13,13 @@ import { loadPlaywright } from "@/lib/project/playwright-loader";
 import { createBrowserWebService } from "@/lib/project/browser-web-service";
 import { runWebOrchestrator, type WebOrchestratorEvent } from "@/lib/project/web-tool-orchestrator";
 import { extractHttpUrls } from "@/lib/project/url-content";
+import { aggregateTokenUsage } from "@/lib/project/token-usage";
 import type {
+  AgentActivityStage,
+  ChatMessage,
   ChatStreamEvent,
   ExternalSource,
+  ModelCallUsage,
   ReasoningEffort,
   WorkflowNodeId,
 } from "@/lib/project/types";
@@ -93,7 +97,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   // and ignore the fetched text.
   const directUrls = extractHttpUrls(trimmedUserMessage);
 
-  const systemPromptParts: string[] = [
+  const baseSystemPromptParts: string[] = [
     `当前项目：${project.name}`,
     "",
     agentRuleContent.trim(),
@@ -108,7 +112,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   ];
 
   if (directUrls.length > 0) {
-    systemPromptParts.push(
+    baseSystemPromptParts.push(
       "",
       "## 链接读取说明",
       "",
@@ -118,35 +122,9 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     );
   }
 
-  if (body.fileIds?.length) {
-    const fileContents: string[] = [];
-    for (const fileId of body.fileIds) {
-      const record = await fileStore.getFile(projectId, fileId);
-      if (!record || record.status !== "available") continue;
-
-      const content = await fileStore.readFileContent(projectId, fileId);
-      if (content) {
-        fileContents.push(`## 引用文件：${record.originalName}\n\n${content}`);
-      }
-    }
-
-    if (fileContents.length) {
-      systemPromptParts.push("");
-      systemPromptParts.push(...fileContents);
-    }
-  }
-
-  systemPromptParts.push(
-    "",
-    "## 回复要求",
-    "",
-    "- 先回答用户问题，再给出建议写入 Markdown 的内容。",
-    "- 如果信息不足，每轮最多提出 3 个关键问题。",
-    '- 所有假设必须写入"设计假设"，所有不确定项必须写入"待确认问题"。',
-    "- 不要修改其他节点负责的章节。",
-  );
-
-  const systemPrompt = systemPromptParts.join("\n");
+  // File contents and the final "回复要求" section are appended inside the
+  // stream so the reading_files activity is emitted before the file reads
+  // actually occur.
 
   // Resolve or create the session BEFORE streaming so we can read the persisted
   // webSearchEnabled preference. The chat POST body never carries the switch —
@@ -196,12 +174,91 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         if (abortController.signal.aborted) return;
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
       };
+      const sendActivity = (stage: Exclude<AgentActivityStage, "idle">, summary: string) => {
+        sendEvent({ type: "activity", stage, summary, at: new Date().toISOString() });
+      };
+
+      // Whole-turn identity and usage collection shared by the orchestrator
+      // and the fact judge.
+      const turnId = randomUUID();
+      const assistantMessageId = randomUUID();
+      const turnStartedAt = Date.now();
+      const usageCalls: ModelCallUsage[] = [];
+      const onUsage = (usage: ModelCallUsage) => {
+        usageCalls.push(usage);
+      };
 
       let assistantContent = "";
       let assistantReasoningContent = "";
       const consumedSources: ExternalSource[] = [];
+      let firstContentAt: number | null = null;
+      let assistantPersisted = false;
+
+      // Persist the authoritative assistant message exactly once across the
+      // success, error, and abort paths. When `force` is false (error/abort),
+      // a message with no content/reasoning is skipped. Returns the saved
+      // message, or null when nothing was persisted.
+      const persistAssistant = async (force: boolean): Promise<ChatMessage | null> => {
+        if (assistantPersisted) return null;
+        if (!force && !assistantContent && !assistantReasoningContent) return null;
+        assistantPersisted = true;
+        const reasoningDurationMs =
+          firstContentAt != null ? firstContentAt - turnStartedAt : Date.now() - turnStartedAt;
+        const sources = dedupeExternalSources(consumedSources);
+        const usage = aggregateTokenUsage(turnId, usageCalls);
+        const message: ChatMessage = {
+          id: assistantMessageId,
+          role: "assistant",
+          content: assistantContent,
+          ...(assistantReasoningContent ? { reasoningContent: assistantReasoningContent } : {}),
+          ...(sources.length ? { sources } : {}),
+          createdAt: new Date().toISOString(),
+          turnId,
+          reasoningDurationMs,
+          ...(usage ? { usage } : {}),
+        };
+        await projectStore.appendChatMessage(projectId, nodeId, message, sessionId);
+        return message;
+      };
 
       try {
+        sendActivity("thinking", "正在分析需求");
+
+        // Read selected project files inside the stream so the reading_files
+        // activity is emitted before the reads actually occur.
+        if (body.fileIds?.length) {
+          sendActivity("reading_files", "正在读取所选项目文件");
+          const fileContents: string[] = [];
+          for (const fileId of body.fileIds) {
+            const record = await fileStore.getFile(projectId, fileId);
+            if (!record || record.status !== "available") continue;
+            const content = await fileStore.readFileContent(projectId, fileId);
+            if (content) {
+              fileContents.push(`## 引用文件：${record.originalName}\n\n${content}`);
+            }
+          }
+          if (fileContents.length) {
+            baseSystemPromptParts.push("");
+            baseSystemPromptParts.push(...fileContents);
+          }
+        }
+
+        baseSystemPromptParts.push(
+          "",
+          "## 回复要求",
+          "",
+          "- 先回答用户问题，再给出建议写入 Markdown 的内容。",
+          "- 如果信息不足，每轮最多提出 3 个关键问题。",
+          '- 所有假设必须写入"设计假设"，所有不确定项必须写入"待确认问题"。',
+          "- 不要修改其他节点负责的章节。",
+        );
+        const systemPrompt = baseSystemPromptParts.join("\n");
+
+        if (webSearchEnabled || directUrls.length > 0) {
+          sendActivity("searching_web", "正在检索外部资料");
+        }
+        sendActivity("generating_answer", "正在生成回复");
+
         for await (const e of runWebOrchestrator({
           apiBaseUrl: provider.apiBaseUrl,
           apiUrlMode: provider.apiUrlMode,
@@ -219,29 +276,26 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           sessionId,
           browserService,
           signal: abortController.signal,
+          turnId,
+          providerId: body.providerId!,
+          onUsage,
         })) {
           for (const sse of mapOrchestratorEvent(e)) {
-            if (sse.type === "token") assistantContent += sse.content;
-            else if (sse.type === "reasoning") assistantReasoningContent += sse.content;
-            else if (sse.type === "source") consumedSources.push(sse.source);
+            if (sse.type === "token") {
+              if (firstContentAt == null) firstContentAt = Date.now();
+              assistantContent += sse.content;
+            } else if (sse.type === "reasoning") {
+              assistantReasoningContent += sse.content;
+            } else if (sse.type === "source") {
+              consumedSources.push(sse.source);
+            }
             sendEvent(sse);
           }
         }
 
         if (abortController.signal.aborted) return;
 
-        // Persist assistant message with deduped sources actually supplied to
-        // the answer model.
-        const sources = dedupeExternalSources(consumedSources);
-        await projectStore.appendChatMessage(projectId, nodeId, {
-          id: randomUUID(),
-          role: "assistant",
-          content: assistantContent,
-          ...(assistantReasoningContent ? { reasoningContent: assistantReasoningContent } : {}),
-          ...(sources.length ? { sources } : {}),
-          createdAt: new Date().toISOString(),
-        }, sessionId);
-
+        sendActivity("updating_document", "正在检查交付稿更新");
         sendEvent({ type: "markdown_check_start" });
 
         const result = await judgeNodeFacts({
@@ -253,8 +307,11 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           nodeId,
           userMessage: trimmedUserMessage,
           assistantContent,
-          externalSources: sources,
+          externalSources: dedupeExternalSources(consumedSources),
           signal: abortController.signal,
+          turnId,
+          providerId: body.providerId!,
+          onUsage,
         });
 
         if (abortController.signal.aborted) return;
@@ -270,37 +327,41 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           }
         }
 
-        sendEvent({ type: "done", sessionId });
-      } catch (error) {
-        if (assistantContent || assistantReasoningContent) {
-          const sources = dedupeExternalSources(consumedSources);
-          await projectStore.appendChatMessage(projectId, nodeId, {
-            id: randomUUID(),
-            role: "assistant",
-            content: assistantContent,
-            ...(assistantReasoningContent ? { reasoningContent: assistantReasoningContent } : {}),
-            ...(sources.length ? { sources } : {}),
-            createdAt: new Date().toISOString(),
-          }, sessionId);
+        // Persist the authoritative assistant message after the judge completes
+        // so whole-turn usage (answer + fact_judge) is aggregated on it.
+        const message = await persistAssistant(true);
+        sendActivity("completed", "已完成");
+        if (message) {
+          sendEvent({ type: "done", sessionId, assistantMessage: message });
         }
-
+      } catch (error) {
         if (abortController.signal.aborted) {
+          // Abort surfaced as a thrown error: persist partial without emitting.
+          await persistAssistant(false);
           return;
         }
 
+        const message = await persistAssistant(false);
+        sendActivity("failed", "生成失败");
+
         const rawMessage = error instanceof Error ? error.message : "LLM 请求失败";
-        const message = rawMessage.replace(/(?:\/[\w.\-]+)+|[A-Za-z]:\\[^\s]*/g, "").slice(0, 200) || "请求失败";
-        let errorMessage = `模型请求失败：${message}`;
-        if (message.includes("context") || message.includes("length") || message.includes("token")) {
+        const sanitized = rawMessage.replace(/(?:\/[\w.\-]+)+|[A-Za-z]:\\[^\s]*/g, "").slice(0, 200) || "请求失败";
+        let errorMessage = `模型请求失败：${sanitized}`;
+        if (sanitized.includes("context") || sanitized.includes("length") || sanitized.includes("token")) {
           errorMessage = "上下文长度超出模型限制，请减少引用文件或选择更大上下文的模型。";
-        } else if (message.includes("status 404")) {
+        } else if (sanitized.includes("status 404")) {
           errorMessage = "API 端点不存在（404），请检查模型提供商的 API Base URL 是否正确。";
-        } else if (message.includes("status 401") || message.includes("status 403")) {
+        } else if (sanitized.includes("status 401") || sanitized.includes("status 403")) {
           errorMessage = "API 认证失败，请检查模型提供商的 API Key 是否正确。";
         }
 
-        sendEvent({ type: "error", error: errorMessage });
+        sendEvent({ type: "error", error: errorMessage, ...(message ? { assistantMessage: message } : {}) });
       } finally {
+        // Abort via a clean early return (no thrown error): persist partial
+        // without enqueuing any further events after the request aborted.
+        if (!assistantPersisted && (assistantContent || assistantReasoningContent)) {
+          await persistAssistant(false);
+        }
         controller.close();
       }
     },

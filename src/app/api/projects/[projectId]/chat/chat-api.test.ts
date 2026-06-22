@@ -3,12 +3,38 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectStore } from "@/lib/project/store";
-import type { ExternalSource, NodeMarkdownPatch } from "@/lib/project/types";
+import type { ExternalSource, ModelCallUsage, NodeMarkdownPatch } from "@/lib/project/types";
 import type { WebOrchestratorEvent } from "@/lib/project/web-tool-orchestrator";
 import { POST } from "./route";
 
 let tmpDir: string;
 const originalCwd = process.cwd;
+
+// A synthetic answer usage record the mocked orchestrator reports.
+const ANSWER_USAGE: ModelCallUsage = {
+  id: "c-answer",
+  category: "answer",
+  providerId: "mp-1",
+  model: "test-model",
+  source: "exact",
+  status: "completed",
+  inputTokens: 10,
+  outputTokens: 5,
+  totalTokens: 15,
+};
+
+// A synthetic fact_judge usage record the mocked judge reports.
+const JUDGE_USAGE: ModelCallUsage = {
+  id: "c-judge",
+  category: "fact_judge",
+  providerId: "mp-1",
+  model: "test-model",
+  source: "exact",
+  status: "completed",
+  inputTokens: 8,
+  outputTokens: 2,
+  totalTokens: 10,
+};
 
 // Mock judgeNodeFacts so we control its results without real LLM calls.
 vi.mock("@/lib/project/node-fact-judge", () => ({
@@ -34,10 +60,15 @@ let orchestratorEvents: WebOrchestratorEvent[] = [
   { type: "reasoning", delta: "先判断节点目标。" },
   { type: "content", delta: "已更新功能设计。" },
 ];
+// Whether the mocked orchestrator reports a synthetic answer usage record.
+let orchestratorReportsUsage = true;
 
 vi.mock("@/lib/project/web-tool-orchestrator", () => ({
   runWebOrchestrator: vi.fn(async function* (input: Record<string, unknown>): AsyncGenerator<WebOrchestratorEvent> {
     orchestratorInput = input;
+    if (orchestratorReportsUsage && typeof input.onUsage === "function") {
+      input.onUsage(ANSWER_USAGE);
+    }
     for (const e of orchestratorEvents) yield e;
   }),
 }));
@@ -102,10 +133,14 @@ beforeEach(async () => {
     { type: "reasoning", delta: "先判断节点目标。" },
     { type: "content", delta: "已更新功能设计。" },
   ];
+  orchestratorReportsUsage = true;
 
   const { judgeNodeFacts } = await import("@/lib/project/node-fact-judge");
   vi.mocked(judgeNodeFacts).mockReset();
-  vi.mocked(judgeNodeFacts).mockResolvedValue({ ok: true, decision: { changes: [] } });
+  vi.mocked(judgeNodeFacts).mockImplementation(async (input: Record<string, unknown>) => {
+    if (typeof input.onUsage === "function") input.onUsage(JUDGE_USAGE);
+    return { ok: true, decision: { changes: [] } };
+  });
 });
 
 afterEach(async () => {
@@ -423,5 +458,120 @@ describe("chat API SSE and persistence", () => {
     expect(events.map((e) => e.type)).not.toContain("done");
     const store = new ProjectStore();
     expect(await getNodeRevision(store, "test-project", "feature-design")).toBe(0);
+  });
+});
+
+describe("chat API activity and authoritative final message", () => {
+  it("streams ordered activity stages and a done event with the persisted assistant message", async () => {
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+    const events = await readSseEvents(
+      await POST(baseRequest({ sessionId: session.id }), { params: Promise.resolve({ projectId: "test-project" }) }),
+    );
+
+    const stages = events.filter((e) => e.type === "activity").map((e) => (e as { stage: string }).stage);
+    expect(stages).toEqual(expect.arrayContaining(["thinking", "generating_answer", "updating_document", "completed"]));
+    expect(stages.indexOf("thinking")).toBeLessThan(stages.indexOf("generating_answer"));
+    expect(stages.indexOf("generating_answer")).toBeLessThan(stages.indexOf("updating_document"));
+
+    const done = events.find((e) => e.type === "done") as { sessionId: string; assistantMessage: { turnId: string; usage: { callCount: number } } };
+    expect(done).toBeDefined();
+    expect(done.sessionId).toBe(session.id);
+    expect(done.assistantMessage.turnId).toEqual(expect.any(String));
+    expect(done.assistantMessage.usage.callCount).toBe(2);
+
+    const messages = await store.getChatMessages("test-project", "feature-design", session.id);
+    const assistant = messages.find((m) => m.role === "assistant");
+    expect(assistant?.turnId).toBe(done.assistantMessage.turnId);
+    expect(assistant?.usage?.callCount).toBe(2);
+    expect(assistant?.reasoningDurationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("emits a reading_files activity when files are selected", async () => {
+    const { FileStore } = await import("@/lib/project/files");
+    const fileStore = new FileStore();
+    const record = await fileStore.uploadFile("test-project", {
+      name: "note.txt",
+      buffer: Buffer.from("笔记内容", "utf8"),
+    });
+    const events = await readSseEvents(
+      await POST(baseRequest({ fileIds: [record.id] }), { params: Promise.resolve({ projectId: "test-project" }) }),
+    );
+    const stages = events.filter((e) => e.type === "activity").map((e) => (e as { stage: string }).stage);
+    expect(stages).toContain("reading_files");
+  });
+
+  it("emits a searching_web activity when web search is enabled", async () => {
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+    await store.updateSessionWebSearch("test-project", "feature-design", session.id, true);
+    const events = await readSseEvents(
+      await POST(baseRequest({ sessionId: session.id }), { params: Promise.resolve({ projectId: "test-project" }) }),
+    );
+    const stages = events.filter((e) => e.type === "activity").map((e) => (e as { stage: string }).stage);
+    expect(stages).toContain("searching_web");
+  });
+
+  it("on a non-abort error, persists partial content and returns it with a failed activity and error", async () => {
+    const { runWebOrchestrator } = await import("@/lib/project/web-tool-orchestrator");
+    vi.mocked(runWebOrchestrator).mockImplementationOnce(async function* () {
+      yield { type: "content", delta: "部分回复" };
+      throw new Error("boom at /Users/secret");
+    });
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+    const events = await readSseEvents(
+      await POST(baseRequest({ sessionId: session.id }), { params: Promise.resolve({ projectId: "test-project" }) }),
+    );
+
+    const stages = events.filter((e) => e.type === "activity").map((e) => (e as { stage: string }).stage);
+    expect(stages).toContain("failed");
+    const err = events.find((e) => e.type === "error") as { error: string; assistantMessage?: { content: string } };
+    expect(err).toBeDefined();
+    expect(err.error).not.toContain("/Users/secret");
+    expect(err.assistantMessage).toBeDefined();
+    expect(err.assistantMessage?.content).toBe("部分回复");
+
+    const messages = await store.getChatMessages("test-project", "feature-design", session.id);
+    const assistant = messages.find((m) => m.role === "assistant");
+    expect(assistant?.content).toBe("部分回复");
+  });
+
+  it("aborted: persists partial content without a done event", async () => {
+    const ac = new AbortController();
+    const { runWebOrchestrator } = await import("@/lib/project/web-tool-orchestrator");
+    vi.mocked(runWebOrchestrator).mockImplementationOnce(async function* (input: Record<string, unknown>) {
+      orchestratorInput = input;
+      yield { type: "content", delta: "部分" };
+      const signal = input.signal as AbortSignal;
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) return resolve();
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    });
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+    const response = await POST(baseRequest({ sessionId: session.id }, ac.signal), { params: Promise.resolve({ projectId: "test-project" }) });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const events: Array<Record<string, unknown>> = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("data: ")) events.push(JSON.parse(trimmed.slice(6)) as Record<string, unknown>);
+      }
+      if (events.some((e) => e.type === "token")) ac.abort();
+    }
+    expect(events.map((e) => e.type)).not.toContain("done");
+    expect(events.map((e) => e.type)).not.toContain("error");
+    const messages = await store.getChatMessages("test-project", "feature-design", session.id);
+    const assistant = messages.find((m) => m.role === "assistant");
+    expect(assistant?.content).toBe("部分");
   });
 });

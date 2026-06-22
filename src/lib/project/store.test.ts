@@ -453,6 +453,69 @@ describe("ProjectStore", () => {
     expect(messages[0].sources).toEqual([source]);
   });
 
+  it("persists and reloads assistant turn usage, turnId, and reasoningDurationMs", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    const usage = {
+      turnId: "turn-1",
+      inputTokens: 12,
+      outputTokens: 8,
+      totalTokens: 20,
+      source: "exact" as const,
+      callCount: 1,
+      calls: [
+        {
+          id: "c-1",
+          category: "answer" as const,
+          providerId: "mp-1",
+          model: "test-model",
+          source: "exact" as const,
+          status: "completed" as const,
+          inputTokens: 12,
+          outputTokens: 8,
+          totalTokens: 20,
+        },
+      ],
+    };
+
+    const message = {
+      id: "a-1",
+      role: "assistant" as const,
+      content: "已更新。",
+      reasoningContent: "先分析。",
+      createdAt: "2026-06-14T11:01:00.000Z",
+      turnId: "turn-1",
+      reasoningDurationMs: 1234,
+      usage,
+    };
+
+    await store.appendChatMessage(project.id, "feature-design", message, session.id);
+
+    const reloaded = await store.getChatMessages(project.id, "feature-design", session.id);
+    expect(reloaded[0]).toEqual(message);
+  });
+
+  it("still loads legacy assistant messages without usage/turnId/reasoningDurationMs", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    await store.appendChatMessage(project.id, "feature-design", {
+      id: "a-legacy",
+      role: "assistant",
+      content: "旧消息",
+      createdAt: "2026-06-14T11:01:00.000Z",
+    }, session.id);
+
+    const messages = await store.getChatMessages(project.id, "feature-design", session.id);
+    expect(messages[0].usage).toBeUndefined();
+    expect(messages[0].turnId).toBeUndefined();
+    expect(messages[0].reasoningDurationMs).toBeUndefined();
+    expect(messages[0].content).toBe("旧消息");
+  });
+
   it("getSession returns the matching session", async () => {
     const store = new ProjectStore(rootDir);
     const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
