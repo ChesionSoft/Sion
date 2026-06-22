@@ -1,5 +1,5 @@
 import { createExternalSource } from "./external-source";
-import type { ApiUrlMode, ExternalSource, ModelProviderProtocol, ReasoningEffort } from "./types";
+import type { ApiUrlMode, ExternalSource, ModelProviderProtocol, ProviderTokenUsage, ReasoningEffort } from "./types";
 import type { ModelConversationItem, ModelToolDefinition, ModelToolCall, ModelTurnEvent } from "./model-tools";
 
 export type ResponsesMessage = {
@@ -34,7 +34,33 @@ export type ResponsesTurnInput = {
 
 export type ModelStreamPart =
   | { type: "content" | "reasoning"; content: string }
-  | { type: "source"; source: ExternalSource };
+  | { type: "source"; source: ExternalSource }
+  | { type: "usage"; usage: ProviderTokenUsage };
+
+export type ModelTextResult = { content: string; usage: ProviderTokenUsage | null };
+
+type ResponsesUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+};
+
+/** Normalize an OpenAI Responses usage object, or null if incomplete. */
+function normalizeResponsesUsage(usage: ResponsesUsage | undefined): ProviderTokenUsage | null {
+  if (!usage) return null;
+  const inputTokens = usage.input_tokens;
+  const outputTokens = usage.output_tokens;
+  const totalTokens = usage.total_tokens;
+  if (
+    typeof inputTokens !== "number" ||
+    typeof outputTokens !== "number" ||
+    typeof totalTokens !== "number"
+  ) {
+    return null;
+  }
+  if (totalTokens !== inputTokens + outputTokens) return null;
+  return { inputTokens, outputTokens, totalTokens };
+}
 
 export function resolveResponsesUrl(apiBaseUrl: string, apiUrlMode: ApiUrlMode = "base"): string {
   const trimmed = apiBaseUrl.trim();
@@ -52,6 +78,7 @@ type Annotation = {
 
 type CompletedResponse = {
   id?: string;
+  usage?: ResponsesUsage;
   output?: Array<{
     type: string;
     content?: Array<{
@@ -201,6 +228,8 @@ export async function* streamOpenAIResponses(
           }
         }
       }
+      const usage = normalizeResponsesUsage(resp?.usage);
+      if (usage) yield { type: "usage", usage };
       continue;
     }
     // Unknown event types are ignored.
@@ -208,6 +237,11 @@ export async function* streamOpenAIResponses(
 }
 
 export async function callOpenAIResponses(input: ResponsesInput): Promise<string> {
+  const result = await callOpenAIResponsesDetailed(input);
+  return result.content;
+}
+
+export async function callOpenAIResponsesDetailed(input: ResponsesInput): Promise<ModelTextResult> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const response = await fetchImpl(resolveResponsesUrl(input.apiBaseUrl, input.apiUrlMode), {
     method: "POST",
@@ -234,7 +268,7 @@ export async function callOpenAIResponses(input: ResponsesInput): Promise<string
   for (const item of json.output ?? []) {
     for (const content of item.content ?? []) {
       if (typeof content.text === "string" && content.text.length > 0) {
-        return content.text;
+        return { content: content.text, usage: normalizeResponsesUsage(json.usage) };
       }
     }
   }
@@ -398,6 +432,9 @@ export async function* streamOpenAIResponsesTurn(
           }
           functionBuffers.clear();
           standaloneCalls.length = 0;
+          const resp = (parsed as { response?: CompletedResponse }).response;
+          const usage = normalizeResponsesUsage(resp?.usage);
+          if (usage) yield { type: "usage", usage };
           continue;
         }
       }

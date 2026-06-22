@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { SearchResult } from "./types";
+import type { ProviderTokenUsage, SearchResult } from "./types";
 
 /**
  * Provider-neutral tool contracts. Tool arguments are assembled by protocol
@@ -29,7 +29,8 @@ export type ModelConversationItem =
 export type ModelTurnEvent =
   | { type: "content"; delta: string }
   | { type: "reasoning"; delta: string }
-  | { type: "tool_call"; call: ModelToolCall };
+  | { type: "tool_call"; call: ModelToolCall }
+  | { type: "usage"; usage: ProviderTokenUsage };
 
 export const MAX_QUERY_LENGTH = 200;
 

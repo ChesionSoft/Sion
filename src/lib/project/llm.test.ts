@@ -2,6 +2,7 @@ import { ReadableStream } from "node:stream/web";
 import { describe, expect, it, vi } from "vitest";
 import {
   callOpenAICompatibleChat,
+  callOpenAICompatibleChatDetailed,
   resolveChatCompletionsUrl,
   streamChatCompletionsTurn,
   streamOpenAICompatibleChat,
@@ -143,6 +144,7 @@ describe("streamOpenAICompatibleChat", () => {
           messages: [{ role: "user", content: "Hi" }],
           temperature: 0.2,
           stream: true,
+          stream_options: { include_usage: true },
         }),
       }),
     );
@@ -180,6 +182,7 @@ describe("streamOpenAICompatibleChat", () => {
           messages: [{ role: "user", content: "Hi" }],
           temperature: 0.2,
           stream: true,
+          stream_options: { include_usage: true },
         }),
       }),
     );
@@ -259,6 +262,116 @@ describe("streamOpenAICompatibleChat", () => {
       { type: "content", content: "ok" },
       { type: "content", content: "!" },
     ]);
+  });
+
+  it("emits exact usage from the final streaming chunk", async () => {
+    const mockBody = createMockStreamBody([
+      'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+
+    const parts: { type: string }[] = [];
+    for await (const part of streamOpenAICompatibleChat({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+    })) {
+      parts.push(part);
+    }
+
+    expect(parts.at(-1)).toEqual({
+      type: "usage",
+      usage: { inputTokens: 11, outputTokens: 4, totalTokens: 15 },
+    });
+  });
+
+  it("includes stream_options.include_usage in streaming requests", async () => {
+    const mockBody = createMockStreamBody(['data: [DONE]\n\n']);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+
+    for await (const _ of streamOpenAICompatibleChat({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+    })) {
+      void _;
+    }
+
+    const [, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(JSON.parse(init.body)).toMatchObject({ stream_options: { include_usage: true } });
+  });
+
+  it("retries once without stream_options on a 400 mentioning stream_options", async () => {
+    const errBody = JSON.stringify({ error: { message: "stream_options not supported" } });
+    const okBody = createMockStreamBody(['data: [DONE]\n\n']);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, text: async () => errBody })
+      .mockResolvedValueOnce({ ok: true, body: okBody });
+
+    for await (const _ of streamOpenAICompatibleChat({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+    })) {
+      void _;
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const secondBody = JSON.parse(
+      (fetchMock.mock.calls[1] as [string, { body: string }])[1].body,
+    );
+    expect(secondBody).not.toHaveProperty("stream_options");
+  });
+});
+
+describe("callOpenAICompatibleChatDetailed", () => {
+  it("returns content and exact usage from a non-stream response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "已更新。" } }],
+        usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+      }),
+    });
+
+    const result = await callOpenAICompatibleChatDetailed({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+    });
+
+    expect(result).toEqual({
+      content: "已更新。",
+      usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
+    });
+  });
+
+  it("returns null usage when the provider omits it", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: "ok" } }] }),
+    });
+
+    const result = await callOpenAICompatibleChatDetailed({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+    });
+
+    expect(result).toEqual({ content: "ok", usage: null });
   });
 });
 

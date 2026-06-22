@@ -2,6 +2,7 @@ import { ReadableStream } from "node:stream/web";
 import { describe, expect, it, vi } from "vitest";
 import {
   callOpenAIResponses,
+  callOpenAIResponsesDetailed,
   resolveResponsesUrl,
   streamOpenAIResponses,
   streamOpenAIResponsesTurn,
@@ -201,6 +202,89 @@ describe("streamOpenAIResponses", () => {
         void _;
       }
     }).rejects.toThrow("max_output_tokens");
+  });
+});
+
+describe("streamOpenAIResponses usage", () => {
+  it("emits exact usage from the response.completed event", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      streamingResponse([
+        'data: {"type":"response.output_text.delta","delta":"ans"}\n\n',
+        'data: {"type":"response.completed","response":{"id":"r-1","output":[],"usage":{"input_tokens":21,"output_tokens":9,"total_tokens":30}}}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    );
+
+    const parts: { type: string }[] = [];
+    for await (const part of streamOpenAIResponses({
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "sk-test",
+      model: "gpt-5",
+      protocol: "openai_responses",
+      messages: [{ role: "user", content: "q" }],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })) {
+      parts.push(part as { type: string });
+    }
+
+    expect(parts.at(-1)).toEqual({
+      type: "usage",
+      usage: { inputTokens: 21, outputTokens: 9, totalTokens: 30 },
+    });
+  });
+});
+
+describe("callOpenAIResponsesDetailed", () => {
+  it("returns content and exact usage from a non-stream response", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "r-1",
+          output: [
+            { id: "i-1", type: "message", content: [{ type: "output_text", text: "最终答案" }] },
+          ],
+          usage: { input_tokens: 21, output_tokens: 9, total_tokens: 30 },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await callOpenAIResponsesDetailed({
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "sk-test",
+      model: "gpt-5",
+      protocol: "openai_responses",
+      messages: [{ role: "user", content: "q" }],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result).toEqual({
+      content: "最终答案",
+      usage: { inputTokens: 21, outputTokens: 9, totalTokens: 30 },
+    });
+  });
+
+  it("returns null usage when the provider omits it", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "r-1",
+          output: [{ id: "i-1", type: "message", content: [{ type: "output_text", text: "ok" }] }],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await callOpenAIResponsesDetailed({
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "sk-test",
+      model: "gpt-5",
+      protocol: "openai_responses",
+      messages: [{ role: "user", content: "q" }],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result).toEqual({ content: "ok", usage: null });
   });
 });
 

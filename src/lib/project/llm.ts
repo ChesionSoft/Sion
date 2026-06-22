@@ -1,4 +1,4 @@
-import type { ApiUrlMode } from "./types";
+import type { ApiUrlMode, ProviderTokenUsage } from "./types";
 import type { ModelConversationItem, ModelToolDefinition, ModelToolCall, ModelTurnEvent } from "./model-tools";
 
 export type LlmMessage = {
@@ -17,7 +17,42 @@ export type CallOpenAICompatibleChatInput = {
   signal?: AbortSignal;
 };
 
+/** Non-stream result carrying exact provider usage when reported. */
+export type ModelTextResult = { content: string; usage: ProviderTokenUsage | null };
+
+type ChatCompletionsUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+};
+
+/** Normalize an OpenAI Chat Completions usage object, or null if incomplete. */
+function normalizeChatUsage(usage: ChatCompletionsUsage | undefined): ProviderTokenUsage | null {
+  if (!usage) return null;
+  const inputTokens = usage.prompt_tokens;
+  const outputTokens = usage.completion_tokens;
+  const totalTokens = usage.total_tokens;
+  if (
+    typeof inputTokens !== "number" ||
+    typeof outputTokens !== "number" ||
+    typeof totalTokens !== "number"
+  ) {
+    return null;
+  }
+  const value: ProviderTokenUsage = { inputTokens, outputTokens, totalTokens };
+  // Validate totals add up; otherwise drop the bogus usage and let callers estimate.
+  if (totalTokens !== inputTokens + outputTokens) return null;
+  return value;
+}
+
 export async function callOpenAICompatibleChat(input: CallOpenAICompatibleChatInput): Promise<string> {
+  const result = await callOpenAICompatibleChatDetailed(input);
+  return result.content;
+}
+
+export async function callOpenAICompatibleChatDetailed(
+  input: CallOpenAICompatibleChatInput,
+): Promise<ModelTextResult> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const response = await fetchImpl(resolveChatCompletionsUrl(input.apiBaseUrl, input.apiUrlMode), {
     method: "POST",
@@ -40,6 +75,7 @@ export async function callOpenAICompatibleChat(input: CallOpenAICompatibleChatIn
 
   const json = (await response.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
+    usage?: ChatCompletionsUsage;
   };
 
   const content = json.choices?.[0]?.message?.content;
@@ -48,37 +84,64 @@ export async function callOpenAICompatibleChat(input: CallOpenAICompatibleChatIn
     throw new Error("LLM response did not include message content");
   }
 
-  return content;
+  return { content, usage: normalizeChatUsage(json.usage) };
 }
 
 export type StreamOpenAICompatibleChatInput = CallOpenAICompatibleChatInput & {
   signal?: AbortSignal;
 };
 
-export type LlmStreamPart = {
-  type: "content" | "reasoning";
-  content: string;
-};
+export type LlmStreamPart =
+  | { type: "content" | "reasoning"; content: string }
+  | { type: "usage"; usage: ProviderTokenUsage };
 
 export async function* streamOpenAICompatibleChat(
   input: StreamOpenAICompatibleChatInput,
 ): AsyncGenerator<LlmStreamPart, void, void> {
   const fetchImpl = input.fetchImpl ?? fetch;
-  const response = await fetchImpl(resolveChatCompletionsUrl(input.apiBaseUrl, input.apiUrlMode), {
+  const url = resolveChatCompletionsUrl(input.apiBaseUrl, input.apiUrlMode);
+  const baseBody = {
+    model: input.model,
+    messages: input.messages,
+    ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
+    temperature: 0.2,
+    stream: true,
+  };
+
+  let response = await fetchImpl(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${input.apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: input.model,
-      messages: input.messages,
-      ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
-      temperature: 0.2,
-      stream: true,
-    }),
+    body: JSON.stringify({ ...baseBody, stream_options: { include_usage: true } }),
     signal: input.signal,
   });
+
+  // Some OpenAI-compatible providers reject stream_options. Retry once
+  // without it only when the initial response is a 400 that mentions
+  // stream_options in its body. The 400 body is consumed here; since we
+  // either retry or throw, the original response is not reused.
+  if (response.status === 400) {
+    let mentionsStreamOptions = false;
+    try {
+      const text = await response.text();
+      mentionsStreamOptions = text.includes("stream_options");
+    } catch {
+      mentionsStreamOptions = false;
+    }
+    if (mentionsStreamOptions) {
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${input.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(baseBody),
+        signal: input.signal,
+      });
+    }
+  }
 
   if (!response.ok) {
     throw new Error(`LLM request failed with status ${response.status}`);
@@ -116,11 +179,16 @@ export async function* streamOpenAICompatibleChat(
               reasoningContent?: string;
             };
           }>;
+          usage?: ChatCompletionsUsage;
         };
         const delta = parsed.choices?.[0]?.delta;
         const reasoning = delta?.reasoning_content ?? delta?.reasoningContent ?? delta?.reasoning;
         if (reasoning) yield { type: "reasoning", content: reasoning };
         if (delta?.content) yield { type: "content", content: delta.content };
+        if (parsed.usage) {
+          const usage = normalizeChatUsage(parsed.usage);
+          if (usage) yield { type: "usage", usage };
+        }
       } catch {
         // skip malformed chunks
       }
@@ -203,6 +271,7 @@ export async function* streamChatCompletionsTurn(
     ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
     temperature: 0.2,
     stream: true,
+    stream_options: { include_usage: true },
   };
   if (input.tools && input.tools.length > 0) {
     body.tools = input.tools.map((t) => ({
@@ -262,6 +331,7 @@ export async function* streamChatCompletionsTurn(
               };
               finish_reason?: string;
             }>;
+            usage?: ChatCompletionsUsage;
           };
           const delta = parsed.choices?.[0]?.delta;
           if (delta) {
@@ -282,6 +352,10 @@ export async function* streamChatCompletionsTurn(
           if (finish === "tool_calls") {
             for (const call of assembleToolCalls(toolBuffers)) yield { type: "tool_call", call };
             toolBuffers.clear();
+          }
+          if (parsed.usage) {
+            const usage = normalizeChatUsage(parsed.usage);
+            if (usage) yield { type: "usage", usage };
           }
         } catch {
           // skip malformed chunks
