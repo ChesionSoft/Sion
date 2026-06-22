@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MarkdownPanel } from "./markdown-panel";
@@ -63,6 +63,31 @@ describe("MarkdownPanel", () => {
     expect(screen.getByRole("tab", { name: "编辑 Markdown" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "预览交付稿" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Agent 规则" })).toBeInTheDocument();
+  });
+
+  it("preview tab renders the document-quality preview with metadata and copy button", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getByRole("tab", { name: "预览交付稿" }));
+
+    const workspace = document.querySelector(".document-workspace") as HTMLElement;
+    expect(workspace).not.toBeNull();
+    const toolbar = workspace.querySelector(".document-toolbar") as HTMLElement;
+    expect(toolbar).not.toBeNull();
+    expect(within(toolbar).getByText("basic-info")).toBeInTheDocument();
+    expect(within(toolbar).getByText(/字符/)).toBeInTheDocument();
+    expect(within(toolbar).getByRole("button", { name: "复制文档" })).toBeInTheDocument();
+    // The node markdown renders as a heading inside the paper.
+    expect(within(workspace).getByRole("heading", { name: /项目基本信息/ })).toBeInTheDocument();
+  });
+
+  it("previewing_rewrite does not programmatically switch the active tab to preview", () => {
+    renderPanel({ genState: { phase: "previewing_rewrite", candidate: "" } });
+
+    // The active tab is not changed programmatically — edit stays active and
+    // preview is not auto-selected while a rewrite streams.
+    expect(screen.getByRole("tab", { name: "编辑 Markdown" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "预览交付稿" })).toHaveAttribute("aria-selected", "false");
   });
 
   it("reloads agent rules when the active node changes while the agent tab is open", async () => {

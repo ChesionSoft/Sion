@@ -1,8 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { CheckIcon, CopyIcon, RefreshCwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -10,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { AgentRuleMode, ProjectNode, ReasoningEffort, WorkflowNodeId } from "@/lib/project/types";
 import type { MarkdownGenerationState } from "./markdown-generation-types";
 import { buildPatchPreviewFrames } from "./patch-preview";
+import { MarkdownContent } from "./markdown-content";
 
 export function MarkdownPanel({
   node,
@@ -472,6 +471,17 @@ export function MarkdownPanel({
       ? previewMarkdown
       : userDraft;
 
+  // Determine what to render in the document preview. Computed once so the
+  // toolbar metadata and the renderer stay in sync.
+  const displayMarkdown =
+    genState.phase === "previewing_increment" ||
+    genState.phase === "submitting_increment" ||
+    genState.phase === "previewing_rewrite"
+      ? previewMarkdown
+      : genState.phase === "conflict" && genState.candidate
+        ? genState.candidate
+        : userDraft;
+
   function handleChange(value: string): void {
     if (isGenActive) return;
     setUserDraft(value);
@@ -593,16 +603,28 @@ export function MarkdownPanel({
         </TabsContent>
 
         <TabsContent className="min-h-0 flex-1 flex flex-col" value="preview">
-          <div className="markdown-preview min-h-0 flex-1 overflow-auto rounded-lg border bg-muted/10 p-5 text-sm leading-relaxed">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {genState.phase === "previewing_increment" ||
-              genState.phase === "submitting_increment" ||
-              genState.phase === "previewing_rewrite"
-                ? previewMarkdown
-                : genState.phase === "conflict" && genState.candidate
-                  ? genState.candidate
-                  : userDraft}
-            </ReactMarkdown>
+          <div className="document-workspace min-h-0 flex-1 overflow-auto">
+            <header className="document-toolbar">
+              <div className="flex flex-col gap-0.5">
+                <strong>{node.id}</strong>
+                <span className="text-xs text-muted-foreground">
+                  {displayMarkdown.length.toLocaleString("zh-CN")} 字符 ·{" "}
+                  {new Date(node.updatedAt).toLocaleString("zh-CN")}
+                </span>
+              </div>
+              <Button
+                onClick={() => void navigator.clipboard.writeText(displayMarkdown)}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <CopyIcon data-icon="inline-start" />
+                复制文档
+              </Button>
+            </header>
+            <article className="document-paper">
+              <MarkdownContent markdown={displayMarkdown} variant="document" />
+            </article>
           </div>
         </TabsContent>
 
