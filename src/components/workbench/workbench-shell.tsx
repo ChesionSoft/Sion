@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowLeftIcon, FolderOpenIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { WORKFLOW_NODES } from "@/lib/project/nodes";
 import type { Project, ProjectNode, WorkflowNodeId } from "@/lib/project/types";
 import { ChatPanel } from "./chat-panel";
@@ -20,6 +21,7 @@ export function WorkbenchShell({ project, nodes }: { project: Project; nodes: Pr
   const [draftNodes, setDraftNodes] = useState<ProjectNode[]>(nodes);
   const [showFilePool, setShowFilePool] = useState(false);
   const [genState, setGenState] = useState<MarkdownGenerationState>(INITIAL_GEN_STATE);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Shared context state (lifted from ChatPanel)
   const [activeSessionId, setActiveSessionId] = useState("");
@@ -89,7 +91,7 @@ export function WorkbenchShell({ project, nodes }: { project: Project; nodes: Pr
   }
 
   return (
-    <main className="flex h-screen min-h-[720px] flex-col bg-background text-foreground">
+    <main className="flex h-screen min-h-[720px] min-w-0 flex-col overflow-hidden bg-background text-foreground">
       <header className="flex h-14 shrink-0 items-center justify-between border-b px-4 bg-background">
         <div className="flex items-center gap-3 min-w-0">
           <Link
@@ -117,8 +119,22 @@ export function WorkbenchShell({ project, nodes }: { project: Project; nodes: Pr
           projectId={project.id}
         />
       </header>
-      <section className="grid min-h-0 flex-1 grid-cols-[280px_minmax(360px,0.9fr)_minmax(420px,1.1fr)]">
-        <NodeSidebar activeNodeId={activeNodeId} definitions={WORKFLOW_NODES} nodes={draftNodes} onSelect={handleSelectNode} />
+      <section
+        className={cn(
+          "grid min-h-0 min-w-0 flex-1 overflow-hidden",
+          sidebarCollapsed
+            ? "grid-cols-[64px_minmax(0,0.9fr)_minmax(0,1.1fr)]"
+            : "grid-cols-[240px_minmax(0,0.9fr)_minmax(0,1.1fr)]",
+        )}
+      >
+        <NodeSidebar
+          activeNodeId={activeNodeId}
+          definitions={WORKFLOW_NODES}
+          nodes={draftNodes}
+          onSelect={handleSelectNode}
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed((c) => !c)}
+        />
         <ChatPanel
           activeNode={activeNode}
           key={activeNode.id}

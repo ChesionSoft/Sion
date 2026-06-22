@@ -660,7 +660,7 @@ export function ChatPanel({
   }, [messages]);
 
   return (
-    <section className="flex min-h-0 flex-col border-r">
+    <section className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r">
       <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
         <div className="min-w-0">
           <p className="text-xs font-medium text-muted-foreground">当前节点 Agent</p>

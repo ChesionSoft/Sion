@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it } from "vitest";
 import { WorkbenchShell } from "./workbench-shell";
 import type { Project, ProjectNode } from "@/lib/project/types";
@@ -118,5 +119,30 @@ describe("WorkbenchShell", () => {
       // After providers load, the model button should be in the document
       expect(screen.getByText(/GPT-5.5/)).toBeInTheDocument();
     });
+  });
+
+  it("constrains the workbench grid and lets the node sidebar collapse while preserving selection", async () => {
+    const user = userEvent.setup();
+    render(<WorkbenchShell project={project} nodes={nodes} />);
+    await screen.findByDisplayValue("# 项目基本信息");
+
+    const main = document.querySelector("main");
+    expect(main?.className).toContain("overflow-hidden");
+
+    const section = main?.querySelector("section.grid");
+    expect(section).not.toBeNull();
+    const gridChildren = section!.querySelectorAll(":scope > *");
+    expect(gridChildren.length).toBe(3);
+    for (const child of gridChildren) {
+      expect(child.className).toContain("min-w-0");
+      expect(child.className).toContain("overflow-hidden");
+    }
+
+    const collapseButton = screen.getByRole("button", { name: /折叠流程节点/ });
+    await user.click(collapseButton);
+    expect(screen.getByRole("button", { name: /展开流程节点/ })).toBeInTheDocument();
+
+    // Node selection is preserved — the active node markdown still shows.
+    expect(screen.getByDisplayValue("# 项目基本信息")).toBeInTheDocument();
   });
 });

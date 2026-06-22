@@ -495,7 +495,7 @@ export function MarkdownPanel({
   }
 
   return (
-    <section className="flex min-h-0 flex-col bg-background">
+    <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background">
       <div className="border-b px-5 py-4">
         <p className="text-xs font-medium text-muted-foreground">节点交付稿</p>
         <h2 className="text-sm font-semibold">{node.id}</h2>
