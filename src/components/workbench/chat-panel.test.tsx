@@ -47,6 +47,40 @@ function createMockSharedContext() {
   return ctx;
 }
 
+function installSessionDeleteFetchMock(input: {
+  sessions: Array<{ id: string; nodeId: "feature-design"; name: string; messageCount: number; webSearchEnabled: boolean; createdAt: string; updatedAt: string }>;
+  sessionsAfterDelete: Array<{ id: string; nodeId: "feature-design"; name: string; messageCount: number; webSearchEnabled: boolean; createdAt: string; updatedAt: string }>;
+  messagesBySession: Record<string, Array<{ id: string; role: "assistant"; content: string; createdAt: string }>>;
+}) {
+  const deleteCalls: string[] = [];
+  let deleted = false;
+
+  vi.stubGlobal("fetch", vi.fn(async (requestInput: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(requestInput);
+    if (url.includes("/api/settings/model-providers")) {
+      return new Response(JSON.stringify({ providers: defaultProviders }));
+    }
+    if (url.includes("/files")) {
+      return new Response(JSON.stringify({ files: [] }));
+    }
+    if (url.includes("/chat/sessions/") && init?.method === "DELETE") {
+      deleteCalls.push(url);
+      deleted = true;
+      return new Response(JSON.stringify({ ok: true }));
+    }
+    if (url.includes("/chat/sessions/")) {
+      const sessionId = url.split("/chat/sessions/")[1]?.split("?")[0] ?? "";
+      return new Response(JSON.stringify({ messages: input.messagesBySession[sessionId] ?? [], sessionId }));
+    }
+    if (url.includes("/chat/sessions")) {
+      return new Response(JSON.stringify({ sessions: deleted ? input.sessionsAfterDelete : input.sessions }));
+    }
+    return new Response(JSON.stringify({ error: "unexpected test request" }), { status: 500 });
+  }) as unknown as typeof fetch);
+
+  return { deleteCalls };
+}
+
 beforeEach(() => {
   vi.useRealTimers();
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1433,5 +1467,82 @@ describe("ChatPanel", () => {
 
     expect(screen.getByText("需求.pdf")).toBeInTheDocument();
     expect(screen.queryByText("扫描件.pdf")).not.toBeInTheDocument();
+  });
+
+  it("deletes a non-current session without clearing current messages", async () => {
+    const user = userEvent.setup();
+    const { deleteCalls } = installSessionDeleteFetchMock({
+      sessions: [
+        { id: "s-1", nodeId: "feature-design", name: "当前会话", messageCount: 2, webSearchEnabled: false, createdAt: "2026-06-23T10:00:00.000Z", updatedAt: "2026-06-23T10:00:00.000Z" },
+        { id: "s-2", nodeId: "feature-design", name: "旧会话", messageCount: 1, webSearchEnabled: false, createdAt: "2026-06-23T09:00:00.000Z", updatedAt: "2026-06-23T09:00:00.000Z" },
+      ],
+      sessionsAfterDelete: [
+        { id: "s-1", nodeId: "feature-design", name: "当前会话", messageCount: 2, webSearchEnabled: false, createdAt: "2026-06-23T10:00:00.000Z", updatedAt: "2026-06-23T10:00:00.000Z" },
+      ],
+      messagesBySession: {
+        "s-1": [{ id: "m-1", role: "assistant", content: "当前消息", createdAt: "2026-06-23T10:01:00.000Z" }],
+        "s-2": [{ id: "m-2", role: "assistant", content: "旧消息", createdAt: "2026-06-23T09:01:00.000Z" }],
+      },
+    });
+    const sharedContext = createMockSharedContext();
+    render(<ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={sharedContext} onGenStateChange={() => {}} />);
+
+    await screen.findByText("当前消息");
+    await user.click(screen.getByRole("button", { name: /当前会话/ }));
+    await user.click(within(screen.getByRole("menu")).getByRole("button", { name: /删除旧会话/ }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    expect(deleteCalls.some((url) => url.includes("/chat/sessions/s-2"))).toBe(true);
+    expect(screen.getByText("当前消息")).toBeInTheDocument();
+  });
+
+  it("switches to the newest remaining session after deleting the current session", async () => {
+    const user = userEvent.setup();
+    installSessionDeleteFetchMock({
+      sessions: [
+        { id: "s-1", nodeId: "feature-design", name: "当前会话", messageCount: 2, webSearchEnabled: false, createdAt: "2026-06-23T10:00:00.000Z", updatedAt: "2026-06-23T10:00:00.000Z" },
+        { id: "s-2", nodeId: "feature-design", name: "备用会话", messageCount: 1, webSearchEnabled: false, createdAt: "2026-06-23T09:00:00.000Z", updatedAt: "2026-06-23T09:00:00.000Z" },
+      ],
+      sessionsAfterDelete: [
+        { id: "s-2", nodeId: "feature-design", name: "备用会话", messageCount: 1, webSearchEnabled: false, createdAt: "2026-06-23T09:00:00.000Z", updatedAt: "2026-06-23T09:00:00.000Z" },
+      ],
+      messagesBySession: {
+        "s-1": [{ id: "m-1", role: "assistant", content: "当前消息", createdAt: "2026-06-23T10:01:00.000Z" }],
+        "s-2": [{ id: "m-2", role: "assistant", content: "备用消息", createdAt: "2026-06-23T09:01:00.000Z" }],
+      },
+    });
+    const sharedContext = createMockSharedContext();
+    render(<ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={sharedContext} onGenStateChange={() => {}} />);
+
+    await screen.findByText("当前消息");
+    await user.click(screen.getByRole("button", { name: /当前会话/ }));
+    await user.click(within(screen.getByRole("menu")).getByRole("button", { name: /删除当前会话/ }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    expect(await screen.findByText("备用消息")).toBeInTheDocument();
+    expect(sharedContext.setActiveSessionId).toHaveBeenLastCalledWith("s-2");
+  });
+
+  it("shows an empty state after deleting the last session", async () => {
+    const user = userEvent.setup();
+    installSessionDeleteFetchMock({
+      sessions: [
+        { id: "s-1", nodeId: "feature-design", name: "唯一会话", messageCount: 2, webSearchEnabled: false, createdAt: "2026-06-23T10:00:00.000Z", updatedAt: "2026-06-23T10:00:00.000Z" },
+      ],
+      sessionsAfterDelete: [],
+      messagesBySession: {
+        "s-1": [{ id: "m-1", role: "assistant", content: "将被删除", createdAt: "2026-06-23T10:01:00.000Z" }],
+      },
+    });
+    const sharedContext = createMockSharedContext();
+    render(<ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={sharedContext} onGenStateChange={() => {}} />);
+
+    await screen.findByText("将被删除");
+    await user.click(screen.getByRole("button", { name: /唯一会话/ }));
+    await user.click(within(screen.getByRole("menu")).getByRole("button", { name: /删除唯一会话/ }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(screen.queryByText("将被删除")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /还没有会话/ })).toBeInTheDocument();
   });
 });

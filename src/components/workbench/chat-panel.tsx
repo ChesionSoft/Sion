@@ -12,6 +12,7 @@ import {
   PlusIcon,
   SendIcon,
   StopCircleIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -181,6 +182,8 @@ export function ChatPanel({
   const filePopoverRef = useRef<HTMLDivElement>(null);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const sessionMenuRef = useRef<HTMLDivElement>(null);
+  const [sessionPendingDelete, setSessionPendingDelete] = useState<ChatSession | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [savingWebSearch, setSavingWebSearch] = useState(false);
   const [webNotice, setWebNotice] = useState<string | null>(null);
   const [pendingVerification, setPendingVerification] = useState<PendingVerification | null>(null);
@@ -265,6 +268,44 @@ export function ChatPanel({
     setMessages(data.messages ?? []);
   }
 
+  async function loadSessionsForNode(): Promise<ChatSession[]> {
+    const response = await fetch(`/api/projects/${projectId}/chat/sessions?nodeId=${activeNode.id}`);
+    const data = (await response.json()) as { sessions?: ChatSession[]; error?: string };
+    if (!response.ok) throw new Error(data.error ?? "读取会话失败");
+    const next = data.sessions ?? [];
+    setSessions(next);
+    return next;
+  }
+
+  async function deleteSession(session: ChatSession) {
+    if (deletingSessionId) return;
+    setError("");
+    setDeletingSessionId(session.id);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/chat/sessions/${session.id}`, { method: "DELETE" });
+      const data = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) {
+        setError(data.error ?? "删除会话失败");
+        return;
+      }
+      const deletedCurrent = session.id === sharedContext.activeSessionId;
+      const nextSessions = await loadSessionsForNode();
+      if (deletedCurrent && nextSessions[0]) {
+        sharedContext.setActiveSessionId(nextSessions[0].id);
+        await loadSessionMessages(nextSessions[0].id);
+      } else if (deletedCurrent) {
+        sharedContext.setActiveSessionId("");
+        setMessages([]);
+      }
+    } catch {
+      setError("删除会话失败");
+    } finally {
+      setDeletingSessionId(null);
+      setSessionPendingDelete(null);
+      setSessionMenuOpen(false);
+    }
+  }
+
   async function createSession() {
     setError("");
     const response = await fetch(`/api/projects/${projectId}/chat/sessions`, {
@@ -321,6 +362,7 @@ export function ChatPanel({
         setModelMenuOpen(false);
         setModelSubmenuOpen(false);
         setFilePopoverOpen(false);
+        setSessionPendingDelete(null);
       }
     }
 
@@ -700,7 +742,7 @@ export function ChatPanel({
               type="button"
             >
               <span className="truncate">
-                {sessions.find((s) => s.id === sharedContext.activeSessionId)?.name ?? "会话"}
+                {sessions.find((s) => s.id === sharedContext.activeSessionId)?.name ?? "还没有会话"}
               </span>
               <span className="text-muted-foreground">
                 · {sessions.find((s) => s.id === sharedContext.activeSessionId)?.messageCount ?? 0} 条
@@ -708,31 +750,51 @@ export function ChatPanel({
               <ChevronDownIcon className="h-3.5 w-3.5 text-muted-foreground" />
             </button>
             {sessionMenuOpen ? (
-              <div className="absolute right-0 top-[calc(100%+6px)] z-30 w-56 rounded-xl border bg-popover p-1.5 text-sm shadow-xl">
+              <div className="absolute right-0 top-[calc(100%+6px)] z-30 w-64 rounded-xl border bg-popover p-1.5 text-sm shadow-xl" role="menu">
                 <p className="px-2 py-1 text-xs text-muted-foreground">会话</p>
                 <div className="flex max-h-60 flex-col gap-0.5 overflow-auto">
                   {sessions.map((session) => {
                     const active = session.id === sharedContext.activeSessionId;
                     return (
-                      <button
-                        key={session.id}
-                        className={cn(
-                          "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted",
-                          active && "bg-muted"
-                        )}
-                        onClick={() => {
-                          sharedContext.setActiveSessionId(session.id);
-                          loadSessionMessages(session.id);
-                          setSessionMenuOpen(false);
-                        }}
-                        type="button"
-                      >
-                        <span className="truncate">{session.name}</span>
-                        <span className="text-xs text-muted-foreground">{session.messageCount} 条</span>
-                      </button>
+                      <div key={session.id} className={cn("flex items-center gap-1 rounded-md hover:bg-muted", active && "bg-muted")}>
+                        <button
+                          className="min-w-0 flex-1 px-2 py-1.5 text-left text-sm"
+                          onClick={() => {
+                            sharedContext.setActiveSessionId(session.id);
+                            loadSessionMessages(session.id);
+                            setSessionMenuOpen(false);
+                          }}
+                          type="button"
+                        >
+                          <span className="block truncate">{session.name}</span>
+                          <span className="text-xs text-muted-foreground">{session.messageCount} 条</span>
+                        </button>
+                        <button
+                          aria-label={`删除${session.name}`}
+                          className="rounded-md p-1.5 text-muted-foreground hover:text-destructive"
+                          disabled={deletingSessionId === session.id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSessionPendingDelete(session);
+                          }}
+                          type="button"
+                        >
+                          <Trash2Icon className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
+                <p className="px-2 py-1 text-xs text-muted-foreground">最多保留 50 条，可手动删除。</p>
+                {sessionPendingDelete ? (
+                  <div className="mt-1 rounded-lg border bg-background p-2 text-xs">
+                    <p className="text-muted-foreground">确认删除“{sessionPendingDelete.name}”？此操作不可恢复。</p>
+                    <div className="mt-2 flex justify-end gap-2">
+                      <Button onClick={() => setSessionPendingDelete(null)} size="sm" type="button" variant="outline">取消</Button>
+                      <Button disabled={deletingSessionId === sessionPendingDelete.id} onClick={() => deleteSession(sessionPendingDelete)} size="sm" type="button" variant="destructive">确认删除</Button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
