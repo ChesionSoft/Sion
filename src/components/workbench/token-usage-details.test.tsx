@@ -16,7 +16,7 @@ function makeUsage(source: TurnTokenUsage["source"], callCount = 1): TurnTokenUs
 }
 
 describe("TokenUsageDetails", () => {
-  it("shows the total in the collapsed trigger and the breakdown when expanded (exact)", () => {
+  it("shows the total, breakdown, and source label inline (exact)", () => {
     render(<TokenUsageDetails usage={makeUsage("exact")} />);
     expect(screen.getByText(/20/)).toBeInTheDocument();
     expect(screen.getByText("精确")).toBeInTheDocument();

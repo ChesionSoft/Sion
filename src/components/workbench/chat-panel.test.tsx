@@ -1207,11 +1207,11 @@ describe("ChatPanel", () => {
     await waitFor(() => {
       const assistant = document.querySelector('[data-role="assistant"]') as HTMLElement | null;
       expect(assistant).not.toBeNull();
-      expect(within(assistant!).getByText(/共 25 token/)).toBeInTheDocument();
+      expect(within(assistant!).getByText(/共 25/)).toBeInTheDocument();
     });
   });
 
-  it("lets the user expand single-turn usage to see the source label", async () => {
+  it("shows the single-turn usage source label inline", async () => {
     const user = userEvent.setup();
     const ctx = createMockSharedContext();
     const onGenStateChange = vi.fn();
@@ -1228,9 +1228,8 @@ describe("ChatPanel", () => {
       expect(el).not.toBeNull();
       return el!;
     });
-    const trigger = within(assistant).getByText(/共 25 token/);
-    await user.click(trigger);
-    expect(await within(assistant).findByText("精确")).toBeInTheDocument();
+    expect(within(assistant).getByText(/共 25/)).toBeInTheDocument();
+    expect(within(assistant).getByText("精确")).toBeInTheDocument();
   });
 
   it("shows session usage totaling all loaded assistant messages", async () => {
@@ -1247,7 +1246,7 @@ describe("ChatPanel", () => {
 
     await waitFor(() => {
       const sessionUsage = screen.getByTestId("session-usage");
-      expect(within(sessionUsage).getByText(/共 25 token/)).toBeInTheDocument();
+      expect(within(sessionUsage).getByText(/共 25/)).toBeInTheDocument();
     });
   });
 

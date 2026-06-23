@@ -1,5 +1,6 @@
 "use client";
 
+import { Badge } from "@/components/ui/badge";
 import type { TurnTokenUsage } from "@/lib/project/types";
 
 export type TokenUsageDetailsProps = {
@@ -15,27 +16,23 @@ const SOURCE_LABELS: Record<TurnTokenUsage["source"], string> = {
 };
 
 /**
- * Per-message and session token usage disclosure. A closed <details> keeps
- * the chat dense; opening it reveals input/output totals, the call count, and
- * whether the counts are exact, estimated, or mixed.
+ * Per-message and session token usage, shown as an inline row of Badges. The
+ * total uses the secondary variant; input/output and the source label use
+ * outline. A muted span appends the call count when more than one call fed the
+ * turn. Null usage renders nothing unless `showEmpty` is set.
  */
 export function TokenUsageDetails({ usage, showEmpty = false }: TokenUsageDetailsProps) {
   if (!usage) {
     return showEmpty ? <span className="token-usage-empty">暂无统计</span> : null;
   }
 
-  const sourceLabel = SOURCE_LABELS[usage.source];
-
   return (
-    <details className="token-usage-details">
-      <summary className="token-usage-trigger">共 {usage.totalTokens} token</summary>
-      <div className="token-usage-body">
-        <div>输入 {usage.inputTokens} token · 输出 {usage.outputTokens} token</div>
-        <div>
-          <span>{sourceLabel}</span>
-          {usage.callCount > 1 ? <span> · {usage.callCount} 次调用</span> : null}
-        </div>
-      </div>
-    </details>
+    <span className="token-usage-inline flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+      <Badge variant="secondary">共 {usage.totalTokens}</Badge>
+      <Badge variant="outline">输入 {usage.inputTokens}</Badge>
+      <Badge variant="outline">输出 {usage.outputTokens}</Badge>
+      <Badge variant="outline">{SOURCE_LABELS[usage.source]}</Badge>
+      {usage.callCount > 1 ? <span>· {usage.callCount} 次调用</span> : null}
+    </span>
   );
 }
