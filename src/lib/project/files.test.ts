@@ -96,4 +96,52 @@ describe("FileStore", () => {
       store.uploadFile("../escape", { name: "a.txt", buffer: Buffer.from("a", "utf8") }),
     ).rejects.toThrow(ProjectIdError);
   });
+
+  it("stores extracted text under a separate text copy for readable files", async () => {
+    const store = new FileStore(rootDir);
+    const record = await store.uploadFile("test-project", {
+      name: "notes.markdown",
+      buffer: Buffer.from("# Notes", "utf8"),
+      mimeType: "text/markdown",
+    });
+
+    expect(record).toMatchObject({
+      status: "available",
+      kind: "markdown",
+      extractionStatus: "available",
+      characterCount: 7,
+    });
+    expect(record.textPath).toBe(`${record.id}.txt`);
+    await expect(store.readFileContent("test-project", record.id)).resolves.toBe("# Notes");
+  });
+
+  it("keeps unsupported original files but does not make them readable", async () => {
+    const store = new FileStore(rootDir);
+    const record = await store.uploadFile("test-project", {
+      name: "legacy.doc",
+      buffer: Buffer.from("old binary", "utf8"),
+      mimeType: "application/msword",
+    });
+
+    expect(record).toMatchObject({
+      status: "unsupported",
+      kind: "unsupported",
+      extractionStatus: "unsupported",
+      extractionError: "暂不支持该文件格式",
+    });
+    expect(record.textPath).toBeUndefined();
+    await expect(store.readFileContent("test-project", record.id)).resolves.toBeNull();
+  });
+
+  it("deletes the extracted text copy together with the original file", async () => {
+    const store = new FileStore(rootDir);
+    const record = await store.uploadFile("test-project", {
+      name: "notes.txt",
+      buffer: Buffer.from("notes", "utf8"),
+    });
+
+    await store.deleteFile("test-project", record.id);
+    await expect(store.readFileContent("test-project", record.id)).resolves.toBeNull();
+    expect(await store.listFiles("test-project")).toEqual([]);
+  });
 });

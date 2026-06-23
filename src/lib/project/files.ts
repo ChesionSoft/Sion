@@ -2,9 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { assertSafeProjectId } from "./paths";
+import { extractFileText, isReadableProjectFile } from "./file-extraction";
 import type { ProjectFile } from "./types";
-
-const TEXT_EXTENSIONS = new Set([".txt", ".md", ".json", ".csv", ".log"]);
 
 export class FileStore {
   constructor(private readonly rootDir = path.join(process.cwd(), "projects")) {}
@@ -39,20 +38,23 @@ export class FileStore {
 
     await writeFile(storedPath, file.buffer);
 
-    const isText = TEXT_EXTENSIONS.has(ext);
-    let status: ProjectFile["status"] = isText ? "available" : "unsupported";
-    let textPath: string | undefined;
-    let characterCount: number | undefined;
+    const extraction = await extractFileText({
+      fileName: file.name,
+      mimeType: file.mimeType,
+      buffer: file.buffer,
+    });
+    const textStoredName = extraction.extractionStatus === "available" ? `${id}.txt` : undefined;
 
-    if (isText) {
-      try {
-        const content = file.buffer.toString("utf8");
-        characterCount = content.length;
-        textPath = storedName;
-      } catch {
-        status = "read_failed";
-      }
+    if (textStoredName && extraction.text) {
+      await writeFile(path.join(this.filesDir(projectId), textStoredName), extraction.text, "utf8");
     }
+
+    const status: ProjectFile["status"] =
+      extraction.extractionStatus === "available"
+        ? "available"
+        : extraction.extractionStatus === "unsupported"
+          ? "unsupported"
+          : "read_failed";
 
     const record: ProjectFile = {
       id,
@@ -63,8 +65,14 @@ export class FileStore {
       byteSize: file.buffer.length,
       uploadedAt: new Date().toISOString(),
       status,
-      textPath,
-      characterCount,
+      textPath: textStoredName,
+      characterCount: extraction.characterCount,
+      kind: extraction.kind,
+      extractionStatus: extraction.extractionStatus,
+      extractionError: extraction.extractionError,
+      pageCount: extraction.pageCount,
+      sheetCount: extraction.sheetCount,
+      truncated: extraction.truncated,
     };
 
     const files = await this.listFiles(projectId);
@@ -88,6 +96,12 @@ export class FileStore {
       // file already gone, continue
     }
 
+    if (record.textPath && record.textPath !== record.storedName) {
+      await unlink(path.join(this.filesDir(projectId), record.textPath)).catch(() => {
+        // extracted text copy already gone, continue
+      });
+    }
+
     files.splice(index, 1);
     await writeJson(this.indexPath(projectId), files);
   }
@@ -99,7 +113,7 @@ export class FileStore {
 
   async readFileContent(projectId: string, fileId: string): Promise<string | null> {
     const record = await this.getFile(projectId, fileId);
-    if (!record || record.status !== "available" || !record.textPath) return null;
+    if (!record || !isReadableProjectFile(record) || !record.textPath) return null;
 
     try {
       return await readFile(path.join(this.filesDir(projectId), record.textPath), "utf8");
