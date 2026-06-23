@@ -150,6 +150,18 @@ export type ModelProvider = {
   updatedAt: string;
 };
 
+export type ProjectFileKind =
+  | "markdown"
+  | "text"
+  | "json"
+  | "csv"
+  | "pdf"
+  | "word"
+  | "excel"
+  | "unsupported";
+
+export type FileExtractionStatus = "available" | "failed" | "unsupported";
+
 export type ProjectFile = {
   id: string;
   originalName: string;
@@ -161,6 +173,12 @@ export type ProjectFile = {
   status: "available" | "unsupported" | "read_failed";
   textPath?: string;
   characterCount?: number;
+  kind?: ProjectFileKind;
+  extractionStatus?: FileExtractionStatus;
+  extractionError?: string;
+  pageCount?: number;
+  sheetCount?: number;
+  truncated?: boolean;
 };
 
 export type AgentRuleMode = "default" | "custom";
