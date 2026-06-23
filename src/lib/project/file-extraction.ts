@@ -69,9 +69,9 @@ export async function extractFileText(input: ExtractFileTextInput): Promise<Extr
   }
 
   try {
-    if (kind === "pdf") return extractPdfText(input.buffer);
-    if (kind === "word") return extractDocxText(input.buffer);
-    if (kind === "excel") return extractWorkbookText(input.buffer);
+    if (kind === "pdf") return await extractPdfText(input.buffer);
+    if (kind === "word") return await extractDocxText(input.buffer);
+    if (kind === "excel") return await extractWorkbookText(input.buffer);
     return extractPlainText(kind, input.buffer);
   } catch {
     return {
@@ -99,24 +99,31 @@ function extractPlainText(kind: ProjectFileKind, buffer: Buffer): ExtractFileTex
 }
 
 async function extractPdfText(buffer: Buffer): Promise<ExtractFileTextResult> {
-  // pdf-parse v2 ships as ESM with the parser as `default`; @types/pdf-parse
-  // still describes the v1 CJS shape, so cast to the minimal runtime contract.
-  type PdfParseFn = (data: Buffer) => Promise<{ text: string; numpages: number }>;
-  const pdfParse = (await import("pdf-parse") as unknown as { default: PdfParseFn }).default;
-  const parsed = await pdfParse(buffer);
+  // pdf-parse v2 exposes a PDFParse class while @types/pdf-parse still
+  // describes the older function API.
+  type PdfParseResult = { text: string; total: number };
+  type PdfParser = {
+    getText: () => Promise<PdfParseResult>;
+    destroy: () => Promise<void>;
+  };
+  type PdfParseCtor = new (options: { data: Buffer }) => PdfParser;
+  const { PDFParse } = await import("pdf-parse") as unknown as { PDFParse: PdfParseCtor };
+  const parser = new PDFParse({ data: buffer });
+  const parsed = await parser.getText();
+  await parser.destroy();
   const text = parsed.text.trim();
   if (!text) {
     return {
       kind: "pdf",
       extractionStatus: "failed",
       extractionError: "PDF 未包含可提取文本",
-      pageCount: parsed.numpages,
+      pageCount: parsed.total,
     };
   }
   return {
     kind: "pdf",
     extractionStatus: "available",
-    pageCount: parsed.numpages,
+    pageCount: parsed.total,
     ...truncateExtractedText(text),
   };
 }

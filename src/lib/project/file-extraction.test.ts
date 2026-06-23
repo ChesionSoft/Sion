@@ -9,6 +9,41 @@ import {
 import type { ProjectFile } from "./types";
 
 describe("file extraction domain", () => {
+  function createMinimalTextPdf(): Buffer {
+    return Buffer.from(`%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 44 >>
+stream
+BT /F1 18 Tf 40 140 Td (Hello PDF text) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f
+0000000009 00000 n
+0000000058 00000 n
+0000000115 00000 n
+0000000234 00000 n
+0000000328 00000 n
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+398
+%%EOF`, "utf8");
+  }
+
   it("detects supported project file kinds by extension", () => {
     expect(detectProjectFileKind("notes.md", "text/markdown")).toBe("markdown");
     expect(detectProjectFileKind("data.tsv", "text/tab-separated-values")).toBe("csv");
@@ -33,6 +68,22 @@ describe("file extraction domain", () => {
       characterCount: 10,
       truncated: false,
     });
+  });
+
+  it("extracts text and page count from a readable PDF", async () => {
+    const result = await extractFileText({
+      fileName: "brief.pdf",
+      mimeType: "application/pdf",
+      buffer: createMinimalTextPdf(),
+    });
+
+    expect(result).toMatchObject({
+      kind: "pdf",
+      extractionStatus: "available",
+      pageCount: 1,
+      truncated: false,
+    });
+    expect(result.text).toContain("Hello PDF text");
   });
 
   it("marks legacy .doc files unsupported without pretending they are readable", async () => {
