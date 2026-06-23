@@ -394,6 +394,24 @@
     opacity: 1;
   }
 
+  /* Empty-chat suggestion chips. */
+  .chat-suggestion-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.625rem;
+    border-radius: 9999px;
+    border: 1px solid var(--border);
+    background: var(--background);
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: color 120ms ease-out, border-color 120ms ease-out;
+  }
+  .chat-suggestion-chip:hover {
+    color: var(--foreground);
+    border-color: var(--foreground);
+  }
+
   /* Document-quality delivery preview: muted workspace, centered paper. */
   .document-workspace {
     background: var(--muted);

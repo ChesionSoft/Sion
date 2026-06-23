@@ -1544,4 +1544,18 @@ describe("ChatPanel", () => {
     await waitFor(() => expect(screen.queryByText("将被删除")).not.toBeInTheDocument());
     expect(screen.getByRole("button", { name: /还没有会话/ })).toBeInTheDocument();
   });
+
+  it("empty state shows suggestion chips that fill the input on click", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    render(<ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={() => {}} />);
+
+    const chip = await screen.findByRole("button", { name: "梳理本节已有信息" });
+    expect(screen.getByRole("button", { name: "列出待确认问题" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "基于参考资料补充细节" })).toBeInTheDocument();
+
+    await user.click(chip);
+    const input = screen.getByPlaceholderText(/补充需求、追问边界/) as HTMLTextAreaElement;
+    expect(input.value).toBe("梳理本节已有信息");
+  });
 });

@@ -8,6 +8,7 @@ import {
   ChevronRightIcon,
   FileIcon,
   Globe2Icon,
+  MessageSquareIcon,
   PaperclipIcon,
   PlusIcon,
   SendIcon,
@@ -41,6 +42,12 @@ const REASONING_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
   { value: "medium", label: "中" },
   { value: "high", label: "高" },
   { value: "xhigh", label: "超高" },
+];
+
+const EMPTY_STATE_SUGGESTIONS = [
+  "梳理本节已有信息",
+  "列出待确认问题",
+  "基于参考资料补充细节",
 ];
 
 // Client-local mirror of the server's isReadableProjectFile. Kept here so the
@@ -859,9 +866,22 @@ export function ChatPanel({
         ) : null}
         <ScrollArea className="min-h-0 flex-1" ref={scrollRef}>
           {messages.length === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center text-center">
-              <div className="max-w-xs rounded-lg border bg-muted/20 p-4 text-sm text-muted-foreground">
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+              <MessageSquareIcon className="h-6 w-6 text-muted-foreground" />
+              <p className="max-w-xs text-sm text-muted-foreground">
                 围绕“{activeNodeTitle}”补充需求、澄清边界，或让 Agent 帮你整理可写入交付稿的内容。
+              </p>
+              <div className="flex flex-wrap justify-center gap-2">
+                {EMPTY_STATE_SUGGESTIONS.map((text) => (
+                  <button
+                    key={text}
+                    className="chat-suggestion-chip"
+                    onClick={() => setMessage(text)}
+                    type="button"
+                  >
+                    {text}
+                  </button>
+                ))}
               </div>
             </div>
           ) : (
