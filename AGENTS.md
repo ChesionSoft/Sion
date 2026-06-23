@@ -16,3 +16,4 @@ This is a local-first Next.js project for generating project design documents.
 - Write tests before behavior changes.
 - Run `npm run test` and `npm run lint` before claiming completion.
 - Do not put generated project exports in git.
+- Do not `git add` local design specs or implementation plans under `docs/`; they are local planning artifacts.
