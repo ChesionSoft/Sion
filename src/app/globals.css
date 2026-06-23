@@ -310,6 +310,28 @@
     50% { opacity: 0.4; transform: scale(0.7); }
   }
 
+  /* Collapsed sidebar status dot. Color is driven by data-status. */
+  .node-status-dot {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 9999px;
+    background: var(--muted-foreground);
+    flex-shrink: 0;
+  }
+  .node-status-dot[data-status="confirmed"],
+  .node-status-dot[data-status="needs_confirmation"] {
+    background: var(--primary);
+  }
+  .node-status-dot[data-status="generated"],
+  .node-status-dot[data-status="draft"] {
+    background: transparent;
+    border: 1px solid var(--muted-foreground);
+  }
+  .node-status-dot[data-status="not_started"] {
+    background: var(--muted-foreground);
+    opacity: 0.4;
+  }
+
   /* Streamed assistant content fades in briefly as tokens arrive. */
   .chat-stream-enter {
     animation: chat-stream-fade 240ms ease-out;
