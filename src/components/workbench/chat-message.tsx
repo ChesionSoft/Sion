@@ -89,7 +89,7 @@ export function ChatMessageView({ message, activity }: ChatMessageViewProps) {
           ))}
         </div>
       ) : null}
-      <TokenUsageDetails usage={message.usage} />
+      <TokenUsageDetails usage={message.usage} showEmpty />
     </div>
   );
 }

@@ -480,6 +480,33 @@ describe("streamChatCompletionsTurn", () => {
     expect(body.messages).toEqual([{ role: "user", content: "Hi" }]);
   });
 
+  it("retries once without stream_options on a 400 mentioning stream_options", async () => {
+    const errBody = JSON.stringify({ error: { message: "stream_options not supported" } });
+    const okBody = createMockStreamBody(['data: [DONE]\n\n']);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, text: async () => errBody })
+      .mockResolvedValueOnce({ ok: true, body: okBody });
+
+    for await (const _part of streamChatCompletionsTurn({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      conversation: [{ type: "message", role: "user", content: "Hi" }],
+      tools: toolDefinitions,
+    })) {
+      void _part;
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse((fetchMock.mock.calls[0] as [string, { body: string }])[1].body);
+    const secondBody = JSON.parse((fetchMock.mock.calls[1] as [string, { body: string }])[1].body);
+    expect(firstBody).toMatchObject({ stream_options: { include_usage: true } });
+    expect(secondBody).not.toHaveProperty("stream_options");
+    expect(secondBody.tools).toEqual(firstBody.tools);
+  });
+
   it("assembles interleaved tool_call fragments by index into complete calls", async () => {
     const mockBody = createMockStreamBody([
       'data: {"choices":[{"delta":{"content":"ans"}}]}\n\n',

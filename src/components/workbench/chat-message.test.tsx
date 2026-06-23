@@ -85,4 +85,9 @@ describe("ChatMessageView", () => {
     expect(screen.getByRole("link", { name: /Example/ })).toBeInTheDocument();
     expect(screen.getByText("精确")).toBeInTheDocument();
   });
+
+  it("shows 暂无统计 for historical assistant messages without usage", () => {
+    render(<ChatMessageView message={baseAssistant} />);
+    expect(screen.getByText("暂无统计")).toBeInTheDocument();
+  });
 });

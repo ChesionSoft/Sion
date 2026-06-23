@@ -281,12 +281,36 @@ export async function* streamChatCompletionsTurn(
     body.tool_choice = "auto";
   }
 
-  const response = await fetchImpl(resolveChatCompletionsUrl(input.apiBaseUrl, input.apiUrlMode), {
+  const url = resolveChatCompletionsUrl(input.apiBaseUrl, input.apiUrlMode);
+  let response = await fetchImpl(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${input.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: input.signal,
   });
+
+  // Some OpenAI-compatible providers reject stream_options. Mirror the plain
+  // streaming path: retry once without stream_options only for that specific
+  // 400, preserving the tool payload and all other request fields.
+  if (response.status === 400) {
+    let mentionsStreamOptions = false;
+    try {
+      const text = await response.text();
+      mentionsStreamOptions = text.includes("stream_options");
+    } catch {
+      mentionsStreamOptions = false;
+    }
+    if (mentionsStreamOptions) {
+      const fallbackBody = { ...body };
+      delete fallbackBody.stream_options;
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${input.apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify(fallbackBody),
+        signal: input.signal,
+      });
+    }
+  }
 
   if (!response.ok) {
     throw new Error(`LLM request failed with status ${response.status}`);

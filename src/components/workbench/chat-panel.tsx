@@ -408,6 +408,8 @@ export function ChatPanel({
     const pendingPatches: import("@/lib/project/types").NodeMarkdownPatch[] = [];
     const pendingSources: ExternalSource[] = [];
     const seenSourceIds = new Set<string>();
+    let receivedDone = false;
+    let turnFailed = false;
 
     try {
       const res = await fetch(`/api/projects/${projectId}/chat`, {
@@ -541,6 +543,7 @@ export function ChatPanel({
               const patch = event.patch as import("@/lib/project/types").NodeMarkdownPatch;
               pendingPatches.push(patch);
             } else if (type === "done" && event.sessionId) {
+              receivedDone = true;
               if (pendingPatchRevision !== null && pendingPatches.length > 0) {
                 onGenStateChangeRef.current({
                   phase: "previewing_increment",
@@ -569,6 +572,7 @@ export function ChatPanel({
               setError(event.error as string);
               onGenStateChangeRef.current({ phase: "idle" });
             } else if (type === "error" && event.error) {
+              turnFailed = true;
               setError(event.error as string);
               const serverMessage = event.assistantMessage as ChatMessage | undefined;
               if (serverMessage) {
@@ -585,10 +589,17 @@ export function ChatPanel({
       }
 
       await textBuffer.waitUntilIdle();
-      // Briefly show the completed stage, then return to idle so the activity
-      // indicator clears between turns.
-      setActivity((prev) => ({ stage: "completed", summary: "已完成", startedAt: prev.startedAt }));
-      setTimeout(() => setActivity({ stage: "idle", summary: "等待输入", startedAt: null }), 1200);
+      if (receivedDone && !turnFailed) {
+        // Briefly show the completed stage, then return to idle so the activity
+        // indicator clears between turns.
+        setActivity((prev) => ({ stage: "completed", summary: "已完成", startedAt: prev.startedAt }));
+        setTimeout(() => setActivity({ stage: "idle", summary: "等待输入", startedAt: null }), 1200);
+      } else if (!turnFailed && !controller.signal.aborted) {
+        // Defensive EOF fallback: production routes should end with done or
+        // error, but a clean close without either should not leave the activity
+        // indicator pulsing forever.
+        setActivity({ stage: "idle", summary: "等待输入", startedAt: null });
+      }
     } catch (error) {
       textBuffer?.stop();
       if (error instanceof DOMException && error.name === "AbortError") {

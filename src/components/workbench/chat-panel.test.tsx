@@ -1279,4 +1279,98 @@ describe("ChatPanel", () => {
 
     (getController() as ReadableStreamDefaultController<Uint8Array> | null)?.close();
   });
+
+  it("keeps failed activity when the server returns an SSE error and closes normally", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/settings/model-providers")) {
+        return new Response(JSON.stringify({ providers: defaultProviders }));
+      }
+      if (url.includes("/files")) {
+        return new Response(JSON.stringify({ files: [] }));
+      }
+      if (url.includes("/chat/sessions/s-1")) {
+        return new Response(JSON.stringify({ messages: [] }));
+      }
+      if (url.includes("/chat/sessions")) {
+        return new Response(JSON.stringify({
+          sessions: [{
+            id: "s-1",
+            nodeId: "feature-design",
+            name: "6月14日 23:30",
+            messageCount: 0,
+            webSearchEnabled: false,
+            createdAt: "2026-06-14T15:30:00.000Z",
+            updatedAt: "2026-06-14T15:30:00.000Z",
+          }],
+        }));
+      }
+      if (url.includes("/chat") && init?.method === "POST") {
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ type: "activity", stage: "failed", summary: "生成失败", at: "x" })}\n\n`),
+              );
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ type: "error", error: "模型请求失败" })}\n\n`),
+              );
+              controller.close();
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({}));
+    }) as typeof fetch;
+
+    render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "hi");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    expect(await screen.findByText("模型请求失败")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(document.querySelector('.agent-activity[data-stage="failed"]')).not.toBeNull();
+    });
+    expect(document.querySelector('.agent-activity[data-stage="completed"]')).toBeNull();
+  });
+
+  it("clears activity when the stream closes without done or error", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    const { fetchMock } = createHeldStreamMock((controller) => {
+      const encoder = new TextEncoder();
+      controller.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({ type: "activity", stage: "generating_answer", summary: "正在生成回复", at: "x" })}\n\n`,
+        ),
+      );
+      controller.enqueue(encoder.encode('data: {"type":"token","content":"部分"}\n\n'));
+      controller.close();
+    });
+    globalThis.fetch = fetchMock;
+
+    render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "hi");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    await waitFor(() => {
+      expect(document.querySelector(".agent-activity")).toBeNull();
+    });
+    expect(document.querySelector('.agent-activity[data-stage="completed"]')).toBeNull();
+    expect(document.querySelector('[data-role="assistant"]')).toHaveTextContent("部分");
+  });
 });
