@@ -265,6 +265,70 @@ describe("chat API routing", () => {
     await readSseEvents(await POST(baseRequest(), { params: Promise.resolve({ projectId: "test-project" }) }));
     expect(orchestratorInput?.engine).toBe("google"); // default preference
   });
+
+  it("passes prior session messages as history and keeps the current message as userMessage", async () => {
+    // Regression: the model only saw the system prompt + the latest message,
+    // so it forgot earlier Q&A and re-asked already-answered questions.
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+    await store.appendChatMessage(
+      "test-project",
+      "feature-design",
+      { id: "u1", role: "user", content: "之前问的", createdAt: "2026-06-14T11:01:00.000Z" },
+      session.id,
+    );
+    await store.appendChatMessage(
+      "test-project",
+      "feature-design",
+      { id: "a1", role: "assistant", content: "之前答的", createdAt: "2026-06-14T11:02:00.000Z" },
+      session.id,
+    );
+
+    await readSseEvents(
+      await POST(
+        baseRequest({ sessionId: session.id, message: "新的问题" }),
+        { params: Promise.resolve({ projectId: "test-project" }) },
+      ),
+    );
+
+    const history = orchestratorInput?.history as { type: string; role: string; content: string }[] | undefined;
+    expect(history).toBeDefined();
+    expect(history?.map((m) => [m.role, m.content])).toEqual([
+      ["user", "之前问的"],
+      ["assistant", "之前答的"],
+    ]);
+    // The current message is delivered via userMessage, not duplicated in history.
+    expect(orchestratorInput?.userMessage).toBe("新的问题");
+    expect(history?.some((m) => m.content === "新的问题")).toBe(false);
+  });
+
+  it("skips empty assistant turns when building history", async () => {
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-14T11:00:00.000Z");
+    await store.appendChatMessage(
+      "test-project",
+      "feature-design",
+      { id: "u1", role: "user", content: "之前问的", createdAt: "2026-06-14T11:01:00.000Z" },
+      session.id,
+    );
+    // A failed turn persisted with empty content must not appear in history.
+    await store.appendChatMessage(
+      "test-project",
+      "feature-design",
+      { id: "a1", role: "assistant", content: "", createdAt: "2026-06-14T11:02:00.000Z" },
+      session.id,
+    );
+
+    await readSseEvents(
+      await POST(
+        baseRequest({ sessionId: session.id, message: "继续" }),
+        { params: Promise.resolve({ projectId: "test-project" }) },
+      ),
+    );
+
+    const history = orchestratorInput?.history as { role: string; content: string }[] | undefined;
+    expect(history?.map((m) => [m.role, m.content])).toEqual([["user", "之前问的"]]);
+  });
 });
 
 describe("chat API SSE and persistence", () => {

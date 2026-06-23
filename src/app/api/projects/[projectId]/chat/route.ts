@@ -14,6 +14,7 @@ import { createBrowserWebService } from "@/lib/project/browser-web-service";
 import { runWebOrchestrator, type WebOrchestratorEvent } from "@/lib/project/web-tool-orchestrator";
 import { extractHttpUrls } from "@/lib/project/url-content";
 import { aggregateTokenUsage } from "@/lib/project/token-usage";
+import type { ModelConversationItem } from "@/lib/project/model-tools";
 import type {
   AgentActivityStage,
   ChatMessage,
@@ -25,6 +26,10 @@ import type {
 } from "@/lib/project/types";
 
 const REASONING_EFFORTS = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
+
+// Cap how many prior turns are replayed so long sessions don't blow the model's
+// context window. The most recent turns are kept; oldest are trimmed.
+const MAX_HISTORY_MESSAGES = 40;
 
 export async function POST(request: Request, context: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await context.params;
@@ -143,6 +148,14 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     sessionId = session.id;
     webSearchEnabled = session.webSearchEnabled;
   }
+
+  // Load prior turns BEFORE appending the current message so the current
+  // message is delivered via `userMessage` and not duplicated in history.
+  const priorMessages = await projectStore.getChatMessages(projectId, nodeId, sessionId);
+  const history: ModelConversationItem[] = priorMessages
+    .filter((m) => m.role === "user" || (m.role === "assistant" && m.content.trim().length > 0))
+    .slice(-MAX_HISTORY_MESSAGES)
+    .map((m) => ({ type: "message" as const, role: m.role, content: m.content }));
 
   await projectStore.appendChatMessage(projectId, nodeId, {
     id: randomUUID(),
@@ -269,6 +282,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           toolCalling,
           systemPrompt,
           userMessage: trimmedUserMessage,
+          history,
           directUrls,
           searchEnabled: webSearchEnabled,
           engine: preferences.defaultEngine,

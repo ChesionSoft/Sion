@@ -65,6 +65,10 @@ export type WebOrchestratorInput = {
   toolCalling: boolean;
   systemPrompt: string;
   userMessage: string;
+  /** Prior user/assistant turns from the session, inserted between the system
+   * prompt and the new user message so the model remembers earlier Q&A. Only
+   * `message` items are used; any tool_call/tool_result items are dropped. */
+  history?: ModelConversationItem[];
   directUrls: string[];
   searchEnabled: boolean;
   engine: SearchEngineId;
@@ -101,6 +105,17 @@ export async function* runWebOrchestrator(
   const conversation: ModelConversationItem[] = [
     { type: "message", role: "system", content: input.systemPrompt },
   ];
+
+  // Replay prior session turns so the model retains earlier Q&A. Without this
+  // each turn is stateless (only the markdown snapshot in the system prompt),
+  // and the model re-asks questions already answered in chat.
+  if (input.history?.length) {
+    for (const item of input.history) {
+      if (item.type === "message" && (item.role === "user" || item.role === "assistant")) {
+        conversation.push(item);
+      }
+    }
+  }
 
   // 1. Direct URLs — always fetched, regardless of the search toggle. They do
   //    not consume the search budget but share the three-page fetch budget.

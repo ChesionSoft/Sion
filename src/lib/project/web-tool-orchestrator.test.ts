@@ -402,6 +402,71 @@ describe("runWebOrchestrator/direct URLs", () => {
   });
 });
 
+describe("runWebOrchestrator/history", () => {
+  it("inserts prior turns between the system prompt and the new user message", async () => {
+    // Regression: without history the model forgets earlier Q&A in the session
+    // and re-asks clarifying questions whose answers lived in chat, not markdown.
+    const browserService = makeBrowserService();
+    const captured: { conversation?: StreamTurnArgs["conversation"] } = {};
+    const streamTurn = vi.fn(async function* (args: StreamTurnArgs): AsyncGenerator<ModelTurnEvent> {
+      captured.conversation = args.conversation;
+      yield { type: "content", delta: "答案" };
+    });
+
+    await collect(
+      runWebOrchestrator({
+        ...baseInput,
+        searchEnabled: false,
+        toolCalling: false,
+        history: [
+          { type: "message", role: "user", content: "之前问的" },
+          { type: "message", role: "assistant", content: "之前答的" },
+        ],
+        browserService,
+        streamTurn,
+      }),
+    );
+
+    const msgs = (captured.conversation ?? []).filter((m) => m.type === "message") as {
+      type: string;
+      role: string;
+      content: string;
+    }[];
+    expect(msgs[0]).toEqual({ type: "message", role: "system", content: "sys" });
+    expect(msgs[1]).toEqual({ type: "message", role: "user", content: "之前问的" });
+    expect(msgs[2]).toEqual({ type: "message", role: "assistant", content: "之前答的" });
+    // The new user message stays last and carries the latest input.
+    expect(msgs[msgs.length - 1].role).toBe("user");
+    expect(msgs[msgs.length - 1].content).toContain("查找 X");
+  });
+
+  it("drops non-message history items so tool calls never leak into a fresh turn", async () => {
+    const browserService = makeBrowserService();
+    const captured: { conversation?: StreamTurnArgs["conversation"] } = {};
+    const streamTurn = vi.fn(async function* (args: StreamTurnArgs): AsyncGenerator<ModelTurnEvent> {
+      captured.conversation = args.conversation;
+      yield { type: "content", delta: "答案" };
+    });
+
+    await collect(
+      runWebOrchestrator({
+        ...baseInput,
+        searchEnabled: false,
+        toolCalling: false,
+        history: [
+          { type: "message", role: "user", content: "之前问的" },
+          { type: "tool_call", call: { id: "c", name: "web_search", argumentsJson: "{}" } },
+        ],
+        browserService,
+        streamTurn,
+      }),
+    );
+
+    const toolItems = (captured.conversation ?? []).filter((m) => m.type !== "message");
+    expect(toolItems).toHaveLength(0);
+  });
+});
+
 describe("runWebOrchestrator/usage tracking", () => {
   it("categorizes the planning call as tool_planning and the final answer as answer", async () => {
     const calls: ModelCallUsage[] = [];
