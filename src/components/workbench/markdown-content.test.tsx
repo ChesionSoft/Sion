@@ -34,7 +34,7 @@ describe("MarkdownContent", () => {
       configurable: true,
     });
     render(<MarkdownContent markdown={"```ts\nconst x = 1;\n```"} variant="chat" />);
-    const button = screen.getByRole("button", { name: /复制代码/ });
+    const button = screen.getByRole("button", { name: "复制" });
     await user.click(button);
     expect(writeText).toHaveBeenCalledWith("const x = 1;");
   });

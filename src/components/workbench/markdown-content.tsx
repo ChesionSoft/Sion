@@ -3,6 +3,9 @@
 import { Component, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { CheckIcon, CopyIcon } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 type MarkdownVariant = "chat" | "document";
@@ -71,16 +74,24 @@ function CodeBlock({ children }: { children: ReactNode }) {
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
+      toast.success("已复制到剪贴板");
     } catch {
-      // clipboard unavailable (e.g. non-secure context) — silently ignore
+      toast.error("复制失败");
     }
   };
 
   return (
     <div className="markdown-code-block">
-      <button type="button" onClick={copy} className="markdown-code-copy" aria-label="复制代码">
-        {copied ? "已复制" : "复制代码"}
-      </button>
+      <Button
+        aria-label="复制"
+        className="markdown-code-copy"
+        onClick={copy}
+        size="icon-sm"
+        type="button"
+        variant="ghost"
+      >
+        {copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+      </Button>
       <pre>{children}</pre>
     </div>
   );
