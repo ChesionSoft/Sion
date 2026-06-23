@@ -42,26 +42,31 @@ async function copyMessage(message: ChatMessage) {
   }
 }
 
+function CopyButton({ message, align }: { message: ChatMessage; align: "start" | "end" }) {
+  return (
+    <div className={cn("flex", align === "end" ? "justify-end" : "justify-start")}>
+      <Button
+        aria-label="复制"
+        className="h-6 gap-1 px-2 text-xs text-muted-foreground"
+        onClick={() => copyMessage(message)}
+        size="xs"
+        type="button"
+        variant="ghost"
+      >
+        <CopyIcon className="h-3 w-3" />
+        复制
+      </Button>
+    </div>
+  );
+}
+
 /**
- * Renders a single chat message with a hover-revealed copy button and an icon
- * avatar. User/system messages stay plain; assistant bodies delegate to the
- * shared safe Markdown renderer. Reasoning, sources, and per-turn usage sit
- * below the content.
+ * Renders a single chat message. The bubble carries the content, avatar, and
+ * per-turn usage; a always-visible copy button sits below the bubble. User/
+ * system messages stay plain; assistant bodies delegate to the shared safe
+ * Markdown renderer. Reasoning and sources sit inside the bubble.
  */
 export function ChatMessageView({ message, activity }: ChatMessageViewProps) {
-  const copyButton = (
-    <Button
-      aria-label="复制"
-      className="chat-message-copy absolute right-2 top-2 h-6 w-6 p-0"
-      onClick={() => copyMessage(message)}
-      size="icon-sm"
-      type="button"
-      variant="ghost"
-    >
-      <CopyIcon className="h-3.5 w-3.5" />
-    </Button>
-  );
-
   if (message.role === "system") {
     return (
       <div className="chat-message chat-message-system mx-auto max-w-[90%] rounded-lg bg-muted/20 px-3 py-2 text-center text-xs text-muted-foreground">
@@ -72,18 +77,20 @@ export function ChatMessageView({ message, activity }: ChatMessageViewProps) {
 
   if (message.role === "user") {
     return (
-      <div
-        className="chat-message chat-message-user group relative flex max-w-[85%] flex-col gap-1 self-end rounded-2xl bg-foreground p-3.5 text-sm text-background"
-        data-role="user"
-      >
-        {copyButton}
-        <span className="flex items-center gap-1.5 text-xs text-background/70">
-          <span className="chat-avatar bg-background/15 text-background/80">
-            <UserIcon className="h-3 w-3" />
+      <div className="flex max-w-[85%] flex-col gap-1 self-end">
+        <div
+          className="chat-message chat-message-user relative flex flex-col gap-1 rounded-2xl bg-foreground p-3.5 text-sm text-background"
+          data-role="user"
+        >
+          <span className="flex items-center gap-1.5 text-xs text-background/70">
+            <span className="chat-avatar bg-background/15 text-background/80">
+              <UserIcon className="h-3 w-3" />
+            </span>
+            你
           </span>
-          你
-        </span>
-        <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
+          <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
+        </div>
+        <CopyButton message={message} align="end" />
       </div>
     );
   }
@@ -94,38 +101,40 @@ export function ChatMessageView({ message, activity }: ChatMessageViewProps) {
   const showReasoning = hasReasoning || active;
 
   return (
-    <div
-      className="chat-message chat-message-assistant group relative flex max-w-[85%] flex-col gap-1 self-start rounded-2xl border bg-muted/40 p-3.5 text-sm text-foreground"
-      data-role="assistant"
-    >
-      {copyButton}
-      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <span className="chat-avatar">
-          <BotIcon className="h-3 w-3" />
+    <div className="flex max-w-[85%] flex-col gap-1 self-start">
+      <div
+        className="chat-message chat-message-assistant relative flex flex-col gap-1 rounded-2xl border bg-muted/40 p-3.5 text-sm text-foreground"
+        data-role="assistant"
+      >
+        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="chat-avatar">
+            <BotIcon className="h-3 w-3" />
+          </span>
+          Agent
         </span>
-        Agent
-      </span>
-      {showReasoning ? (
-        <details className="chat-reasoning group mb-2 rounded-md border bg-background/60 px-2 py-1.5" open={false}>
-          <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground">
-            <span>{active ? <ReasoningSummary activity={activity!} message={message} /> : <HistoricalReasoning message={message} />}</span>
-          </summary>
-          {hasReasoning ? (
-            <div className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-              {message.reasoningContent}
-            </div>
-          ) : null}
-        </details>
-      ) : null}
-      <MarkdownContent markdown={message.content} variant="chat" />
-      {message.sources && message.sources.length > 0 ? (
-        <div className="chat-sources mt-1 flex flex-col gap-1 border-t pt-2">
-          {message.sources.map((source) => (
-            <SourceLink key={source.id} source={source} />
-          ))}
-        </div>
-      ) : null}
-      <TokenUsageDetails usage={message.usage} showEmpty />
+        {showReasoning ? (
+          <details className="chat-reasoning group mb-2 rounded-md border bg-background/60 px-2 py-1.5" open={false}>
+            <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground">
+              <span>{active ? <ReasoningSummary activity={activity!} message={message} /> : <HistoricalReasoning message={message} />}</span>
+            </summary>
+            {hasReasoning ? (
+              <div className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+                {message.reasoningContent}
+              </div>
+            ) : null}
+          </details>
+        ) : null}
+        <MarkdownContent markdown={message.content} variant="chat" />
+        {message.sources && message.sources.length > 0 ? (
+          <div className="chat-sources mt-1 flex flex-col gap-1 border-t pt-2">
+            {message.sources.map((source) => (
+              <SourceLink key={source.id} source={source} />
+            ))}
+          </div>
+        ) : null}
+        <TokenUsageDetails usage={message.usage} showEmpty />
+      </div>
+      <CopyButton message={message} align="start" />
     </div>
   );
 }

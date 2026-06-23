@@ -28,7 +28,7 @@ export function TokenUsageDetails({ usage, showEmpty = false }: TokenUsageDetail
 
   return (
     <span className="token-usage-inline flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-      <Badge variant="secondary">共 {usage.totalTokens}</Badge>
+      <Badge variant="secondary">共 {usage.totalTokens} token</Badge>
       <Badge variant="outline">输入 {usage.inputTokens}</Badge>
       <Badge variant="outline">输出 {usage.outputTokens}</Badge>
       <Badge variant="outline">{SOURCE_LABELS[usage.source]}</Badge>

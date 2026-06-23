@@ -35,7 +35,7 @@ describe("NodeSidebar", () => {
     expect(dots[1].getAttribute("data-status")).toBe("not_started");
   });
 
-  it("collapsed header reads 流程节点", () => {
+  it("collapsed header shows only the expand button", () => {
     render(
       <NodeSidebar
         activeNodeId="basic-info"
@@ -46,7 +46,8 @@ describe("NodeSidebar", () => {
         onToggle={() => {}}
       />,
     );
-    expect(screen.getByText("流程节点")).toBeInTheDocument();
+    expect(screen.getByLabelText("展开流程节点")).toBeInTheDocument();
+    expect(screen.queryByText("流程节点")).not.toBeInTheDocument();
   });
 
   it("expanded mode still shows titles and status badges", () => {

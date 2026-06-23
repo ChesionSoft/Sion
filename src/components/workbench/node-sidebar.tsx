@@ -1,5 +1,6 @@
 "use client";
 
+import { PanelLeftOpenIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -32,10 +33,8 @@ export function NodeSidebar({
 }) {
   return (
     <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r bg-muted/20">
-      <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
-        {collapsed ? (
-          <span className="text-xs font-medium text-muted-foreground">流程节点</span>
-        ) : (
+      <div className={cn("flex items-center border-b px-4 py-3", collapsed ? "justify-center" : "justify-between gap-2")}>
+        {collapsed ? null : (
           <div className="min-w-0">
             <p className="text-xs font-medium text-muted-foreground">流程节点</p>
             <h2 className="text-sm font-semibold">12 节点设计路径</h2>
@@ -43,13 +42,14 @@ export function NodeSidebar({
         )}
         {onToggle ? (
           <Button
-            className="h-7 shrink-0 px-2 text-xs"
+            className={cn("h-7 shrink-0 px-2 text-xs", collapsed && "px-0")}
             onClick={onToggle}
             type="button"
             variant="ghost"
             aria-label={collapsed ? "展开流程节点" : "折叠流程节点"}
+            size={collapsed ? "icon-sm" : "default"}
           >
-            {collapsed ? "展开流程节点" : "折叠流程节点"}
+            {collapsed ? <PanelLeftOpenIcon className="h-4 w-4" /> : "折叠流程节点"}
           </Button>
         ) : null}
       </div>
