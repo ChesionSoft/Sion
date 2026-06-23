@@ -35,7 +35,7 @@ import type {
 import type { MarkdownGenerationState, SharedWorkbenchContext } from "./markdown-generation-types";
 import { AgentActivity } from "./agent-activity";
 import { ChatMessageView, type ChatMessageActivity } from "./chat-message";
-import { TokenUsageDetails } from "./token-usage-details";
+import { SessionUsageButton } from "./session-usage-button";
 
 const REASONING_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
   { value: "low", label: "低" },
@@ -809,12 +809,7 @@ export function ChatPanel({
             <PlusIcon data-icon="inline-start" />
             新会话
           </Button>
-          {sessionUsage ? (
-            <div className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="session-usage">
-              <span>会话用量</span>
-              <TokenUsageDetails usage={sessionUsage} />
-            </div>
-          ) : null}
+          {sessionUsage ? <SessionUsageButton usage={sessionUsage} /> : null}
         </div>
       </div>
 

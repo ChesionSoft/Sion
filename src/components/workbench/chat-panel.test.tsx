@@ -1244,10 +1244,16 @@ describe("ChatPanel", () => {
     await user.type(screen.getByPlaceholderText(/补充/), "hi");
     await user.click(screen.getByRole("button", { name: /发送/ }));
 
-    await waitFor(() => {
-      const sessionUsage = screen.getByTestId("session-usage");
-      expect(within(sessionUsage).getByText(/共 25/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /会话用量/ })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: /会话用量/ }));
+    const popoverContent = await waitFor(() => {
+      const el = document.querySelector('[data-slot="popover-content"]') as HTMLElement | null;
+      expect(el).not.toBeNull();
+      return el!;
     });
+    expect(within(popoverContent).getByText("25 token")).toBeInTheDocument();
+    expect(within(popoverContent).getByText(/输入.*18/)).toBeInTheDocument();
+    expect(within(popoverContent).getByText(/输出.*7/)).toBeInTheDocument();
   });
 
   it("pressing stop marks the turn interrupted and clears the active animation", async () => {
