@@ -512,6 +512,28 @@ describe("chat API activity and authoritative final message", () => {
     expect(stages).toContain("searching_web");
   });
 
+  it("does not include unsupported selected files in the model prompt", async () => {
+    const { FileStore } = await import("@/lib/project/files");
+    const fileStore = new FileStore();
+    const unsupported = await fileStore.uploadFile("test-project", {
+      name: "legacy.doc",
+      buffer: Buffer.from("do not send this", "utf8"),
+      mimeType: "application/msword",
+    });
+
+    const store = new ProjectStore();
+    const session = await store.createSession("test-project", "feature-design", "2026-06-23T10:00:00.000Z");
+    const events = await readSseEvents(
+      await POST(
+        baseRequest({ sessionId: session.id, fileIds: [unsupported.id] }),
+        { params: Promise.resolve({ projectId: "test-project" }) },
+      ),
+    );
+
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(JSON.stringify(orchestratorInput)).not.toContain("do not send this");
+  });
+
   it("on a non-abort error, persists partial content and returns it with a failed activity and error", async () => {
     const { runWebOrchestrator } = await import("@/lib/project/web-tool-orchestrator");
     vi.mocked(runWebOrchestrator).mockImplementationOnce(async function* () {
