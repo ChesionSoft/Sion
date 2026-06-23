@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import type { AgentActivityStage } from "@/lib/project/types";
 
 export type AgentActivityProps = {
@@ -44,7 +45,7 @@ export function AgentActivity({ stage, summary, startedAt }: AgentActivityProps)
   return (
     <div className="agent-activity" data-stage={stage} aria-live="polite">
       <span className="agent-activity-dot" aria-hidden="true" />
-      <span className="agent-activity-label">{label}</span>
+      <Badge variant="secondary" className="agent-activity-badge">{label}</Badge>
       <span className="agent-activity-summary">
         {summary}
         {elapsed == null ? "" : ` · ${elapsed} 秒`}
