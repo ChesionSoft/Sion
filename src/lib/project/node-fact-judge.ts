@@ -157,7 +157,7 @@ export async function judgeNodeFacts(
 
   // 2. Parse JSON. Reasoning models (e.g. minimax m3 via Ollama) often prepend
   //    prose or thinking tags before the JSON and may not use a code fence, so
-  //    try several recovery strategies before giving up.
+  //    try several recovery strategies before falling back.
   let parsed: unknown;
   try {
     parsed = JSON.parse(responseContent);
@@ -178,7 +178,12 @@ export async function judgeNodeFacts(
       }
     }
     if (!parsedOk) {
-      return { ok: false, error: "judge response was not valid JSON" };
+      // No JSON object anywhere — typically the model concluded in prose that
+      // there is nothing to record. Treat this as "no changes" rather than
+      // erroring: the answer text is already shown to the user, and the
+      // document simply isn't auto-updated this turn, identical to
+      // {"changes":[]}. Surfacing a parse error here only scares the user.
+      return { ok: true, decision: { changes: [] } };
     }
   }
 

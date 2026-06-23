@@ -209,11 +209,15 @@ describe("judgeNodeFacts", () => {
     expect(result.decision.changes[0].targetSectionKey).toBe("open_questions");
   });
 
-  it("returns ok:false for non-JSON response", async () => {
+  it("returns ok:true with empty changes for prose with no JSON", async () => {
+    // A prose reply with no JSON object means the model concluded there is
+    // nothing to record. Treat it as "no changes" instead of erroring.
     const fetchImpl = makeFetchImpl("this is not json");
 
     const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl });
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decision.changes).toEqual([]);
   });
 
   it("returns ok:false for network failure", async () => {
@@ -327,6 +331,21 @@ describe("judgeNodeFacts", () => {
 
   it("parses JSON after inline thinking tags", async () => {
     const fetchImpl = makeFetchImpl("<think>我先分析一下用户消息</think>\n{\"changes\":[]}");
+
+    const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decision.changes).toEqual([]);
+  });
+
+  it("returns empty changes when the judge replies with prose and no JSON", async () => {
+    // Some models, when they conclude there is nothing to record, reply in
+    // plain prose without any JSON object. Erroring here only surfaces a scary
+    // warning to the user for no benefit — the document simply isn't updated,
+    // same as {"changes":[]}. Treat unparseable prose as "no changes".
+    const fetchImpl = makeFetchImpl(
+      "根据用户消息和助手回复，没有需要记录的确认事实、假设或待确认问题，因此无需更新文档。",
+    );
 
     const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl });
     expect(result.ok).toBe(true);
