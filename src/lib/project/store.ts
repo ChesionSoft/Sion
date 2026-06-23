@@ -21,6 +21,8 @@ export class NodeRevisionConflictError extends Error {
 
 const nodeWriteLocks = new Map<string, Promise<unknown>>();
 
+export const MAX_CHAT_SESSIONS_PER_NODE = 50;
+
 export function getNodeWriteLockCount(): number {
   return nodeWriteLocks.size;
 }
@@ -184,8 +186,8 @@ export class ProjectStore {
     const sessions = [session, ...(await this.readSessionIndex(projectId, nodeId))].sort((a, b) =>
       b.createdAt.localeCompare(a.createdAt),
     );
-    const kept = sessions.slice(0, 10);
-    const pruned = sessions.slice(10);
+    const kept = sessions.slice(0, MAX_CHAT_SESSIONS_PER_NODE);
+    const pruned = sessions.slice(MAX_CHAT_SESSIONS_PER_NODE);
 
     await writeJson(this.sessionMessagesPath(projectId, nodeId, session.id), []);
     for (const item of pruned) {

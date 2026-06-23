@@ -109,16 +109,16 @@ describe("ProjectStore", () => {
     });
   });
 
-  it("keeps only the latest 10 chat sessions per node", async () => {
+  it("keeps only the latest 50 chat sessions per node", async () => {
     const store = new ProjectStore(rootDir);
     const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
 
-    for (let index = 0; index < 11; index += 1) {
+    for (let index = 0; index < 51; index += 1) {
       await store.createSession(project.id, "feature-design", `2026-06-14T11:${String(index).padStart(2, "0")}:00.000Z`);
     }
 
     const sessions = await store.listSessions(project.id, "feature-design");
-    expect(sessions).toHaveLength(10);
+    expect(sessions).toHaveLength(50);
     expect(sessions.at(-1)?.createdAt).toBe("2026-06-14T11:01:00.000Z");
   });
 

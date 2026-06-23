@@ -279,7 +279,9 @@ export function ChatPanel({
       return;
     }
 
-    setSessions((current) => [data.session as ChatSession, ...current].slice(0, 10));
+    // Mirror the server's MAX_CHAT_SESSIONS_PER_NODE cap so the local list
+    // stays in sync with what the store retains.
+    setSessions((current) => [data.session as ChatSession, ...current].slice(0, 50));
     sharedContext.setActiveSessionId(data.session.id);
     setMessages([]);
   }
