@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ChatMessageView } from "./chat-message";
 import type { ChatMessage, ExternalSource, TurnTokenUsage } from "@/lib/project/types";
 
@@ -89,5 +89,25 @@ describe("ChatMessageView", () => {
   it("shows 暂无统计 for historical assistant messages without usage", () => {
     render(<ChatMessageView message={baseAssistant} />);
     expect(screen.getByText("暂无统计")).toBeInTheDocument();
+  });
+
+  it("shows a copy button on assistant messages that copies the markdown source", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(
+      <ChatMessageView message={{ ...baseAssistant, content: "# 标题\n\n正文" }} />,
+    );
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    expect(writeText).toHaveBeenCalledWith("# 标题\n\n正文");
+  });
+
+  it("shows a copy button on user messages that copies the plain text", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<ChatMessageView message={{ id: "u-1", role: "user", content: "你好", createdAt: "x" }} />);
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    expect(writeText).toHaveBeenCalledWith("你好");
   });
 });

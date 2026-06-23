@@ -1,6 +1,9 @@
 "use client";
 
+import { BotIcon, CopyIcon, UserIcon } from "lucide-react";
+import { toast } from "sonner";
 import type { AgentActivityStage, ChatMessage, ExternalSource } from "@/lib/project/types";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { MarkdownContent } from "./markdown-content";
 import { TokenUsageDetails } from "./token-usage-details";
@@ -30,14 +33,35 @@ function isStageActive(stage: AgentActivityStage | undefined): stage is AgentAct
   return !!stage && ACTIVE_STAGES.has(stage);
 }
 
+async function copyMessage(message: ChatMessage) {
+  try {
+    await navigator.clipboard.writeText(message.content);
+    toast.success("已复制到剪贴板");
+  } catch {
+    toast.error("复制失败");
+  }
+}
+
 /**
- * Renders a single chat message. User/system messages stay on their existing
- * plain-text paths; assistant bodies delegate to the shared safe Markdown
- * renderer. Reasoning lives in a closed <details> that shows the live activity
- * summary while streaming and a historical "已思考 N 秒" once complete. Source
- * links and per-turn usage sit below the content.
+ * Renders a single chat message with a hover-revealed copy button and an icon
+ * avatar. User/system messages stay plain; assistant bodies delegate to the
+ * shared safe Markdown renderer. Reasoning, sources, and per-turn usage sit
+ * below the content.
  */
 export function ChatMessageView({ message, activity }: ChatMessageViewProps) {
+  const copyButton = (
+    <Button
+      aria-label="复制"
+      className="chat-message-copy absolute right-2 top-2 h-6 w-6 p-0"
+      onClick={() => copyMessage(message)}
+      size="icon-sm"
+      type="button"
+      variant="ghost"
+    >
+      <CopyIcon className="h-3.5 w-3.5" />
+    </Button>
+  );
+
   if (message.role === "system") {
     return (
       <div className="chat-message chat-message-system mx-auto max-w-[90%] rounded-lg bg-muted/20 px-3 py-2 text-center text-xs text-muted-foreground">
@@ -49,10 +73,16 @@ export function ChatMessageView({ message, activity }: ChatMessageViewProps) {
   if (message.role === "user") {
     return (
       <div
-        className="chat-message chat-message-user flex max-w-[85%] flex-col gap-1 self-end rounded-xl bg-foreground p-3.5 text-sm text-background"
+        className="chat-message chat-message-user group relative flex max-w-[85%] flex-col gap-1 self-end rounded-2xl bg-foreground p-3.5 text-sm text-background"
         data-role="user"
       >
-        <span className="text-xs text-background/70">你</span>
+        {copyButton}
+        <span className="flex items-center gap-1.5 text-xs text-background/70">
+          <span className="chat-avatar bg-background/15 text-background/80">
+            <UserIcon className="h-3 w-3" />
+          </span>
+          你
+        </span>
         <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
       </div>
     );
@@ -65,10 +95,16 @@ export function ChatMessageView({ message, activity }: ChatMessageViewProps) {
 
   return (
     <div
-      className="chat-message chat-message-assistant flex max-w-[85%] flex-col gap-1 self-start rounded-xl border bg-muted/40 p-3.5 text-sm text-foreground"
+      className="chat-message chat-message-assistant group relative flex max-w-[85%] flex-col gap-1 self-start rounded-2xl border bg-muted/40 p-3.5 text-sm text-foreground"
       data-role="assistant"
     >
-      <span className="text-xs text-muted-foreground">Agent</span>
+      {copyButton}
+      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span className="chat-avatar">
+          <BotIcon className="h-3 w-3" />
+        </span>
+        Agent
+      </span>
       {showReasoning ? (
         <details className="chat-reasoning group mb-2 rounded-md border bg-background/60 px-2 py-1.5" open={false}>
           <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground">
