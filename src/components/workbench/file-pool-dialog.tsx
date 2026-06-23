@@ -8,16 +8,42 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import type { ProjectFile } from "@/lib/project/types";
 
-const statusLabels: Record<ProjectFile["status"], string> = {
-  available: "可读取",
-  unsupported: "不支持",
-  read_failed: "读取失败",
+const kindLabels: Record<NonNullable<ProjectFile["kind"]>, string> = {
+  markdown: "Markdown",
+  text: "文本",
+  json: "JSON",
+  csv: "表格",
+  pdf: "PDF",
+  word: "Word",
+  excel: "Excel",
+  unsupported: "未知",
 };
+
+function getStatusLabel(file: ProjectFile): string {
+  const status = file.extractionStatus ?? (file.status === "available" ? "available" : file.status === "unsupported" ? "unsupported" : "failed");
+  if (status === "available") return "可引用";
+  if (status === "failed") return "解析失败";
+  return "暂不支持";
+}
+
+function getKindLabel(file: ProjectFile): string {
+  return file.kind ? kindLabels[file.kind] : file.extension.replace(".", "").toUpperCase() || "文件";
+}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatMeta(file: ProjectFile): string {
+  const parts = [formatSize(file.byteSize)];
+  if (file.characterCount) parts.push(`${file.characterCount.toLocaleString()} 字符`);
+  if (file.pageCount) parts.push(`${file.pageCount.toLocaleString()} 页`);
+  if (file.sheetCount) parts.push(`${file.sheetCount.toLocaleString()} 个工作表`);
+  if (file.truncated) parts.push("已截断");
+  parts.push(new Date(file.uploadedAt).toLocaleString("zh-CN"));
+  return parts.join(" · ");
 }
 
 export function FilePoolDialog({
@@ -120,13 +146,13 @@ export function FilePoolDialog({
         <DialogHeader>
           <DialogTitle>项目文件池</DialogTitle>
           <DialogDescription>
-            上传项目相关 Markdown 文档，在聊天时勾选后会随当前节点一起交给模型阅读。
+            上传项目资料。可解析的 PDF、DOCX、Excel、Markdown 和文本文件会在聊天时交给 Agent 阅读。
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-2">
             <input
-              accept=".md,text/markdown"
+              accept=".md,.markdown,.txt,.log,.json,.csv,.tsv,.pdf,.docx,.xlsx,.xls,.doc,text/markdown,text/plain,application/pdf"
               className="hidden"
               onChange={handleUpload}
               ref={fileInputRef}
@@ -139,7 +165,7 @@ export function FilePoolDialog({
               variant="outline"
             >
               <UploadIcon data-icon="inline-start" />
-              {uploading ? "正在读取文件..." : "上传 Markdown 文件"}
+              {uploading ? "正在读取文件..." : "上传项目资料"}
             </Button>
           </div>
 
@@ -161,16 +187,15 @@ export function FilePoolDialog({
                       <div className="flex items-center gap-2">
                         <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="truncate text-sm font-medium">{file.originalName}</span>
+                        <Badge variant="outline">{getKindLabel(file)}</Badge>
                         <Badge variant={file.status === "available" ? "secondary" : "outline"}>
-                          {statusLabels[file.status]}
+                          {getStatusLabel(file)}
                         </Badge>
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        {formatSize(file.byteSize)}
-                        {file.characterCount ? ` · ${file.characterCount.toLocaleString()} 字符` : ""}
-                        {" · "}
-                        {new Date(file.uploadedAt).toLocaleString("zh-CN")}
-                      </p>
+                      <p className="text-xs text-muted-foreground">{formatMeta(file)}</p>
+                      {file.extractionError ? (
+                        <p className="text-xs text-muted-foreground">{file.extractionError}</p>
+                      ) : null}
                     </div>
                     <Button
                       onClick={() => handleDelete(file.id)}

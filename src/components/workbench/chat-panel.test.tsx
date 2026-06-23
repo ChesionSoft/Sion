@@ -1373,4 +1373,65 @@ describe("ChatPanel", () => {
     expect(document.querySelector('.agent-activity[data-stage="completed"]')).toBeNull();
     expect(document.querySelector('[data-role="assistant"]')).toHaveTextContent("部分");
   });
+
+  it("only offers readable project files in the attachment picker", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/settings/model-providers")) {
+        return new Response(JSON.stringify({ providers: defaultProviders }));
+      }
+      if (url.includes("/files")) {
+        return new Response(JSON.stringify({
+          files: [
+            {
+              id: "ok",
+              originalName: "需求.pdf",
+              storedName: "ok.pdf",
+              extension: ".pdf",
+              mimeType: "application/pdf",
+              byteSize: 1000,
+              uploadedAt: "2026-06-23T10:00:00.000Z",
+              status: "available",
+              kind: "pdf",
+              extractionStatus: "available",
+              textPath: "ok.txt",
+              characterCount: 500,
+            },
+            {
+              id: "bad",
+              originalName: "扫描件.pdf",
+              storedName: "bad.pdf",
+              extension: ".pdf",
+              mimeType: "application/pdf",
+              byteSize: 1000,
+              uploadedAt: "2026-06-23T10:00:00.000Z",
+              status: "read_failed",
+              kind: "pdf",
+              extractionStatus: "failed",
+              extractionError: "PDF 未包含可提取文本",
+            },
+          ],
+        }));
+      }
+      if (url.includes("/chat/sessions/s-1")) {
+        return new Response(JSON.stringify({ messages: [] }));
+      }
+      if (url.includes("/chat/sessions")) {
+        return new Response(JSON.stringify({
+          sessions: [{ id: "s-1", nodeId: "feature-design", name: "6月23日 10:00", messageCount: 0, webSearchEnabled: false, createdAt: "2026-06-23T10:00:00.000Z", updatedAt: "2026-06-23T10:00:00.000Z" }],
+        }));
+      }
+      return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+    }) as unknown as typeof fetch);
+
+    const sharedContext = createMockSharedContext();
+    render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={sharedContext} onGenStateChange={() => {}} />,
+    );
+    await user.click(await screen.findByTitle("添加文件附件"));
+
+    expect(screen.getByText("需求.pdf")).toBeInTheDocument();
+    expect(screen.queryByText("扫描件.pdf")).not.toBeInTheDocument();
+  });
 });

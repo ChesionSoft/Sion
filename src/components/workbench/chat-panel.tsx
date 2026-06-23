@@ -42,6 +42,16 @@ const REASONING_OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
   { value: "xhigh", label: "超高" },
 ];
 
+// Client-local mirror of the server's isReadableProjectFile. Kept here so the
+// client bundle does not pull in the server-only parser modules, and so the
+// picker filters on the same readable metadata the chat route honors.
+function isReadableFile(file: ProjectFile): boolean {
+  if (file.extractionStatus) {
+    return file.extractionStatus === "available" && file.status === "available" && Boolean(file.textPath);
+  }
+  return file.status === "available" && Boolean(file.textPath);
+}
+
 type StreamingTextBufferState = {
   content: string;
   reasoningContent: string;
@@ -368,7 +378,8 @@ export function ChatPanel({
 
   const selectedProvider = sharedContext.providers.find((p) => p.id === sharedContext.providerId);
   const selectedReasoning = REASONING_OPTIONS.find((option) => option.value === sharedContext.reasoningEffort) ?? REASONING_OPTIONS[1];
-  const selectedFiles = projectFiles.filter((f) => selectedFileIds.includes(f.id));
+  const readableProjectFiles = projectFiles.filter(isReadableFile);
+  const selectedFiles = readableProjectFiles.filter((f) => selectedFileIds.includes(f.id));
 
   function selectModel(provider: ModelProvider, modelName: string) {
     sharedContext.setProviderId(provider.id);
@@ -876,11 +887,10 @@ export function ChatPanel({
               ))}
               {filePopoverOpen ? (
                 <div className="absolute bottom-12 left-0 z-30 w-56 rounded-xl border bg-popover p-1.5 shadow-xl">
-                  {projectFiles.filter((f) => f.status === "available").length === 0 ? (
+                  {readableProjectFiles.length === 0 ? (
                     <p className="px-2 py-1.5 text-xs text-muted-foreground">暂无可添加的文件</p>
                   ) : (
-                    projectFiles
-                      .filter((f) => f.status === "available")
+                    readableProjectFiles
                       .map((file) => (
                         <label
                           key={file.id}
