@@ -1,5 +1,3 @@
-import type { ProjectNode } from "./types";
-
 /**
  * Extract bullet items from a `## <headingText>` section in markdown.
  * Returns the text after the leading `- ` for each bullet, stopping at
@@ -92,22 +90,4 @@ function mergeListIntoSection(markdown: string, headingText: string, items: stri
   const insertLines = newItems.map((item) => `- ${item}`);
 
   return [...before, ...insertLines, ...after].join("\n");
-}
-
-/**
- * Collect all unique assumptions from all nodes by extracting from
- * the "设计假设" section of each node's markdown.
- */
-export function collectNodeAssumptions(nodes: ProjectNode[]): string[] {
-  const all = nodes.flatMap((node) => extractSectionBullets(node.markdown, "设计假设"));
-  return [...new Set(all)];
-}
-
-/**
- * Collect all unique open questions from all nodes by extracting from
- * the "待确认问题" section of each node's markdown.
- */
-export function collectNodeOpenQuestions(nodes: ProjectNode[]): string[] {
-  const all = nodes.flatMap((node) => extractSectionBullets(node.markdown, "待确认问题"));
-  return [...new Set(all)];
 }

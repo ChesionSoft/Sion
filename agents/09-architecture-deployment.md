@@ -16,9 +16,6 @@
 
 LLM 写交付稿时必须按此结构组织。列出本节点 Schema 的所有 section，按 schema 顺序：
 
-### 已确认内容 [必填]
-记录用户已明确确认的事实。对应 sectionKey `confirmed`，供自动写入。
-
 ### 技术栈 [必填]
 选用的技术栈和版本说明。对应 sectionKey `stack`，供自动写入。
 
@@ -28,17 +25,12 @@ LLM 写交付稿时必须按此结构组织。列出本节点 Schema 的所有 s
 ### 依赖清单 [可选]
 第三方依赖和服务清单。对应 sectionKey `dependencies`，供自动写入。
 
-### 设计假设 [必填]
-记录 Agent 推断的设计假设。对应 sectionKey `assumptions`，供自动写入。
-
-### 待确认问题 [必填]
-记录需要用户确认的问题。对应 sectionKey `open_questions`，供自动写入。
-
 ## 事实判定规则
 
-- 用户明确陈述 = confirmed_fact，evidence.source=user，quote 引用用户原话
-- Agent 推断 = assumption，落到"设计假设"小节
-- 不确定/用户说"再想想" = open_question，落到"待确认问题"小节
+- 用户明确陈述 = confirmed_fact，evidence.source=user，quote 引用用户原话，直接写进对应正文小节
+- Agent 分析/检索生成的内容 = assumption，同样直接写进对应正文小节，不要单独开"设计假设"小节
+- 不确定、需要用户澄清 = open_question，只在聊天里追问，绝不写进交付稿
+- 缺信息时要么联网检索、要么基于已有信息分析生成并写进正文，不要留空、不要堆"假设"标签
 
 ## 追问策略
 

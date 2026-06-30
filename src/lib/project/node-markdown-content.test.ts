@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  collectNodeAssumptions,
-  collectNodeOpenQuestions,
   extractSectionBullets,
   mergeLegacyNodeListsIntoMarkdown,
 } from "./node-markdown-content";
-import type { ProjectNode } from "./types";
 
 describe("extractSectionBullets", () => {
   const markdown = [
@@ -150,129 +147,5 @@ describe("mergeLegacyNodeListsIntoMarkdown", () => {
     ].join("\n");
     const result = mergeLegacyNodeListsIntoMarkdown(markdown, ["已有假设"]);
     expect(extractSectionBullets(result, "设计假设")).toEqual(["已有假设"]);
-  });
-});
-
-describe("collectNodeAssumptions", () => {
-  it("collects assumptions from all nodes", () => {
-    const nodes: ProjectNode[] = [
-      {
-        id: "basic-info",
-        status: "confirmed",
-        markdown: [
-          "## 设计假设",
-          "",
-          "- 假设A",
-          "",
-        ].join("\n"),
-        revision: 0,
-        updatedAt: "2026-06-14T10:00:00.000Z",
-      },
-      {
-        id: "feature-design",
-        status: "generated",
-        markdown: [
-          "## 设计假设",
-          "",
-          "- 假设B",
-          "",
-        ].join("\n"),
-        revision: 0,
-        updatedAt: "2026-06-14T10:00:00.000Z",
-      },
-    ];
-    expect(collectNodeAssumptions(nodes)).toEqual(["假设A", "假设B"]);
-  });
-
-  it("deduplicates assumptions across nodes", () => {
-    const nodes: ProjectNode[] = [
-      {
-        id: "basic-info",
-        status: "confirmed",
-        markdown: [
-          "## 设计假设",
-          "",
-          "- 重复假设",
-          "",
-        ].join("\n"),
-        revision: 0,
-        updatedAt: "2026-06-14T10:00:00.000Z",
-      },
-      {
-        id: "feature-design",
-        status: "generated",
-        markdown: [
-          "## 设计假设",
-          "",
-          "- 重复假设",
-          "",
-        ].join("\n"),
-        revision: 0,
-        updatedAt: "2026-06-14T10:00:00.000Z",
-      },
-    ];
-    expect(collectNodeAssumptions(nodes)).toEqual(["重复假设"]);
-  });
-});
-
-describe("collectNodeOpenQuestions", () => {
-  it("collects open questions from all nodes", () => {
-    const nodes: ProjectNode[] = [
-      {
-        id: "basic-info",
-        status: "confirmed",
-        markdown: [
-          "## 待确认问题",
-          "",
-          "- 问题A",
-          "",
-        ].join("\n"),
-        revision: 0,
-        updatedAt: "2026-06-14T10:00:00.000Z",
-      },
-      {
-        id: "feature-design",
-        status: "generated",
-        markdown: [
-          "## 待确认问题",
-          "",
-          "- 问题B",
-          "",
-        ].join("\n"),
-        revision: 0,
-        updatedAt: "2026-06-14T10:00:00.000Z",
-      },
-    ];
-    expect(collectNodeOpenQuestions(nodes)).toEqual(["问题A", "问题B"]);
-  });
-
-  it("deduplicates open questions across nodes", () => {
-    const nodes: ProjectNode[] = [
-      {
-        id: "basic-info",
-        status: "confirmed",
-        markdown: [
-          "## 待确认问题",
-          "",
-          "- 重复问题",
-          "",
-        ].join("\n"),
-        revision: 0,
-        updatedAt: "2026-06-14T10:00:00.000Z",
-      },
-      {
-        id: "feature-design",
-        status: "generated",
-        markdown: [
-          "## 待确认问题",
-          "",
-          "- 重复问题",
-          "",
-        ].join("\n"),
-        revision: 0,
-        updatedAt: "2026-06-14T10:00:00.000Z",
-      },
-    ];
-    expect(collectNodeOpenQuestions(nodes)).toEqual(["重复问题"]);
   });
 });

@@ -11,7 +11,7 @@ describe("streamNodeMarkdownRewrite", () => {
         start(controller) {
           controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"思考中..."}}]}\n\n'));
           controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"# 项目基本信息"}}]}\n\n'));
-          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"\\n\\n## 已确认内容"}}]}\n\n'));
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"\\n\\n## 基础信息表"}}]}\n\n'));
           controller.enqueue(encoder.encode("data: [DONE]\n\n"));
           controller.close();
         },
@@ -32,7 +32,7 @@ describe("streamNodeMarkdownRewrite", () => {
       tokens.push(token);
     }
 
-    expect(tokens.join("")).toBe("# 项目基本信息\n\n## 已确认内容");
+    expect(tokens.join("")).toBe("# 项目基本信息\n\n## 基础信息表");
   });
 
   it("forwards abort signal to the underlying LLM call", async () => {
@@ -147,11 +147,13 @@ describe("streamNodeMarkdownRewrite", () => {
       messages: Array<{ role: string; content: string }>;
     };
     const systemMsg = body.messages[0].content;
-    expect(systemMsg).toContain("已确认内容");
+    // The system prompt lists the node's real content sections only.
     expect(systemMsg).toContain("基础信息表");
     expect(systemMsg).toContain("项目边界");
-    expect(systemMsg).toContain("设计假设");
-    expect(systemMsg).toContain("待确认问题");
+    // The removed meta-sections must no longer appear in the prompt.
+    expect(systemMsg).not.toContain("已确认内容");
+    expect(systemMsg).not.toContain("设计假设");
+    expect(systemMsg).not.toContain("待确认问题");
   });
 });
 
@@ -159,10 +161,6 @@ describe("validateRewrittenNodeMarkdown", () => {
   it("passes valid markdown with correct H1 and all required sections in order", () => {
     const result = validateRewrittenNodeMarkdown("basic-info", [
       "# 项目基本信息",
-      "",
-      "## 已确认内容",
-      "",
-      "确认内容",
       "",
       "## 基础信息表",
       "",
@@ -173,14 +171,6 @@ describe("validateRewrittenNodeMarkdown", () => {
       "## 项目边界",
       "",
       "边界内容",
-      "",
-      "## 设计假设",
-      "",
-      "- 假设1",
-      "",
-      "## 待确认问题",
-      "",
-      "- 问题1",
     ].join("\n"));
 
     expect(result).toEqual({ ok: true });
@@ -200,7 +190,7 @@ describe("validateRewrittenNodeMarkdown", () => {
     const result = validateRewrittenNodeMarkdown("basic-info", [
       "# 错误标题",
       "",
-      "## 已确认内容",
+      "## 基础信息表",
       "",
       "内容",
     ].join("\n"));
@@ -210,7 +200,7 @@ describe("validateRewrittenNodeMarkdown", () => {
 
   it("fails when there is no H1", () => {
     const result = validateRewrittenNodeMarkdown("basic-info", [
-      "## 已确认内容",
+      "## 基础信息表",
       "",
       "内容",
     ].join("\n"));
@@ -222,34 +212,18 @@ describe("validateRewrittenNodeMarkdown", () => {
     const result = validateRewrittenNodeMarkdown("basic-info", [
       "# 项目基本信息",
       "",
-      "## 已确认内容",
-      "",
-      "内容",
-      "",
       "## 基础信息表",
       "",
       "表内容",
-      "",
-      "## 项目边界",
-      "",
-      "边界",
-      "",
-      "## 设计假设",
-      "",
-      "- 假设",
-      // 待确认问题 is missing
+      // 项目边界 is missing
     ].join("\n"));
 
-    expect(result).toEqual({ ok: false, error: "缺少必填小节：待确认问题" });
+    expect(result).toEqual({ ok: false, error: "缺少必填小节：项目边界" });
   });
 
   it("fails when sections are in wrong order", () => {
     const result = validateRewrittenNodeMarkdown("basic-info", [
       "# 项目基本信息",
-      "",
-      "## 已确认内容",
-      "",
-      "内容",
       "",
       "## 项目边界",
       "",
@@ -258,14 +232,6 @@ describe("validateRewrittenNodeMarkdown", () => {
       "## 基础信息表", // 基础信息表 should come before 项目边界
       "",
       "| 字段 | 值 |",
-      "",
-      "## 设计假设",
-      "",
-      "- 假设",
-      "",
-      "## 待确认问题",
-      "",
-      "- 问题",
     ].join("\n"));
 
     expect(result).toEqual({ ok: false, error: "小节顺序与骨架不一致" });
@@ -274,10 +240,6 @@ describe("validateRewrittenNodeMarkdown", () => {
   it("fails when markdown contains another node's title as a heading", () => {
     const result = validateRewrittenNodeMarkdown("basic-info", [
       "# 项目基本信息",
-      "",
-      "## 已确认内容",
-      "",
-      "内容",
       "",
       "## 基础信息表",
       "",
@@ -290,14 +252,6 @@ describe("validateRewrittenNodeMarkdown", () => {
       "## 需求背景与建设目标", // This is goals node's title
       "",
       "背景内容",
-      "",
-      "## 设计假设",
-      "",
-      "- 假设",
-      "",
-      "## 待确认问题",
-      "",
-      "- 问题",
     ].join("\n"));
 
     expect(result).toEqual({ ok: false, error: "包含其他节点的标题" });
@@ -308,23 +262,11 @@ describe("validateRewrittenNodeMarkdown", () => {
     const result = validateRewrittenNodeMarkdown("roles-permissions", [
       "# 用户角色与权限",
       "",
-      "## 已确认内容",
-      "",
-      "内容",
-      "",
       "## 角色清单",
       "",
       "| 角色 | 职责 | 备注 |",
       "|------|------|------|",
       "| 管理员 | 管理 | 全部 |",
-      "",
-      "## 设计假设",
-      "",
-      "- 假设",
-      "",
-      "## 待确认问题",
-      "",
-      "- 问题",
     ].join("\n"));
 
     expect(result).toEqual({ ok: true });
@@ -334,10 +276,6 @@ describe("validateRewrittenNodeMarkdown", () => {
     const result = validateRewrittenNodeMarkdown("roles-permissions", [
       "# 用户角色与权限",
       "",
-      "## 已确认内容",
-      "",
-      "内容",
-      "",
       "## 角色清单",
       "",
       "| 角色 | 职责 | 备注 |",
@@ -345,14 +283,6 @@ describe("validateRewrittenNodeMarkdown", () => {
       "## 权限矩阵",
       "",
       "| 角色 | 模块 | 权限 |",
-      "",
-      "## 设计假设",
-      "",
-      "- 假设",
-      "",
-      "## 待确认问题",
-      "",
-      "- 问题",
     ].join("\n"));
 
     expect(result).toEqual({ ok: true });

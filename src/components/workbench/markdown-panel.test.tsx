@@ -218,7 +218,7 @@ describe("MarkdownPanel", () => {
     const patches = [
       {
         category: "confirmed_fact" as const,
-        targetSectionKey: "confirmed" as const,
+        targetSectionKey: "boundary" as const,
         patchKind: "append_bullet" as const,
         markdown: "New info",
         evidence: { source: "assistant" as const, quote: "test" },
@@ -230,7 +230,7 @@ describe("MarkdownPanel", () => {
         JSON.stringify({
           node: {
             ...localNode,
-            markdown: "# 1. 项目基本信息\n\n## 已确认内容\n\nKnown item.\n\n- New info\n\n## 设计假设\n\n## 待确认问题\n",
+            markdown: "# 1. 项目基本信息\n\n## 项目边界\n\nKnown item.\n\n- New info\n",
             revision: 1,
           },
         }),
@@ -266,7 +266,7 @@ describe("MarkdownPanel", () => {
     const patches = [
       {
         category: "confirmed_fact" as const,
-        targetSectionKey: "confirmed" as const,
+        targetSectionKey: "boundary" as const,
         patchKind: "append_bullet" as const,
         markdown: "Do not apply",
         evidence: { source: "assistant" as const, quote: "test" },

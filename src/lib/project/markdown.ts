@@ -1,6 +1,5 @@
 import { WORKFLOW_NODES } from "./nodes";
 import type { Project, ProjectNode } from "./types";
-import { collectNodeAssumptions, collectNodeOpenQuestions } from "./node-markdown-content";
 
 export function assembleProjectDesignMarkdown(project: Project, nodes: ProjectNode[]): string {
   const orderedNodes = orderNodes(nodes);
@@ -28,14 +27,6 @@ export function assembleProjectDesignMarkdown(project: Project, nodes: ProjectNo
     `| ${project.version} | ${new Date().toISOString().slice(0, 10)} | 初版 | ${project.authorName || "未填写"} |`,
     "",
     ...sections,
-    "",
-    "## 汇总设计假设",
-    "",
-    ...collectListItems(collectNodeAssumptions(orderedNodes)),
-    "",
-    "## 汇总待确认事项",
-    "",
-    ...collectListItems(collectNodeOpenQuestions(orderedNodes)),
     "",
   ].join("\n");
 }
@@ -71,9 +62,7 @@ export function createTasksMarkdown(project: Project, nodes: ProjectNode[]): str
   ].join("\n");
 }
 
-export function createAgentsMarkdown(project: Project, nodes: ProjectNode[]): string {
-  const openQuestions = collectNodeOpenQuestions(nodes);
-
+export function createAgentsMarkdown(project: Project): string {
   return [
     "# AGENTS.md",
     "",
@@ -85,10 +74,6 @@ export function createAgentsMarkdown(project: Project, nodes: ProjectNode[]): st
     "- 不确定的业务规则不要擅自扩展，先在代码或任务中标记需要确认。",
     "- 实现前先阅读 TASKS.md，并按任务依赖顺序推进。",
     "- 涉及数据结构、接口或权限变更时，同步更新相关文档。",
-    "",
-    "## 当前待确认事项",
-    "",
-    ...collectListItems(openQuestions),
     "",
   ].join("\n");
 }
@@ -103,8 +88,4 @@ function orderNodes(nodes: ProjectNode[]): ProjectNode[] {
 
 function stripFirstHeading(markdown: string): string {
   return markdown.replace(/^# .+\n*/, "").trim();
-}
-
-function collectListItems(items: string[]): string[] {
-  return items.length > 0 ? items.map((item) => `- ${item}`) : ["- 暂无。"];
 }

@@ -79,16 +79,16 @@ function buildSystemPrompt(nodeId: WorkflowNodeId, externalSources: ExternalSour
     .map((s) => `- sourceId: "${s.id}", title: "${s.title}", url: "${s.url}"`)
     .join("\n");
 
-  return `You are a fact-checking judge. Analyze the user's message and the assistant's response to extract structured facts.
+  return `You are a fact-checking judge. Analyze the user's message and the assistant's response to extract structured facts and write them into the node's content sections.
 
 Output strict JSON only, with this shape:
 {"changes":[{"category":"confirmed_fact|assumption|open_question","targetSectionKey":"<sectionKey>","patchKind":"append_bullet|append_block|append_table_row","markdown":"<markdown content>","evidence":{"source":"user|assistant|external","quote":"<exact quote>","sourceId":"<external source id, only when source=external>"}}]}
 
 Rules:
-- confirmed_fact: The user explicitly stated this. Requires evidence.source="user" and evidence.quote must be a verbatim substring from the user's message.
-- assumption: The assistant inferred or suggested something the user didn't explicitly confirm. evidence.source should be "assistant".
-- open_question: Something that needs clarification. evidence.source should be "assistant".
-- external: A claim sourced from an external URL the user pasted. Use evidence.source="external" with evidence.sourceId set to one of the listed external source ids. External evidence is never a confirmed fact.
+- confirmed_fact: The user explicitly stated this. Requires evidence.source="user" and evidence.quote must be a verbatim substring from the user's message. Write it into the content section it belongs to.
+- assumption: Anything the assistant inferred, analyzed, or generated (including from web search). It is NOT a separate "assumptions" bucket — write it directly into the content section it belongs to, as normal content. evidence.source should be "assistant" (or "external" when sourced from a fetched URL).
+- open_question: Something that needs clarification from the user. DO NOT emit a change for this — open questions belong in the chat conversation, never in the delivery document.
+- external: A claim sourced from an external URL the user pasted. Use evidence.source="external" with evidence.sourceId set to one of the listed external source ids. External evidence is never a confirmed fact; emit it as an assumption written into the relevant content section.
 - If there are no changes, return {"changes":[]}.
 
 markdown format by patchKind:
@@ -96,7 +96,7 @@ markdown format by patchKind:
 - append_block: a short paragraph. Do not include a heading.
 - append_table_row: a single GFM table data row. The number of pipe-separated cells MUST exactly equal the section's tableColumns length. Example: if tableColumns is ["模块名","职责","优先级"], the row MUST be "| 客户管理 | 管理客户档案 | P0 |" (3 cells). Do NOT emit fewer or more cells. Do not include a header or separator row — only the data row.
 
-Available sections for this node:
+Available sections for this node (these are the ONLY sections you may write into — there is no "confirmed", "assumptions", or "open_questions" section):
 ${sectionsList}
 
 External sources referenced this turn (never treat as confirmed facts):
@@ -245,23 +245,12 @@ export async function judgeNodeFacts(
       }
     }
 
-    // 4h. Category→section forced mapping
-    if (patch.category === "assumption") {
-      patch = {
-        ...patch,
-        targetSectionKey: "assumptions",
-        patchKind: "append_bullet",
-      };
-    } else if (patch.category === "open_question") {
-      patch = {
-        ...patch,
-        targetSectionKey: "open_questions",
-        patchKind: "append_bullet",
-      };
-    }
-    // confirmed_fact: keep the model's targetSectionKey
+    // 4i. open_question never enters the delivery document — it belongs in the
+    // chat conversation. Drop it rather than writing it anywhere.
+    if (patch.category === "open_question") continue;
 
-    // 4i. Re-validate after mapping
+    // confirmed_fact and assumption both keep the model's chosen targetSectionKey
+    // (a real content section) and patchKind; re-validate against that section.
     const mappedSection = getDeliverySection(
       input.nodeId,
       patch.targetSectionKey,

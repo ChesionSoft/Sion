@@ -51,8 +51,11 @@ describe("markdown generation", () => {
     expect(markdown).toContain("客户名称：示例客户");
     expect(markdown).toContain("## 1. 项目基本信息");
     expect(markdown).toContain("- 入库管理");
-    expect(markdown).toContain("## 汇总待确认事项");
-    expect(markdown).toContain("是否需要扫码入库？");
+    // The aggregated assumptions/open-questions sections were removed — the
+    // per-node delivery docs no longer carry those meta-sections, so the
+    // export must not ship empty 汇总 headers.
+    expect(markdown).not.toContain("汇总设计假设");
+    expect(markdown).not.toContain("汇总待确认事项");
   });
 
   it("creates developer-oriented SPEC.md", () => {
@@ -63,6 +66,8 @@ describe("markdown generation", () => {
 
   it("creates TASKS.md and AGENTS.md", () => {
     expect(createTasksMarkdown(project, nodes)).toContain("# 库存管理系统 开发任务");
-    expect(createAgentsMarkdown(project, nodes)).toContain("# AGENTS.md");
+    const agents = createAgentsMarkdown(project);
+    expect(agents).toContain("# AGENTS.md");
+    expect(agents).not.toContain("当前待确认事项");
   });
 });

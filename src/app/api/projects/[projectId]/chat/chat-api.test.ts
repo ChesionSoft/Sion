@@ -365,9 +365,9 @@ describe("chat API SSE and persistence", () => {
   it("emits markdown_start and markdown_patch_preview when judge returns changes", async () => {
     const changesPatch: NodeMarkdownPatch = {
       category: "confirmed_fact",
-      targetSectionKey: "confirmed",
-      patchKind: "append_bullet",
-      markdown: "- 客户管理功能包含 CRUD",
+      targetSectionKey: "module_details",
+      patchKind: "append_block",
+      markdown: "客户管理功能包含 CRUD",
       evidence: { source: "user", quote: "客户管理" },
     };
     const { judgeNodeFacts } = await import("@/lib/project/node-fact-judge");

@@ -27,7 +27,7 @@ describe("judgeNodeFacts", () => {
         changes: [
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 客户管理",
             evidence: { source: "user", quote: "需要客户管理" },
@@ -41,7 +41,7 @@ describe("judgeNodeFacts", () => {
     if (!result.ok) return;
     expect(result.decision.changes).toHaveLength(1);
     expect(result.decision.changes[0].category).toBe("confirmed_fact");
-    expect(result.decision.changes[0].targetSectionKey).toBe("confirmed");
+    expect(result.decision.changes[0].targetSectionKey).toBe("boundary");
   });
 
   it("drops invalid change without affecting valid ones", async () => {
@@ -57,7 +57,7 @@ describe("judgeNodeFacts", () => {
           },
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 客户管理",
             evidence: { source: "user", quote: "需要客户管理" },
@@ -70,7 +70,7 @@ describe("judgeNodeFacts", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.decision.changes).toHaveLength(1);
-    expect(result.decision.changes[0].targetSectionKey).toBe("confirmed");
+    expect(result.decision.changes[0].targetSectionKey).toBe("boundary");
   });
 
   it("drops change with unknown section key", async () => {
@@ -95,13 +95,14 @@ describe("judgeNodeFacts", () => {
   });
 
   it("drops change with invalid patchKind for section", async () => {
+    // metadata only allows append_table_row; append_bullet must be rejected.
     const fetchImpl = makeFetchImpl(
       JSON.stringify({
         changes: [
           {
             category: "confirmed_fact",
-            targetSectionKey: "assumptions",
-            patchKind: "append_table_row",
+            targetSectionKey: "metadata",
+            patchKind: "append_bullet",
             markdown: "- 客户管理",
             evidence: { source: "user", quote: "需要客户管理" },
           },
@@ -115,13 +116,36 @@ describe("judgeNodeFacts", () => {
     expect(result.decision.changes).toHaveLength(0);
   });
 
-  it("downgrades confirmed_fact when quote is not a user message substring", async () => {
+  it("keeps confirmed_fact in the model's chosen content section when quote matches", async () => {
     const fetchImpl = makeFetchImpl(
       JSON.stringify({
         changes: [
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "metadata",
+            patchKind: "append_table_row",
+            markdown: "| 项目名称 | 客户管理系统 |",
+            evidence: { source: "user", quote: "需要客户管理" },
+          },
+        ],
+      }),
+    );
+
+    const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.decision.changes).toHaveLength(1);
+    expect(result.decision.changes[0].category).toBe("confirmed_fact");
+    expect(result.decision.changes[0].targetSectionKey).toBe("metadata");
+  });
+
+  it("downgrades confirmed_fact to assumption (kept in content section) when quote is not a user message substring", async () => {
+    const fetchImpl = makeFetchImpl(
+      JSON.stringify({
+        changes: [
+          {
+            category: "confirmed_fact",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 客户管理",
             evidence: { source: "user", quote: "需要客户管理" },
@@ -139,16 +163,17 @@ describe("judgeNodeFacts", () => {
     if (!result.ok) return;
     expect(result.decision.changes).toHaveLength(1);
     expect(result.decision.changes[0].category).toBe("assumption");
-    expect(result.decision.changes[0].targetSectionKey).toBe("assumptions");
+    // assumption keeps the model's chosen content section — no separate bucket.
+    expect(result.decision.changes[0].targetSectionKey).toBe("boundary");
   });
 
-  it("downgrades confirmed_fact with assistant source to assumption", async () => {
+  it("downgrades confirmed_fact with assistant source to assumption kept in content section", async () => {
     const fetchImpl = makeFetchImpl(
       JSON.stringify({
         changes: [
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 客户管理",
             evidence: { source: "assistant", quote: "需要客户管理" },
@@ -162,16 +187,16 @@ describe("judgeNodeFacts", () => {
     if (!result.ok) return;
     expect(result.decision.changes).toHaveLength(1);
     expect(result.decision.changes[0].category).toBe("assumption");
-    expect(result.decision.changes[0].targetSectionKey).toBe("assumptions");
+    expect(result.decision.changes[0].targetSectionKey).toBe("boundary");
   });
 
-  it("forces assumption to assumptions section", async () => {
+  it("keeps assumption in the model's chosen content section", async () => {
     const fetchImpl = makeFetchImpl(
       JSON.stringify({
         changes: [
           {
             category: "assumption",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 客户管理",
             evidence: { source: "assistant", quote: "需要客户管理" },
@@ -184,18 +209,19 @@ describe("judgeNodeFacts", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.decision.changes).toHaveLength(1);
-    expect(result.decision.changes[0].targetSectionKey).toBe("assumptions");
+    expect(result.decision.changes[0].category).toBe("assumption");
+    expect(result.decision.changes[0].targetSectionKey).toBe("boundary");
   });
 
-  it("forces open_question to open_questions section", async () => {
+  it("drops open_question changes — questions belong in chat, not the document", async () => {
     const fetchImpl = makeFetchImpl(
       JSON.stringify({
         changes: [
           {
             category: "open_question",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
-            markdown: "- 客户管理",
+            markdown: "- 是否需要扫码入库？",
             evidence: { source: "assistant", quote: "需要客户管理" },
           },
         ],
@@ -205,8 +231,7 @@ describe("judgeNodeFacts", () => {
     const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.decision.changes).toHaveLength(1);
-    expect(result.decision.changes[0].targetSectionKey).toBe("open_questions");
+    expect(result.decision.changes).toEqual([]);
   });
 
   it("returns ok:true with empty changes for prose with no JSON", async () => {
@@ -244,7 +269,7 @@ describe("judgeNodeFacts", () => {
         changes: [
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "## sub\n- foo",
             evidence: { source: "user", quote: "需要客户管理" },
@@ -306,6 +331,18 @@ describe("judgeNodeFacts", () => {
     expect(prompt).toContain("值");
   });
 
+  it("tells the judge there is no confirmed/assumptions/open_questions section", async () => {
+    const fetchImpl = makeFetchImpl(JSON.stringify({ changes: [] }));
+
+    await judgeNodeFacts({ ...BASE_INPUT, fetchImpl });
+
+    const callBody = JSON.parse(
+      (fetchImpl.mock.calls[0][1] as { body: string }).body,
+    ) as { messages: Array<{ role: string; content: string }> };
+    const prompt = callBody.messages.map((message) => message.content).join("\n");
+    expect(prompt).toContain("no \"confirmed\", \"assumptions\", or \"open_questions\" section");
+  });
+
   it("parses JSON inside ```json fence", async () => {
     const fetchImpl = makeFetchImpl("```json\n{\"changes\":[]}\n```");
 
@@ -330,7 +367,7 @@ describe("judgeNodeFacts", () => {
   });
 
   it("parses JSON after inline thinking tags", async () => {
-    const fetchImpl = makeFetchImpl("<think>我先分析一下用户消息</think>\n{\"changes\":[]}");
+    const fetchImpl = makeFetchImpl("我先分析一下用户消息\n{\"changes\":[]}");
 
     const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl });
     expect(result.ok).toBe(true);
@@ -353,7 +390,7 @@ describe("judgeNodeFacts", () => {
     expect(result.decision.changes).toEqual([]);
   });
 
-  it("accepts valid external assumptions", async () => {
+  it("accepts valid external assumptions written into a content section", async () => {
     const source = {
       id: "src-1",
       kind: "provided_url" as const,
@@ -368,7 +405,7 @@ describe("judgeNodeFacts", () => {
         changes: [
           {
             category: "assumption",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 来自外部",
             evidence: { source: "external", sourceId: "src-1", quote: "片段" },
@@ -382,10 +419,11 @@ describe("judgeNodeFacts", () => {
     if (!result.ok) return;
     expect(result.decision.changes).toHaveLength(1);
     expect(result.decision.changes[0].category).toBe("assumption");
-    expect(result.decision.changes[0].targetSectionKey).toBe("assumptions");
+    // external/inferred content goes into the content section, not a bucket.
+    expect(result.decision.changes[0].targetSectionKey).toBe("boundary");
   });
 
-  it("downgrades externally sourced confirmed facts to assumptions", async () => {
+  it("downgrades externally sourced confirmed facts to assumptions kept in content section", async () => {
     const source = {
       id: "src-1",
       kind: "provided_url" as const,
@@ -400,7 +438,7 @@ describe("judgeNodeFacts", () => {
         changes: [
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 来自外部的结论",
             evidence: { source: "external", sourceId: "src-1", quote: "外部结论" },
@@ -414,7 +452,7 @@ describe("judgeNodeFacts", () => {
     if (!result.ok) return;
     expect(result.decision.changes[0]).toMatchObject({
       category: "assumption",
-      targetSectionKey: "assumptions",
+      targetSectionKey: "boundary",
     });
   });
 
@@ -433,7 +471,7 @@ describe("judgeNodeFacts", () => {
         changes: [
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 伪造来源",
             evidence: { source: "external", sourceId: "missing", quote: "外部结论" },
@@ -463,7 +501,7 @@ describe("judgeNodeFacts", () => {
         changes: [
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 客户确认采用 A 方案",
             evidence: { source: "user", quote: "我们采用 A 方案" },
@@ -481,7 +519,7 @@ describe("judgeNodeFacts", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.decision.changes[0].category).toBe("confirmed_fact");
-    expect(result.decision.changes[0].targetSectionKey).toBe("confirmed");
+    expect(result.decision.changes[0].targetSectionKey).toBe("boundary");
   });
 });
 
@@ -496,13 +534,13 @@ describe("judgeNodeFacts/browser source fact rules", () => {
     retrievedAt: "2026-06-21T00:00:00.000Z",
   };
 
-  it("a browser-sourced confirmed_fact is downgraded to an assumption", async () => {
+  it("a browser-sourced confirmed_fact is downgraded to an assumption in a content section", async () => {
     const fetchImpl = makeFetchImpl(
       JSON.stringify({
         changes: [
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 据文章的结论",
             evidence: { source: "external", sourceId: "bw-1", quote: "据文章称" },
@@ -513,16 +551,16 @@ describe("judgeNodeFacts/browser source fact rules", () => {
     const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl, externalSources: [browserSource] });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.decision.changes[0]).toMatchObject({ category: "assumption", targetSectionKey: "assumptions" });
+    expect(result.decision.changes[0]).toMatchObject({ category: "assumption", targetSectionKey: "boundary" });
   });
 
-  it("a browser-sourced open_question stays an open_question and preserves the source id", async () => {
+  it("a browser-sourced open_question is dropped (questions belong in chat, not the doc)", async () => {
     const fetchImpl = makeFetchImpl(
       JSON.stringify({
         changes: [
           {
             category: "open_question",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 文章的说法是否适用于本项目？",
             evidence: { source: "external", sourceId: "bw-1", quote: "据文章称" },
@@ -533,13 +571,7 @@ describe("judgeNodeFacts/browser source fact rules", () => {
     const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl, externalSources: [browserSource] });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const patch = result.decision.changes[0];
-    expect(patch.category).toBe("open_question");
-    expect(patch.targetSectionKey).toBe("open_questions");
-    expect(patch.evidence.source).toBe("external");
-    if (patch.evidence.source === "external") {
-      expect(patch.evidence.sourceId).toBe("bw-1");
-    }
+    expect(result.decision.changes).toEqual([]);
   });
 
   it("browser sources can never yield a confirmed_fact; confirmed_fact still requires explicit user evidence", async () => {
@@ -549,7 +581,7 @@ describe("judgeNodeFacts/browser source fact rules", () => {
           // assistant-sourced confirmed_fact -> downgraded to assumption
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 助手推断",
             evidence: { source: "assistant", quote: "推断" },
@@ -557,7 +589,7 @@ describe("judgeNodeFacts/browser source fact rules", () => {
           // browser-sourced confirmed_fact -> downgraded to assumption
           {
             category: "confirmed_fact",
-            targetSectionKey: "confirmed",
+            targetSectionKey: "boundary",
             patchKind: "append_bullet",
             markdown: "- 浏览器结论",
             evidence: { source: "external", sourceId: "bw-1", quote: "据文章称" },
@@ -568,6 +600,7 @@ describe("judgeNodeFacts/browser source fact rules", () => {
     const result = await judgeNodeFacts({ ...BASE_INPUT, fetchImpl, externalSources: [browserSource] });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result.decision.changes.length).toBeGreaterThan(0);
     for (const patch of result.decision.changes) {
       expect(patch.category).not.toBe("confirmed_fact");
     }

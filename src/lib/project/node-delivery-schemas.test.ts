@@ -45,18 +45,21 @@ describe("getDeliverySchema", () => {
     }
   });
 
-  it("has assumptions and open_questions sections in every schema", () => {
+  it("does not carry confirmed/assumptions/open_questions meta sections in any schema", () => {
+    // These three fixed meta-sections were removed so the delivery document
+    // only contains the node's real content sections. Assumptions/inferred
+    // content now goes directly into content sections; open questions stay in
+    // the chat and are never written to the document.
     for (const node of WORKFLOW_NODES) {
       const schema = getDeliverySchema(node.id)!;
-      const assumptions = schema.sections.find((s) => s.key === "assumptions");
-      expect(assumptions, `Missing assumptions in ${node.id}`).toBeDefined();
-      expect(assumptions!.required).toBe(true);
-      expect(assumptions!.allowedPatchKinds).toContain("append_bullet");
-
-      const openQuestions = schema.sections.find((s) => s.key === "open_questions");
-      expect(openQuestions, `Missing open_questions in ${node.id}`).toBeDefined();
-      expect(openQuestions!.required).toBe(true);
-      expect(openQuestions!.allowedPatchKinds).toContain("append_bullet");
+      const keys = schema.sections.map((s) => s.key);
+      expect(keys, `confirmed present in ${node.id}`).not.toContain("confirmed");
+      expect(keys, `assumptions present in ${node.id}`).not.toContain("assumptions");
+      expect(keys, `open_questions present in ${node.id}`).not.toContain("open_questions");
+      expect(
+        schema.sections.length,
+        `${node.id} should keep at least one content section`,
+      ).toBeGreaterThan(0);
     }
   });
 

@@ -35,11 +35,15 @@ describe("project defaults", () => {
     });
   });
 
-  it("uses a standard weak-structured Markdown frame for node content", () => {
+  it("seeds only the node's real content sections, not the removed meta-sections", () => {
     const markdown = createNodeMarkdown("feature-design");
     expect(markdown).toContain("# 功能模块设计");
-    expect(markdown).toContain("## 已确认内容");
-    expect(markdown).toContain("## 设计假设");
-    expect(markdown).toContain("## 待确认问题");
+    // Required content sections are scaffolded as headings.
+    expect(markdown).toContain("## 功能模块清单");
+    expect(markdown).toContain("## 模块详情");
+    // The removed meta-sections must not be seeded anymore.
+    expect(markdown).not.toContain("## 已确认内容");
+    expect(markdown).not.toContain("## 设计假设");
+    expect(markdown).not.toContain("## 待确认问题");
   });
 });

@@ -31,13 +31,6 @@ const SCHEMAS: NodeDeliverySchema[] = [
     documentHeading: "1. 项目基本信息",
     sections: [
       {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
-      {
         key: "metadata",
         heading: "基础信息表",
         level: 2,
@@ -52,33 +45,12 @@ const SCHEMAS: NodeDeliverySchema[] = [
         required: true,
         allowedPatchKinds: ["append_bullet", "append_block"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
     nodeId: "goals",
     documentHeading: "2. 需求背景与建设目标",
     sections: [
-      {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
       {
         key: "background",
         heading: "需求背景",
@@ -100,33 +72,12 @@ const SCHEMAS: NodeDeliverySchema[] = [
         required: true,
         allowedPatchKinds: ["append_bullet"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
     nodeId: "roles-permissions",
     documentHeading: "3. 用户角色与权限",
     sections: [
-      {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
       {
         key: "roles",
         heading: "角色清单",
@@ -143,33 +94,12 @@ const SCHEMAS: NodeDeliverySchema[] = [
         allowedPatchKinds: ["append_table_row"],
         tableColumns: ["角色", "模块", "权限"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
     nodeId: "business-flow",
     documentHeading: "4. 业务流程设计",
     sections: [
-      {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
       {
         key: "flows",
         heading: "核心业务流程",
@@ -184,33 +114,12 @@ const SCHEMAS: NodeDeliverySchema[] = [
         required: false,
         allowedPatchKinds: ["append_bullet"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
     nodeId: "feature-design",
     documentHeading: "5. 功能模块设计",
     sections: [
-      {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
       {
         key: "module_list",
         heading: "功能模块清单",
@@ -234,33 +143,12 @@ const SCHEMAS: NodeDeliverySchema[] = [
         allowedPatchKinds: ["append_table_row"],
         tableColumns: ["角色", "可操作模块", "受限操作"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
     nodeId: "page-interaction",
     documentHeading: "6. 页面与交互设计",
     sections: [
-      {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
       {
         key: "pages",
         heading: "页面清单",
@@ -276,33 +164,12 @@ const SCHEMAS: NodeDeliverySchema[] = [
         required: false,
         allowedPatchKinds: ["append_block"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
     nodeId: "data-structure",
     documentHeading: "7. 数据结构设计",
     sections: [
-      {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
       {
         key: "entities",
         heading: "实体清单",
@@ -318,33 +185,12 @@ const SCHEMAS: NodeDeliverySchema[] = [
         required: false,
         allowedPatchKinds: ["append_block"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
     nodeId: "api-design",
     documentHeading: "8. 接口设计",
     sections: [
-      {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
       {
         key: "endpoints",
         heading: "接口清单",
@@ -360,33 +206,12 @@ const SCHEMAS: NodeDeliverySchema[] = [
         required: false,
         allowedPatchKinds: ["append_block"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
     nodeId: "architecture-deployment",
     documentHeading: "9. 技术架构与部署",
     sections: [
-      {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
       {
         key: "stack",
         heading: "技术栈",
@@ -408,33 +233,12 @@ const SCHEMAS: NodeDeliverySchema[] = [
         required: false,
         allowedPatchKinds: ["append_bullet"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
     nodeId: "development-tasks",
     documentHeading: "10. 开发任务拆分",
     sections: [
-      {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
       {
         key: "tasks",
         heading: "任务清单",
@@ -450,33 +254,12 @@ const SCHEMAS: NodeDeliverySchema[] = [
         required: false,
         allowedPatchKinds: ["append_block"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
     nodeId: "risks-open-questions",
     documentHeading: "11. 待确认事项与风险",
     sections: [
-      {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
       {
         key: "risks",
         heading: "风险清单",
@@ -491,20 +274,6 @@ const SCHEMAS: NodeDeliverySchema[] = [
         required: true,
         allowedPatchKinds: ["append_bullet"],
       },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
     ],
   },
   {
@@ -512,29 +281,8 @@ const SCHEMAS: NodeDeliverySchema[] = [
     documentHeading: "12. 最终文档生成",
     sections: [
       {
-        key: "confirmed",
-        heading: "已确认内容",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet", "append_block"],
-      },
-      {
         key: "export_checklist",
         heading: "导出检查清单",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "assumptions",
-        heading: "设计假设",
-        level: 2,
-        required: true,
-        allowedPatchKinds: ["append_bullet"],
-      },
-      {
-        key: "open_questions",
-        heading: "待确认问题",
         level: 2,
         required: true,
         allowedPatchKinds: ["append_bullet"],

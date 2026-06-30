@@ -1,4 +1,5 @@
 import { WORKFLOW_NODES, getNodeDefinition } from "./nodes";
+import { getDeliverySchema } from "./node-delivery-schemas";
 import type { Project, ProjectNode, WorkflowNodeId } from "./types";
 
 export type CreateDefaultProjectInput = {
@@ -40,20 +41,18 @@ export function createNodeMarkdown(nodeId: WorkflowNodeId): string {
     throw new Error(`Unknown workflow node: ${nodeId}`);
   }
 
-  return [
-    `# ${node.title}`,
-    "",
-    "## 已确认内容",
-    "",
-    "- 本节内容尚未确认。",
-    "",
-    "## 设计假设",
-    "",
-    "- 暂无。",
-    "",
-    "## 待确认问题",
-    "",
-    "- 暂无。",
-    "",
-  ].join("\n");
+  // Seed only the node's real content sections (no confirmed/assumptions/
+  // open_questions meta-sections). Required sections get a heading so the
+  // document shows its structure; optional sections are created on demand
+  // when the agent fills them. Section bodies are left empty — the patcher
+  // appends real content (and creates tables) on the first patch.
+  const schema = getDeliverySchema(nodeId);
+  const lines = [`# ${node.title}`, ""];
+  if (schema) {
+    for (const section of schema.sections) {
+      if (!section.required) continue;
+      lines.push(`${"#".repeat(section.level)} ${section.heading}`, "");
+    }
+  }
+  return lines.join("\n");
 }

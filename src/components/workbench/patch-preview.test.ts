@@ -7,10 +7,6 @@ const NODE_ID: WorkflowNodeId = "basic-info";
 
 const BASE_MARKDOWN = `# 1. 项目基本信息
 
-## 已确认内容
-
-Project CRM.
-
 ## 基础信息表
 
 | 字段 | 值 |
@@ -20,12 +16,6 @@ Project CRM.
 ## 项目边界
 
 - In scope: data entry
-
-## 设计假设
-
-- Users have basic computer skills
-
-## 待确认问题
 `;
 
 describe("buildPatchPreviewFrames", () => {
@@ -38,9 +28,9 @@ describe("buildPatchPreviewFrames", () => {
   it("appends a bullet patch with correct frames at the correct section", () => {
     const patch: NodeMarkdownPatch = {
       category: "confirmed_fact",
-      targetSectionKey: "confirmed",
+      targetSectionKey: "boundary",
       patchKind: "append_bullet",
-      markdown: "新加入的确认内容",
+      markdown: "新加入的边界项",
       evidence: { source: "assistant", quote: "test" },
     };
 
@@ -49,10 +39,10 @@ describe("buildPatchPreviewFrames", () => {
     // Frame 0 is the base
     expect(frames[0]).toBe(BASE_MARKDOWN);
 
-    // All frames should have the bullet at the "已确认内容" section, not at EOF
+    // All frames should have the bullet at the "项目边界" section, not at EOF
     for (const frame of frames) {
-      // The heading "已确认内容" should appear before the bullet insertion point
-      expect(frame.indexOf("已确认内容")).not.toBe(-1);
+      // The heading "项目边界" should appear before the bullet insertion point
+      expect(frame.indexOf("项目边界")).not.toBe(-1);
     }
 
     // Last frame should equal full applyPatches
@@ -60,15 +50,15 @@ describe("buildPatchPreviewFrames", () => {
     const lastFrame = frames[frames.length - 1];
     expect(lastFrame).toBe(fullResult.markdown);
 
-    // The new bullet should appear in the last frame under the confirmed section
-    expect(lastFrame).toContain("- 新加入的确认内容");
+    // The new bullet should appear in the last frame under the boundary section
+    expect(lastFrame).toContain("- 新加入的边界项");
   });
 
   it("handles multiple patches in sequence", () => {
     const patches: NodeMarkdownPatch[] = [
       {
         category: "confirmed_fact",
-        targetSectionKey: "confirmed",
+        targetSectionKey: "boundary",
         patchKind: "append_bullet",
         markdown: "第一项",
         evidence: { source: "assistant", quote: "a" },
@@ -92,8 +82,6 @@ describe("buildPatchPreviewFrames", () => {
     // Last frame = full application
     expect(frames[frames.length - 1]).toBe(fullResult.markdown);
 
-    // Verify patch 1's text is NOT in the first patch's area (frame before patch 1's first typing frame)
-    // The first patch typing frames should not contain "边界项"
     // Just check that last frame has both
     expect(frames[frames.length - 1]).toContain("- 第一项");
     expect(frames[frames.length - 1]).toContain("- 边界项");
@@ -102,7 +90,7 @@ describe("buildPatchPreviewFrames", () => {
   it("is unicode-safe with Chinese characters", () => {
     const patch: NodeMarkdownPatch = {
       category: "confirmed_fact",
-      targetSectionKey: "confirmed",
+      targetSectionKey: "boundary",
       patchKind: "append_bullet",
       markdown: "中文测试内容",
       evidence: { source: "assistant", quote: "u" },
@@ -128,7 +116,7 @@ describe("buildPatchPreviewFrames", () => {
   it("handles an append_block patch correctly", () => {
     const patch: NodeMarkdownPatch = {
       category: "confirmed_fact",
-      targetSectionKey: "confirmed",
+      targetSectionKey: "boundary",
       patchKind: "append_block",
       markdown: "A new paragraph explaining the update.",
       evidence: { source: "assistant", quote: "test" },
@@ -140,11 +128,11 @@ describe("buildPatchPreviewFrames", () => {
     const fullResult = applyPatches(NODE_ID, BASE_MARKDOWN, [patch]);
     expect(frames[frames.length - 1]).toBe(fullResult.markdown);
 
-    // Block content should be in confirmed section, not at EOF
+    // Block content should be in boundary section, not at EOF
     const lastFrame = frames[frames.length - 1];
-    const confirmedIdx = lastFrame.indexOf("已确认内容");
+    const boundaryIdx = lastFrame.indexOf("项目边界");
     const blockIdx = lastFrame.indexOf("A new paragraph explaining the update.");
-    expect(blockIdx).toBeGreaterThan(confirmedIdx);
+    expect(blockIdx).toBeGreaterThan(boundaryIdx);
   });
 
   it("adds a table row patch to an existing table", () => {

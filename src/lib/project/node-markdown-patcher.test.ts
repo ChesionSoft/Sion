@@ -10,16 +10,23 @@ import type { NodeMarkdownPatch, WorkflowNodeId } from "./types";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+//
+// Bullet tests use the `goals` node (sections: background/block, goals/bullet,
+// scope/bullet) because `feature-design` no longer has a bullet-only section
+// after the confirmed/assumptions/open_questions meta-sections were removed.
+// Table and block tests still use `feature-design` (module_list/table,
+// module_details/block, permission_matrix/table).
+
+const goalsId: WorkflowNodeId = "goals";
+const featureDesignId: WorkflowNodeId = "feature-design";
 
 const validPatch: NodeMarkdownPatch = {
   category: "confirmed_fact",
-  targetSectionKey: "confirmed",
+  targetSectionKey: "scope",
   patchKind: "append_bullet",
   markdown: "客户管理模块支持增删改查",
   evidence: { source: "user", quote: "用户说需要客户管理" },
 };
-
-const featureDesignId: WorkflowNodeId = "feature-design";
 
 // ---------------------------------------------------------------------------
 // validateNodeMarkdownPatch
@@ -27,13 +34,13 @@ const featureDesignId: WorkflowNodeId = "feature-design";
 
 describe("validateNodeMarkdownPatch", () => {
   it("accepts a valid patch", () => {
-    const result = validateNodeMarkdownPatch(featureDesignId, validPatch);
+    const result = validateNodeMarkdownPatch(goalsId, validPatch);
     expect(result).toEqual(validPatch);
   });
 
   it("rejects an unknown sectionKey", () => {
     expect(() =>
-      validateNodeMarkdownPatch(featureDesignId, {
+      validateNodeMarkdownPatch(goalsId, {
         ...validPatch,
         targetSectionKey: "nonexistent",
       }),
@@ -41,11 +48,10 @@ describe("validateNodeMarkdownPatch", () => {
   });
 
   it("rejects an invalid patchKind for the section", () => {
-    // "assumptions" only allows append_bullet, not append_table_row
+    // "scope" only allows append_bullet, not append_table_row
     expect(() =>
-      validateNodeMarkdownPatch(featureDesignId, {
+      validateNodeMarkdownPatch(goalsId, {
         ...validPatch,
-        targetSectionKey: "assumptions",
         patchKind: "append_table_row",
       }),
     ).toThrow(UnpatchableError);
@@ -53,7 +59,7 @@ describe("validateNodeMarkdownPatch", () => {
 
   it("rejects markdown containing a heading line", () => {
     expect(() =>
-      validateNodeMarkdownPatch(featureDesignId, {
+      validateNodeMarkdownPatch(goalsId, {
         ...validPatch,
         markdown: "## subheading\n- foo",
       }),
@@ -62,7 +68,7 @@ describe("validateNodeMarkdownPatch", () => {
 
   it("rejects missing evidence", () => {
     expect(() =>
-      validateNodeMarkdownPatch(featureDesignId, {
+      validateNodeMarkdownPatch(goalsId, {
         ...validPatch,
         evidence: undefined,
       }),
@@ -70,10 +76,9 @@ describe("validateNodeMarkdownPatch", () => {
   });
 
   it("accepts external evidence with a sourceId", () => {
-    const result = validateNodeMarkdownPatch(featureDesignId, {
+    const result = validateNodeMarkdownPatch(goalsId, {
       ...validPatch,
       category: "assumption",
-      targetSectionKey: "assumptions",
       evidence: { source: "external", quote: "外部片段", sourceId: "src-1" },
     });
     expect(result.evidence).toEqual({
@@ -85,10 +90,9 @@ describe("validateNodeMarkdownPatch", () => {
 
   it("rejects external evidence without a sourceId", () => {
     expect(() =>
-      validateNodeMarkdownPatch(featureDesignId, {
+      validateNodeMarkdownPatch(goalsId, {
         ...validPatch,
         category: "assumption",
-        targetSectionKey: "assumptions",
         evidence: { source: "external", quote: "外部片段" } as never,
       }),
     ).toThrow(UnpatchableError);
@@ -96,7 +100,7 @@ describe("validateNodeMarkdownPatch", () => {
 
   it("rejects an unknown evidence source", () => {
     expect(() =>
-      validateNodeMarkdownPatch(featureDesignId, {
+      validateNodeMarkdownPatch(goalsId, {
         ...validPatch,
         evidence: { source: "dream", quote: "x" } as never,
       }),
@@ -105,7 +109,7 @@ describe("validateNodeMarkdownPatch", () => {
 
   it("rejects wrong category", () => {
     expect(() =>
-      validateNodeMarkdownPatch(featureDesignId, {
+      validateNodeMarkdownPatch(goalsId, {
         ...validPatch,
         category: "invalid_category",
       }),
@@ -114,7 +118,7 @@ describe("validateNodeMarkdownPatch", () => {
 
   it("rejects empty markdown", () => {
     expect(() =>
-      validateNodeMarkdownPatch(featureDesignId, {
+      validateNodeMarkdownPatch(goalsId, {
         ...validPatch,
         markdown: "",
       }),
@@ -122,9 +126,9 @@ describe("validateNodeMarkdownPatch", () => {
   });
 
   it("rejects non-object input", () => {
-    expect(() => validateNodeMarkdownPatch(featureDesignId, null)).toThrow(UnpatchableError);
-    expect(() => validateNodeMarkdownPatch(featureDesignId, "string")).toThrow(UnpatchableError);
-    expect(() => validateNodeMarkdownPatch(featureDesignId, 42)).toThrow(UnpatchableError);
+    expect(() => validateNodeMarkdownPatch(goalsId, null)).toThrow(UnpatchableError);
+    expect(() => validateNodeMarkdownPatch(goalsId, "string")).toThrow(UnpatchableError);
+    expect(() => validateNodeMarkdownPatch(goalsId, 42)).toThrow(UnpatchableError);
   });
 });
 
@@ -141,14 +145,14 @@ describe("applyPatches", () => {
   });
 
   it("inserts a bullet and preserves prefix/suffix byte-for-byte unchanged", () => {
-    const prefix = "# 5. 功能模块设计\n\nSome intro text.\n\n";
-    const suffix = "\n\n## 设计假设\n\n- 假设1\n\n## 待确认问题\n\n- 问题1\n";
-    const md = prefix + "## 已确认内容\n\n- 已有项\n" + suffix;
+    const prefix = "# 2. 需求背景与建设目标\n\nSome intro text.\n\n## 需求背景\n\nSome bg.\n\n";
+    const suffix = "\n\n## 范围边界\n\n- 项1\n";
+    const md = prefix + "## 建设目标\n\n- 已有项\n" + suffix;
 
-    const result = applyPatches(featureDesignId, md, [
+    const result = applyPatches(goalsId, md, [
       {
         category: "confirmed_fact",
-        targetSectionKey: "confirmed",
+        targetSectionKey: "goals",
         patchKind: "append_bullet",
         markdown: "新确认项",
         evidence: { source: "user", quote: "test" },
@@ -165,11 +169,11 @@ describe("applyPatches", () => {
 
   it("skips a patch when the target heading is ambiguous (two same-level same-name)", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 项1\n\n## 已确认内容\n\n- 项2\n\n## 设计假设\n\n- 假设1\n";
-    const result = applyPatches(featureDesignId, md, [
+      "# 2. 需求背景与建设目标\n\n## 需求背景\n\n- 项1\n\n## 建设目标\n\n- 项1\n\n## 建设目标\n\n- 项2\n\n## 范围边界\n\n- 项1\n";
+    const result = applyPatches(goalsId, md, [
       {
         category: "confirmed_fact",
-        targetSectionKey: "confirmed",
+        targetSectionKey: "goals",
         patchKind: "append_bullet",
         markdown: "新项",
         evidence: { source: "user", quote: "test" },
@@ -182,13 +186,13 @@ describe("applyPatches", () => {
   });
 
   it("does not confuse setext heading with ATX heading", () => {
-    // Setext H1 "Foo\n====" should not interfere with "## 设计假设"
+    // Setext H1 "Foo\n====" should not interfere with "## 建设目标"
     const md =
-      "Foo\n====\n\nSome text\n\n## 设计假设\n\n- 假设1\n\n## 待确认问题\n\n- 问题1\n";
-    const result = applyPatches(featureDesignId, md, [
+      "Foo\n====\n\nSome text\n\n## 建设目标\n\n- 假设1\n\n## 范围边界\n\n- 问题1\n";
+    const result = applyPatches(goalsId, md, [
       {
         category: "assumption",
-        targetSectionKey: "assumptions",
+        targetSectionKey: "goals",
         patchKind: "append_bullet",
         markdown: "新假设",
         evidence: { source: "user", quote: "test" },
@@ -201,11 +205,11 @@ describe("applyPatches", () => {
 
   it("does not treat heading-like lines inside fenced code blocks as headings", () => {
     const md =
-      "## 设计假设\n\n- 假设1\n\n```\n## not a heading\n```\n\n## 待确认问题\n\n- 问题1\n";
-    const result = applyPatches(featureDesignId, md, [
+      "## 建设目标\n\n- 假设1\n\n```\n## not a heading\n```\n\n## 范围边界\n\n- 问题1\n";
+    const result = applyPatches(goalsId, md, [
       {
         category: "assumption",
-        targetSectionKey: "assumptions",
+        targetSectionKey: "goals",
         patchKind: "append_bullet",
         markdown: "新假设",
         evidence: { source: "user", quote: "test" },
@@ -217,9 +221,9 @@ describe("applyPatches", () => {
   });
 
   it("creates a missing required section in correct schema-order position", () => {
-    // Markdown has "已确认内容" and "模块详情" but no "功能模块清单"
+    // Markdown has "模块详情" but no "功能模块清单"
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 项1\n\n## 模块详情\n\nSome details\n\n## 设计假设\n\n- 假设1\n";
+      "# 5. 功能模块设计\n\n## 模块详情\n\nSome details\n";
     const result = applyPatches(featureDesignId, md, [
       {
         category: "confirmed_fact",
@@ -229,7 +233,7 @@ describe("applyPatches", () => {
         evidence: { source: "user", quote: "test" },
       },
     ]);
-    // The new section should appear BEFORE "模块详情" (schema order: confirmed, module_list, module_details)
+    // The new section should appear BEFORE "模块详情" (schema order: module_list, module_details, permission_matrix)
     const moduleListIndex = result.markdown.indexOf("## 功能模块清单");
     const moduleDetailsIndex = result.markdown.indexOf("## 模块详情");
     expect(moduleListIndex).toBeGreaterThan(0);
@@ -242,7 +246,7 @@ describe("applyPatches", () => {
 
   it("generates a new table with header, separator, and first data row", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 项1\n\n## 功能模块清单\n\n(empty)\n\n## 模块详情\n\nDetails\n";
+      "# 5. 功能模块设计\n\n## 功能模块清单\n\n(empty)\n\n## 模块详情\n\nDetails\n";
     const result = applyPatches(featureDesignId, md, [
       {
         category: "confirmed_fact",
@@ -299,13 +303,13 @@ describe("applyPatches", () => {
 
   it("skips a column-mismatch row but still applies other patches in the same batch", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 既有条目\n\n## 功能模块清单\n\n| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |\n| --- | --- | --- |\n| 用户管理 | 管理用户 | P0 |\n\n## 模块详情\n\nDetails\n";
+      "# 5. 功能模块设计\n\n## 功能模块清单\n\n| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |\n| --- | --- | --- |\n| 用户管理 | 管理用户 | P0 |\n\n## 模块详情\n\nExisting block.\n";
     const result = applyPatches(featureDesignId, md, [
       {
         category: "confirmed_fact",
-        targetSectionKey: "confirmed",
-        patchKind: "append_bullet",
-        markdown: "- 新增确认条目",
+        targetSectionKey: "module_details",
+        patchKind: "append_block",
+        markdown: "新增说明段落",
         evidence: { source: "user", quote: "需要新增" },
       },
       {
@@ -316,10 +320,10 @@ describe("applyPatches", () => {
         evidence: { source: "user", quote: "客户管理" },
       },
     ]);
-    // The valid bullet was applied
-    expect(result.markdown).toContain("- 新增确认条目");
+    // The valid block was applied
+    expect(result.markdown).toContain("新增说明段落");
     expect(result.applied).toHaveLength(1);
-    expect(result.applied[0].targetSectionKey).toBe("confirmed");
+    expect(result.applied[0].targetSectionKey).toBe("module_details");
     // The bad row was NOT inserted
     expect(result.markdown).not.toContain("| 客户管理 | P0 |");
     // The existing table is intact
@@ -328,10 +332,10 @@ describe("applyPatches", () => {
 
   it("rejects fragment containing a heading line", () => {
     expect(() =>
-      applyPatches(featureDesignId, "## 已确认内容\n\n- 项1\n", [
+      applyPatches(goalsId, "# 2. 需求背景与建设目标\n\n## 建设目标\n\n- 项1\n", [
         {
           category: "confirmed_fact",
-          targetSectionKey: "confirmed",
+          targetSectionKey: "goals",
           patchKind: "append_bullet",
           markdown: "## subheading\n- foo",
           evidence: { source: "user", quote: "test" },
@@ -342,12 +346,12 @@ describe("applyPatches", () => {
 
   it("rejects invalid patchKind for a bullet-only section", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 设计假设\n\n- 假设1\n\n## 待确认问题\n\n- 问题1\n";
+      "# 2. 需求背景与建设目标\n\n## 需求背景\n\n背景\n\n## 建设目标\n\n- 假设1\n\n## 范围边界\n\n- 问题1\n";
     expect(() =>
-      applyPatches(featureDesignId, md, [
+      applyPatches(goalsId, md, [
         {
           category: "assumption",
-          targetSectionKey: "assumptions",
+          targetSectionKey: "goals",
           patchKind: "append_table_row",
           markdown: "| col1 | col2 | col3 |",
           evidence: { source: "user", quote: "test" },
@@ -358,11 +362,11 @@ describe("applyPatches", () => {
 
   it("deduplicates bullets", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 客户管理\n\n## 设计假设\n\n- 假设1\n";
-    const result = applyPatches(featureDesignId, md, [
+      "# 2. 需求背景与建设目标\n\n## 需求背景\n\n背景\n\n## 建设目标\n\n- 客户管理\n\n## 范围边界\n\n- 假设1\n";
+    const result = applyPatches(goalsId, md, [
       {
         category: "confirmed_fact",
-        targetSectionKey: "confirmed",
+        targetSectionKey: "goals",
         patchKind: "append_bullet",
         markdown: "- 客户管理",
         evidence: { source: "user", quote: "test" },
@@ -394,36 +398,36 @@ describe("applyPatches", () => {
 
   it("preserves Chinese headings and content verbatim", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 已有项\n\n## 设计假设\n\n- 假设1\n\n## 待确认问题\n\n- 问题1\n";
-    const result = applyPatches(featureDesignId, md, [
+      "# 2. 需求背景与建设目标\n\n## 需求背景\n\n背景\n\n## 建设目标\n\n- 已有项\n\n## 范围边界\n\n- 边界1\n";
+    const result = applyPatches(goalsId, md, [
       {
         category: "confirmed_fact",
-        targetSectionKey: "confirmed",
+        targetSectionKey: "goals",
         patchKind: "append_bullet",
         markdown: "中文内容测试",
         evidence: { source: "user", quote: "test" },
       },
     ]);
-    expect(result.markdown).toContain("## 已确认内容");
+    expect(result.markdown).toContain("## 建设目标");
     expect(result.markdown).toContain("- 中文内容测试");
-    expect(result.markdown).toContain("## 设计假设");
-    expect(result.markdown).toContain("- 假设1");
+    expect(result.markdown).toContain("## 范围边界");
+    expect(result.markdown).toContain("- 边界1");
   });
 
   it("applies multiple patches in order", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 项1\n\n## 设计假设\n\n- 假设1\n\n## 待确认问题\n\n- 问题1\n";
-    const result = applyPatches(featureDesignId, md, [
+      "# 2. 需求背景与建设目标\n\n## 需求背景\n\n背景\n\n## 建设目标\n\n- 项1\n\n## 范围边界\n\n- 问题1\n";
+    const result = applyPatches(goalsId, md, [
       {
         category: "confirmed_fact",
-        targetSectionKey: "confirmed",
+        targetSectionKey: "goals",
         patchKind: "append_bullet",
         markdown: "新项1",
         evidence: { source: "user", quote: "test" },
       },
       {
         category: "confirmed_fact",
-        targetSectionKey: "confirmed",
+        targetSectionKey: "goals",
         patchKind: "append_bullet",
         markdown: "新项2",
         evidence: { source: "user", quote: "test" },
@@ -436,7 +440,7 @@ describe("applyPatches", () => {
 
   it("appends a block to a section", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 项1\n\n## 模块详情\n\nExisting block content.\n\n## 设计假设\n\n- 假设1\n";
+      "# 5. 功能模块设计\n\n## 模块详情\n\nExisting block content.\n\n## 功能模块清单\n\n| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |\n| --- | --- | --- |\n";
     const result = applyPatches(featureDesignId, md, [
       {
         category: "confirmed_fact",
@@ -453,11 +457,11 @@ describe("applyPatches", () => {
 
   it("supports * and + bullet prefixes in existing body, appends - bullet after them", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n* 星号项\n+ 加号项\n\n## 设计假设\n\n- 假设1\n";
-    const result = applyPatches(featureDesignId, md, [
+      "# 2. 需求背景与建设目标\n\n## 需求背景\n\n背景\n\n## 建设目标\n\n* 星号项\n+ 加号项\n\n## 范围边界\n\n- 假设1\n";
+    const result = applyPatches(goalsId, md, [
       {
         category: "confirmed_fact",
-        targetSectionKey: "confirmed",
+        targetSectionKey: "goals",
         patchKind: "append_bullet",
         markdown: "- 新项",
         evidence: { source: "user", quote: "test" },
@@ -477,11 +481,11 @@ describe("applyPatches", () => {
 
   it("deduplicates bullets across different prefixes (* foo vs - foo)", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n* 客户管理\n\n## 设计假设\n\n- 假设1\n";
-    const result = applyPatches(featureDesignId, md, [
+      "# 2. 需求背景与建设目标\n\n## 需求背景\n\n背景\n\n## 建设目标\n\n* 客户管理\n\n## 范围边界\n\n- 假设1\n";
+    const result = applyPatches(goalsId, md, [
       {
         category: "confirmed_fact",
-        targetSectionKey: "confirmed",
+        targetSectionKey: "goals",
         patchKind: "append_bullet",
         markdown: "- 客户管理",
         evidence: { source: "user", quote: "test" },
@@ -495,7 +499,7 @@ describe("applyPatches", () => {
 
   it("append_block avoids double blank line when body ends with newlines", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 模块详情\n\n- existing\n\n## 设计假设\n\n- 假设1\n";
+      "# 5. 功能模块设计\n\n## 模块详情\n\n- existing\n\n## 功能模块清单\n\n| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |\n| --- | --- | --- |\n";
     const result = applyPatches(featureDesignId, md, [
       {
         category: "confirmed_fact",
@@ -510,7 +514,7 @@ describe("applyPatches", () => {
     // So the result should be: "- existing\n\nNew block." — one blank line.
     const sectionBody = result.markdown.slice(
       result.markdown.indexOf("## 模块详情"),
-      result.markdown.indexOf("## 设计假设"),
+      result.markdown.indexOf("## 功能模块清单"),
     );
     // Count consecutive newlines between "- existing" and "New block."
     const match = sectionBody.match(/- existing(\n+)/);
@@ -521,7 +525,7 @@ describe("applyPatches", () => {
 
   it("deduplicates blocks", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 模块详情\n\nExisting block content.\n\n## 设计假设\n\n- 假设1\n";
+      "# 5. 功能模块设计\n\n## 模块详情\n\nExisting block content.\n\n## 功能模块清单\n\n| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |\n| --- | --- | --- |\n";
     const result = applyPatches(featureDesignId, md, [
       {
         category: "confirmed_fact",
@@ -545,33 +549,33 @@ describe("applyPatches", () => {
 describe("applyPartialPatchForPreview", () => {
   it("shows partial text at the insertion point for a bullet patch", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 已有项\n\n## 设计假设\n\n- 假设1\n";
+      "# 2. 需求背景与建设目标\n\n## 需求背景\n\n背景\n\n## 建设目标\n\n- 已有项\n\n## 范围边界\n\n- 假设1\n";
     const patch: NodeMarkdownPatch = {
       category: "confirmed_fact",
-      targetSectionKey: "confirmed",
+      targetSectionKey: "goals",
       patchKind: "append_bullet",
       markdown: "新确认项",
       evidence: { source: "user", quote: "test" },
     };
 
     // visibleCharacterCount=0: just the "- " prefix
-    const frame0 = applyPartialPatchForPreview(featureDesignId, md, patch, 0);
+    const frame0 = applyPartialPatchForPreview(goalsId, md, patch, 0);
     expect(frame0).toContain("- ");
     expect(frame0).not.toContain("新确认项");
 
     // visibleCharacterCount=2: "- 新"
-    const frame2 = applyPartialPatchForPreview(featureDesignId, md, patch, 2);
+    const frame2 = applyPartialPatchForPreview(goalsId, md, patch, 2);
     expect(frame2).toContain("- 新");
 
     // visibleCharacterCount=full: same as applyPatches
-    const full = applyPartialPatchForPreview(featureDesignId, md, patch, 999);
-    const applied = applyPatches(featureDesignId, md, [patch]);
+    const full = applyPartialPatchForPreview(goalsId, md, patch, 999);
+    const applied = applyPatches(goalsId, md, [patch]);
     expect(full).toBe(applied.markdown);
   });
 
   it("shows partial text for a block patch", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 模块详情\n\nExisting.\n\n## 设计假设\n\n- 假设1\n";
+      "# 5. 功能模块设计\n\n## 模块详情\n\nExisting.\n\n## 功能模块清单\n\n| 模块名 | 职责一句话 | 优先级(P0/P1/P2) |\n| --- | --- | --- |\n";
     const patch: NodeMarkdownPatch = {
       category: "confirmed_fact",
       targetSectionKey: "module_details",
@@ -656,7 +660,7 @@ describe("applyPartialPatchForPreview", () => {
 
   it("append_table_row preview with missing section: frame 0 shows header+separator, no data row", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 项1\n\n## 模块详情\n\nDetails\n";
+      "# 5. 功能模块设计\n\n## 模块详情\n\nDetails\n";
     const patch: NodeMarkdownPatch = {
       category: "confirmed_fact",
       targetSectionKey: "module_list",
@@ -675,7 +679,7 @@ describe("applyPartialPatchForPreview", () => {
 
   it("append_table_row preview with missing section: full char count shows header+separator+data row", () => {
     const md =
-      "# 5. 功能模块设计\n\n## 已确认内容\n\n- 项1\n\n## 模块详情\n\nDetails\n";
+      "# 5. 功能模块设计\n\n## 模块详情\n\nDetails\n";
     const patch: NodeMarkdownPatch = {
       category: "confirmed_fact",
       targetSectionKey: "module_list",

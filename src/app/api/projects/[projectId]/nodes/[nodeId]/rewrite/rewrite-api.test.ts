@@ -440,29 +440,16 @@ describe("rewrite API", () => {
   it("emits markdown_error on validation failure and does NOT write disk", async () => {
     await setupProjectFixture();
 
-    // Mock LLM to return markdown MISSING required section "## 设计假设"
+    // Mock LLM to return markdown MISSING required section "## 项目边界"
     const invalidContent = [
       "# 项目基本信息",
-      "",
-      "## 已确认内容",
-      "",
-      "确认内容已更新",
       "",
       "## 基础信息表",
       "",
       "| 字段 | 值 |",
       "|------|-----|",
       "| 名称 | 测试 |",
-      "",
-      "## 项目边界",
-      "",
-      "无边界限制",
-      "",
-      // Missing "## 设计假设" section — required by schema
-      "",
-      "## 待确认问题",
-      "",
-      "- 问题1",
+      // Missing "## 项目边界" section — required by schema
     ].join("\n");
 
     globalThis.fetch = vi.fn().mockImplementation(async () => ({

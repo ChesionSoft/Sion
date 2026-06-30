@@ -193,8 +193,8 @@ beforeEach(() => {
                   type: "markdown_patch_preview",
                   patch: {
                     category: "confirmed_fact",
-                    targetSectionKey: "confirmed",
-                    patchKind: "append_bullet",
+                    targetSectionKey: "module_details",
+                    patchKind: "append_block",
                     markdown: "第一批信息",
                     evidence: { source: "assistant", quote: "from chat" },
                   },
@@ -207,8 +207,8 @@ beforeEach(() => {
                   type: "markdown_patch_preview",
                   patch: {
                     category: "confirmed_fact",
-                    targetSectionKey: "confirmed",
-                    patchKind: "append_bullet",
+                    targetSectionKey: "module_details",
+                    patchKind: "append_block",
                     markdown: "第二批信息",
                     evidence: { source: "assistant", quote: "from chat" },
                   },

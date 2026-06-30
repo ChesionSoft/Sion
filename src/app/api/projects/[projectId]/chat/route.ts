@@ -262,7 +262,8 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           "",
           "- 先回答用户问题，再给出建议写入 Markdown 的内容。",
           "- 如果信息不足，每轮最多提出 3 个关键问题。",
-          '- 所有假设必须写入"设计假设"，所有不确定项必须写入"待确认问题"。',
+          "- 分析或检索得到的内容直接写进对应正文小节，不要单独留\"假设\"小节。",
+          "- 不确定、需要用户确认的问题只在聊天里追问，绝不写进交付稿。",
           "- 不要修改其他节点负责的章节。",
         );
         const systemPrompt = baseSystemPromptParts.join("\n");

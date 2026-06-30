@@ -23,7 +23,7 @@ export async function exportProjectDocuments(store: ProjectStore, projectId: str
   const projectDesign = assembleProjectDesignMarkdown(project, nodes);
   const spec = createSpecMarkdown(project, nodes);
   const tasks = createTasksMarkdown(project, nodes);
-  const agents = createAgentsMarkdown(project, nodes);
+  const agents = createAgentsMarkdown(project);
   const docx = await createProjectDesignDocx(project, projectDesign);
 
   const files = [
