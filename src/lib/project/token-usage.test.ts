@@ -15,6 +15,27 @@ describe("token usage", () => {
       .toBeNull();
   });
 
+  it("rejects provider usage reporting 0 input on a call that produced output", () => {
+    // Some OpenAI-compatible providers report prompt_tokens: 0 while filling
+    // completion_tokens — totals add up, but the 0 is bogus (a real call always
+    // has a prompt). Reject it so the caller estimates the input from the
+    // request text instead of persisting "输入 0".
+    expect(normalizeProviderUsage({ inputTokens: 0, outputTokens: 8, totalTokens: 8 }))
+      .toBeNull();
+    // buildModelCallUsage then falls back to estimation from the input text.
+    const usage = buildModelCallUsage({
+      id: "c1",
+      category: "answer",
+      model: "m",
+      providerId: "p",
+      exact: { inputTokens: 0, outputTokens: 8, totalTokens: 8 },
+      inputText: "你好abcd你好abcd",
+      outputText: "结果",
+    });
+    expect(usage.source).toBe("estimated");
+    expect(usage.inputTokens).toBeGreaterThan(0);
+  });
+
   it("estimates mixed text deterministically", () => {
     expect(estimateTokenCount("你好abcd")).toBe(3);
   });

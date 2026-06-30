@@ -2,8 +2,9 @@ import type { ChatMessage, ModelCallCategory, ModelCallUsage, ProviderTokenUsage
 
 /**
  * Validate and normalize provider-reported usage. Returns null when values are
- * missing, non-integer, negative, or when the totals do not add up — callers
- * then fall back to estimation rather than persisting bogus counts.
+ * missing, non-integer, negative, when the totals do not add up, or when the
+ * input is reported as 0 on a call that produced output — callers then fall
+ * back to estimation rather than persisting bogus counts.
  */
 export function normalizeProviderUsage(value: ProviderTokenUsage): ProviderTokenUsage | null {
   const values = [value.inputTokens, value.outputTokens, value.totalTokens];
@@ -11,6 +12,15 @@ export function normalizeProviderUsage(value: ProviderTokenUsage): ProviderToken
     return null;
   }
   if (value.totalTokens !== value.inputTokens + value.outputTokens) {
+    return null;
+  }
+  // A real model call always has a non-empty prompt, so inputTokens must be
+  // greater than 0. Some OpenAI-compatible providers (notably certain reasoning
+  // models and streaming endpoints) report `prompt_tokens: 0` while filling
+  // completion_tokens — the totals still add up, so the checks above pass, but
+  // the 0 is bogus. Reject it so the caller falls back to estimating the input
+  // from the request text instead of showing "输入 0".
+  if (value.inputTokens === 0) {
     return null;
   }
   return value;
