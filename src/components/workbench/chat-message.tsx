@@ -3,6 +3,7 @@
 import { BotIcon, CopyIcon, UserIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { AgentActivityStage, ChatMessage, ExternalSource } from "@/lib/project/types";
+import { stripToolCallLeakage } from "@/lib/project/tool-call-strip";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { MarkdownContent } from "./markdown-content";
@@ -35,7 +36,7 @@ function isStageActive(stage: AgentActivityStage | undefined): stage is AgentAct
 
 async function copyMessage(message: ChatMessage) {
   try {
-    await navigator.clipboard.writeText(message.content);
+    await navigator.clipboard.writeText(stripToolCallLeakage(message.content));
     toast.success("已复制到剪贴板");
   } catch {
     toast.error("复制失败");
@@ -119,12 +120,12 @@ export function ChatMessageView({ message, activity }: ChatMessageViewProps) {
             </summary>
             {hasReasoning ? (
               <div className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-                {message.reasoningContent}
+                {stripToolCallLeakage(message.reasoningContent)}
               </div>
             ) : null}
           </details>
         ) : null}
-        <MarkdownContent markdown={message.content} variant="chat" />
+        <MarkdownContent markdown={stripToolCallLeakage(message.content)} variant="chat" />
         {message.sources && message.sources.length > 0 ? (
           <div className="chat-sources mt-1 flex flex-col gap-1 border-t pt-2">
             {message.sources.map((source) => (

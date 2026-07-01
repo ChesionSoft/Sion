@@ -6,6 +6,7 @@ import { FileStore } from "@/lib/project/files";
 import { judgeNodeFacts } from "@/lib/project/node-fact-judge";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
 import { ProjectStore } from "@/lib/project/store";
+import { stripToolCallLeakage } from "@/lib/project/tool-call-strip";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
 import { BrowserSearchStore } from "@/lib/settings/browser-search";
 import { BrowserManager } from "@/lib/project/browser-manager";
@@ -261,7 +262,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           "## 回复要求",
           "",
           "- 先回答用户问题，再给出建议写入 Markdown 的内容。",
-          "- 如果信息不足，每轮最多提出 3 个关键问题。",
+          "- 如果信息不足，每轮最多提出 3 个关键问题；提问直接用普通 Markdown 文本写出问题和选项，禁止调用任何工具，禁止输出任何工具调用格式或包装符（例如 tool_name、parameters、tool_call 标签或模型私有的工具调用标记）。",
           "- 分析或检索得到的内容直接写进对应正文小节，不要单独留\"假设\"小节。",
           "- 不确定、需要用户确认的问题只在聊天里追问，绝不写进交付稿。",
           "- 不要修改其他节点负责的章节。",
@@ -309,6 +310,16 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         }
 
         if (abortController.signal.aborted) return;
+
+        // Some MiniMax models leak proprietary tool-call wrappers into the
+        // content channel over the OpenAI-compatible endpoint (the system
+        // prompt tells the model not to emit them; this is the safety net).
+        // Strip before persisting and before the judge sees the turn, so the
+        // saved message and the draft-update decision are based on clean text.
+        assistantContent = stripToolCallLeakage(assistantContent);
+        if (assistantReasoningContent) {
+          assistantReasoningContent = stripToolCallLeakage(assistantReasoningContent);
+        }
 
         sendActivity("updating_document", "正在检查交付稿更新");
         sendEvent({ type: "markdown_check_start" });
