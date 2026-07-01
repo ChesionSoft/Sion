@@ -31,7 +31,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ proje
   try {
     const node = await store.updateProjectNodeIfRevision(projectId, nodeId, body.expectedRevision, {
       markdown: body.markdown,
-      status: "draft",
+      // 主动保存即视为用户已确认本节点交付稿，状态置为 confirmed，
+      // 不再把已生成/已确认的节点降级回草稿。
+      status: "confirmed",
     });
     return NextResponse.json({ node });
   } catch (error) {

@@ -44,7 +44,7 @@ describe("nodes API", () => {
     expect(response.status).toBe(404);
   });
 
-  it("saves node as draft with incremented revision on success", async () => {
+  it("saves node as confirmed with incremented revision on success", async () => {
     const store = new ProjectStore();
     const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
     const response = await PATCH(
@@ -58,7 +58,7 @@ describe("nodes API", () => {
     const data = (await response.json()) as { node: { markdown: string; revision: number; status: string } };
     expect(data.node.revision).toBe(1);
     expect(data.node.markdown).toBe("new content");
-    expect(data.node.status).toBe("draft");
+    expect(data.node.status).toBe("confirmed");
   });
 
   it("returns 400 when markdown is missing", async () => {
@@ -126,18 +126,18 @@ describe("nodes API", () => {
     expect(node.revision).toBe(1);
   });
 
-  it("ignores client-provided status, always writes draft", async () => {
+  it("ignores client-provided status, always writes confirmed", async () => {
     const store = new ProjectStore();
     const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
     const response = await PATCH(
       new Request(`http://localhost/api/projects/${project.id}/nodes/feature-design`, {
         method: "PATCH",
-        body: JSON.stringify({ markdown: "x", expectedRevision: 0, status: "confirmed" }),
+        body: JSON.stringify({ markdown: "x", expectedRevision: 0, status: "draft" }),
       }),
       { params: Promise.resolve({ projectId: project.id, nodeId: "feature-design" }) },
     );
     expect(response.status).toBe(200);
     const data = (await response.json()) as { node: { status: string } };
-    expect(data.node.status).toBe("draft");
+    expect(data.node.status).toBe("confirmed");
   });
 });
