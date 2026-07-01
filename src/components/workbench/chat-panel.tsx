@@ -1044,7 +1044,7 @@ export function ChatPanel({
                       </button>
 
                       {modelSubmenuOpen ? (
-                        <div className="absolute bottom-0 left-[calc(100%+6px)] z-40 max-h-72 w-56 overflow-auto rounded-xl border bg-popover p-1.5 shadow-xl">
+                        <div className="absolute bottom-0 right-[calc(100%+6px)] z-40 max-h-72 w-56 overflow-auto rounded-xl border bg-popover p-1.5 shadow-xl">
                           <p className="px-2 py-1 text-xs text-muted-foreground">选择模型</p>
                           {sharedContext.providers.map((provider) => (
                             <div key={provider.id}>
