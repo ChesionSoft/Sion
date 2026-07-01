@@ -155,6 +155,43 @@ describe("streamNodeMarkdownRewrite", () => {
     expect(systemMsg).not.toContain("设计假设");
     expect(systemMsg).not.toContain("待确认问题");
   });
+
+  it("includes agent rule content in the system prompt", async () => {
+    const encoder = new TextEncoder();
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"# 项目基本信息"}}]}\n\n'));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      }),
+    } as unknown as Response);
+
+    const tokens: string[] = [];
+    for await (const token of streamNodeMarkdownRewrite({
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "sk-test",
+      model: "test-model",
+      nodeId: "basic-info",
+      currentMarkdown: "# 项目基本信息",
+      contextMarkdown: "",
+      recentMessages: [],
+      agentRuleContent: "## 本节点规则\n\n必须覆盖客户管理模块。",
+      fetchImpl,
+    })) {
+      tokens.push(token);
+    }
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init?.body)) as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const systemMsg = body.messages[0].content;
+    expect(systemMsg).toContain("必须覆盖客户管理模块。");
+    expect(systemMsg).toContain("本节点 Agent 规则");
+  });
 });
 
 describe("validateRewrittenNodeMarkdown", () => {

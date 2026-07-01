@@ -612,15 +612,37 @@ export function MarkdownPanel({
                   {new Date(node.updatedAt).toLocaleString("zh-CN")}
                 </span>
               </div>
-              <Button
-                onClick={() => void navigator.clipboard.writeText(displayMarkdown)}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                <CopyIcon data-icon="inline-start" />
-                复制文档
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  disabled={rewriteDisabled}
+                  onClick={startRewrite}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <RefreshCwIcon data-icon="inline-start" />
+                  按规则重写
+                </Button>
+                <Button
+                  disabled={!canSave}
+                  onClick={saveMarkdown}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <CheckIcon data-icon="inline-start" />
+                  {savingMarkdown ? "正在保存..." : "保存当前节点交付稿"}
+                </Button>
+                <Button
+                  onClick={() => void navigator.clipboard.writeText(displayMarkdown)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <CopyIcon data-icon="inline-start" />
+                  复制文档
+                </Button>
+              </div>
             </header>
             <article className="document-paper">
               <MarkdownContent markdown={displayMarkdown} variant="document" />

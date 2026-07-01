@@ -298,7 +298,7 @@ describe("judgeNodeFacts", () => {
     expect(calls[0]).toMatchObject({ category: "fact_judge", providerId: "p1" });
   });
 
-  it("uses low reasoning effort", async () => {
+  it("uses medium reasoning effort", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -313,7 +313,66 @@ describe("judgeNodeFacts", () => {
     const callBody = JSON.parse(
       (fetchImpl.mock.calls[0][1] as { body: string }).body,
     );
-    expect(callBody.reasoning_effort).toBe("low");
+    expect(callBody.reasoning_effort).toBe("medium");
+  });
+
+  it("includes the current node markdown in the judge prompt", async () => {
+    const fetchImpl = makeFetchImpl(JSON.stringify({ changes: [] }));
+    await judgeNodeFacts({
+      ...BASE_INPUT,
+      currentMarkdown: "# 项目基本信息\n\n## 项目边界\n\n已有：客户管理",
+      fetchImpl,
+    });
+    const callBody = JSON.parse(
+      (fetchImpl.mock.calls[0][1] as { body: string }).body,
+    ) as { messages: Array<{ role: string; content: string }> };
+    const prompt = callBody.messages.map((m) => m.content).join("\n");
+    expect(prompt).toContain("已有：客户管理");
+    expect(prompt).toContain("当前节点已有交付稿");
+  });
+
+  it("includes recent conversation history in the judge prompt", async () => {
+    const fetchImpl = makeFetchImpl(JSON.stringify({ changes: [] }));
+    await judgeNodeFacts({
+      ...BASE_INPUT,
+      recentMessages: [
+        { role: "user", content: "上轮聊了订单管理" },
+        { role: "assistant", content: "好的，已记录订单管理。" },
+      ],
+      fetchImpl,
+    });
+    const callBody = JSON.parse(
+      (fetchImpl.mock.calls[0][1] as { body: string }).body,
+    ) as { messages: Array<{ role: string; content: string }> };
+    const prompt = callBody.messages.map((m) => m.content).join("\n");
+    expect(prompt).toContain("上轮聊了订单管理");
+    expect(prompt).toContain("最近对话");
+  });
+
+  it("instructs the judge to skip facts already in the existing draft", async () => {
+    const fetchImpl = makeFetchImpl(JSON.stringify({ changes: [] }));
+    await judgeNodeFacts({ ...BASE_INPUT, currentMarkdown: "已有内容", fetchImpl });
+    const callBody = JSON.parse(
+      (fetchImpl.mock.calls[0][1] as { body: string }).body,
+    ) as { messages: Array<{ role: string; content: string }> };
+    const prompt = callBody.messages.map((m) => m.content).join("\n");
+    expect(prompt).toContain("尚未在上方已有交付稿中体现");
+  });
+
+  it("slices recent messages to the last 10", async () => {
+    const fetchImpl = makeFetchImpl(JSON.stringify({ changes: [] }));
+    const recent = Array.from({ length: 15 }, (_, i) => ({
+      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+      content: `历史消息 ${i}`,
+    }));
+    await judgeNodeFacts({ ...BASE_INPUT, recentMessages: recent, fetchImpl });
+    const callBody = JSON.parse(
+      (fetchImpl.mock.calls[0][1] as { body: string }).body,
+    ) as { messages: Array<{ role: string; content: string }> };
+    const prompt = callBody.messages.map((m) => m.content).join("\n");
+    expect(prompt).toContain("历史消息 5");
+    expect(prompt).toContain("历史消息 14");
+    expect(prompt).not.toContain("历史消息 0");
   });
 
   it("sends the assistant response and table column contract to the judge", async () => {
