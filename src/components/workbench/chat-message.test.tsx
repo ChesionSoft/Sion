@@ -110,4 +110,31 @@ describe("ChatMessageView", () => {
     await user.click(screen.getByRole("button", { name: "复制" }));
     expect(writeText).toHaveBeenCalledWith("你好");
   });
+
+  it("strips proprietary tool-call wrapper leakage from the rendered bubble", () => {
+    // Build the leakage from parts so this source file does not contain the
+    // contiguous literal marker sequences.
+    const marker = "]" + "<]" + "minimax" + "[>";
+    const tnOpen = "<" + "tool_name" + ">";
+    const tnClose = "</" + "tool_name" + ">";
+    const leaked = "# 标题\n\n正文回答到此结束。" + marker + tnOpen + "ask_user_question" + tnClose;
+    render(<ChatMessageView message={{ ...baseAssistant, content: leaked }} />);
+    expect(screen.getByRole("heading", { name: "标题" })).toBeInTheDocument();
+    expect(screen.getByText(/正文回答到此结束/)).toBeInTheDocument();
+    // The marker and the hallucinated tool name must not be rendered.
+    expect(screen.queryByText(/ask_user_question/)).not.toBeInTheDocument();
+  });
+
+  it("copies the leakage-stripped content, not the raw tagged text", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const marker = "]" + "<]" + "minimax" + "[>";
+    const tnOpen = "<" + "tool_name" + ">";
+    const tnClose = "</" + "tool_name" + ">";
+    const leaked = "# 标题\n\n正文" + marker + tnOpen + "ask_user_question" + tnClose;
+    render(<ChatMessageView message={{ ...baseAssistant, content: leaked }} />);
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    expect(writeText).toHaveBeenCalledWith("# 标题\n\n正文");
+  });
 });
