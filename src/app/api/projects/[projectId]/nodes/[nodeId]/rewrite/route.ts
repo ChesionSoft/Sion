@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
 import { NodeRevisionConflictError, ProjectStore } from "@/lib/project/store";
+import { AgentOverrideStore } from "@/lib/project/agent-overrides";
 import { streamNodeMarkdownRewrite, validateRewrittenNodeMarkdown } from "@/lib/project/agent-markdown";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
 import type { ProjectNode, ReasoningEffort, WorkflowNodeId } from "@/lib/project/types";
@@ -15,6 +16,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   }
 
   const projectStore = new ProjectStore();
+  const agentStore = new AgentOverrideStore();
   const modelProviderStore = new ModelProviderStore();
 
   const project = await projectStore.getProject(projectId);
@@ -67,6 +69,8 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     .map((n) => n.markdown)
     .join("\n\n");
 
+  const agentRuleContent = await agentStore.getActiveRuleContent(projectId, nodeId);
+
   let recentMessages: import("@/lib/project/types").ChatMessage[];
   try {
     const messages = await projectStore.getChatMessages(projectId, nodeId, body.sessionId);
@@ -102,6 +106,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           currentMarkdown: currentNode.markdown,
           contextMarkdown,
           recentMessages,
+          agentRuleContent,
           signal: abortController.signal,
         })) {
           candidateMarkdown += token;

@@ -28,6 +28,8 @@ export type StreamNodeMarkdownRewriteInput = {
   currentMarkdown: string;
   contextMarkdown: string;
   recentMessages: ChatMessage[];
+  /** 本节点当前生效的 Agent 规则内容（default 或项目 override）。 */
+  agentRuleContent?: string;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 };
@@ -41,6 +43,11 @@ export async function* streamNodeMarkdownRewrite(
   // Build system prompt with schema sections
   const systemParts: string[] = [
     `You are rewriting the Markdown for the workflow node "${input.nodeId}".`,
+    "",
+    "## 本节点 Agent 规则",
+    input.agentRuleContent?.trim() || "（无自定义规则）",
+    "",
+    "在遵循下方骨架与规则的前提下，按上述 Agent 规则的口径组织内容；二者冲突时以 Agent 规则为准。",
     "",
     "Output ONLY the complete updated Markdown for the current node.",
     "Start with the node's H1 heading:",
