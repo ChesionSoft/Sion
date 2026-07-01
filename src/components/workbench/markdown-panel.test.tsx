@@ -81,6 +81,87 @@ describe("MarkdownPanel", () => {
     expect(within(workspace).getByRole("heading", { name: /项目基本信息/ })).toBeInTheDocument();
   });
 
+  it("preview tab shows rewrite and save buttons next to copy", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getByRole("tab", { name: "预览交付稿" }));
+
+    const toolbar = document.querySelector(".document-toolbar") as HTMLElement;
+    expect(within(toolbar).getByRole("button", { name: "复制文档" })).toBeInTheDocument();
+    expect(within(toolbar).getByRole("button", { name: /按规则重写/ })).toBeInTheDocument();
+    expect(within(toolbar).getByRole("button", { name: /保存当前节点交付稿/ })).toBeInTheDocument();
+  });
+
+  it("preview save button PATCHes the node endpoint", async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ node: { ...localNode, revision: 1 } })),
+    );
+    renderPanel();
+    await user.click(screen.getByRole("tab", { name: "预览交付稿" }));
+
+    const toolbar = document.querySelector(".document-toolbar") as HTMLElement;
+    await user.click(within(toolbar).getByRole("button", { name: /保存当前节点交付稿/ }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/nodes/basic-info"),
+        expect.objectContaining({ method: "PATCH" }),
+      );
+    });
+  });
+
+  it("preview rewrite button triggers the rewrite endpoint", async () => {
+    globalThis.fetch = vi.fn().mockImplementation(async (url: RequestInfo) => {
+      if (String(url).includes("/rewrite")) {
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode('data: {"type":"markdown_token","content":"# Rewritten"}\n\n'));
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    type: "markdown_done",
+                    updatedNode: {
+                      id: "basic-info",
+                      status: "generated",
+                      markdown: "# Rewritten",
+                      revision: 1,
+                      updatedAt: "2026-06-14T11:00:00.000Z",
+                    },
+                  })}\n\n`,
+                ),
+              );
+              controller.close();
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({}));
+    });
+
+    const user = userEvent.setup();
+    const { setGenState } = renderPanel();
+    await user.click(screen.getByRole("tab", { name: "预览交付稿" }));
+
+    const toolbar = document.querySelector(".document-toolbar") as HTMLElement;
+    await user.click(within(toolbar).getByRole("button", { name: /按规则重写/ }));
+
+    await waitFor(() => {
+      expect(setGenState).toHaveBeenCalledWith(
+        expect.objectContaining({ phase: "previewing_rewrite" }),
+      );
+    });
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/rewrite"),
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
   it("previewing_rewrite does not programmatically switch the active tab to preview", () => {
     renderPanel({ genState: { phase: "previewing_rewrite", candidate: "" } });
 
