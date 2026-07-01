@@ -28,6 +28,10 @@ export type JudgeNodeFactsInput = {
   userMessage: string;
   assistantContent: string;
   externalSources?: ExternalSource[];
+  /** 当前节点已有交付稿，供 judge 判断哪些事实尚未写入。 */
+  currentMarkdown?: string;
+  /** 最近对话历史（仅 user/assistant），供 judge 理解上下文、避免重复抽取。 */
+  recentMessages?: { role: "user" | "assistant"; content: string }[];
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
   /** Whole-turn identity + callback for reporting the judge's token usage. */
@@ -62,7 +66,11 @@ const patchSchema = z.object({
 // System prompt builder
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(nodeId: WorkflowNodeId, externalSources: ExternalSource[] | undefined): string {
+function buildSystemPrompt(
+  nodeId: WorkflowNodeId,
+  externalSources: ExternalSource[] | undefined,
+  currentMarkdown: string,
+): string {
   const schema = getDeliverySchema(nodeId);
   if (!schema) {
     throw new Error(`Unknown node id: ${nodeId}`);
@@ -100,7 +108,12 @@ Available sections for this node (these are the ONLY sections you may write into
 ${sectionsList}
 
 External sources referenced this turn (never treat as confirmed facts):
-${externalList || "(none)"}`;
+${externalList || "(none)"}
+
+## 当前节点已有交付稿
+${currentMarkdown.trim() || "（尚无内容）"}
+
+仅抽取尚未在上方已有交付稿中体现的新增或更新事实。若本轮用户消息与助手回复中的信息已全部包含在上方已有交付稿中，返回 {"changes":[]}。需要澄清的问题不要写入，留在聊天中。`;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +124,13 @@ export async function judgeNodeFacts(
   input: JudgeNodeFactsInput,
 ): Promise<JudgeNodeFactsResult> {
   const externalSources = input.externalSources ?? [];
-  const systemPrompt = buildSystemPrompt(input.nodeId, externalSources);
+  const currentMarkdown = input.currentMarkdown ?? "";
+  const recentMessages = (input.recentMessages ?? []).slice(-10);
+  const systemPrompt = buildSystemPrompt(input.nodeId, externalSources, currentMarkdown);
+
+  const formattedRecent = recentMessages
+    .map((m) => `${m.role === "user" ? "用户" : "Assistant"}：${m.content}`)
+    .join("\n\n");
 
   const usageContext: ModelUsageContext | undefined =
     input.turnId && input.providerId && input.onUsage
@@ -127,7 +146,7 @@ export async function judgeNodeFacts(
       apiKey: input.apiKey,
       model: input.model,
       protocol: input.protocol ?? "chat_completions",
-      reasoningEffort: "low",
+      reasoningEffort: "medium",
       // Never enable Web Search for fact judging — the judge must reason only
       // over the user's own message and the assistant's reply.
       webSearchEnabled: false,
@@ -136,6 +155,9 @@ export async function judgeNodeFacts(
         {
           role: "user",
           content: [
+            "## 最近对话",
+            formattedRecent || "（无）",
+            "",
             "## User message",
             input.userMessage,
             "",

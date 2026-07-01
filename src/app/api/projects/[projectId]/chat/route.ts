@@ -323,6 +323,10 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           userMessage: trimmedUserMessage,
           assistantContent,
           externalSources: dedupeExternalSources(consumedSources),
+          currentMarkdown: currentNode.markdown,
+          recentMessages: priorMessages
+            .slice(-10)
+            .map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
           signal: abortController.signal,
           turnId,
           providerId: body.providerId!,
