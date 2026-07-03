@@ -431,6 +431,12 @@ export function ChatPanel({
   const selectedReasoning = REASONING_OPTIONS.find((option) => option.value === sharedContext.reasoningEffort) ?? REASONING_OPTIONS[1];
   const readableProjectFiles = projectFiles.filter(isReadableFile);
   const selectedFiles = readableProjectFiles.filter((f) => selectedFileIds.includes(f.id));
+  // Live reasoning for the streaming assistant message, surfaced in the
+  // activity status bar so a reasoning model's thinking is visible mid-turn.
+  const streamingReasoning =
+    sending && streamingAssistantId
+      ? (messages.find((m) => m.id === streamingAssistantId)?.reasoningContent ?? "")
+      : "";
 
   function selectModel(provider: ModelProvider, modelName: string) {
     sharedContext.setProviderId(provider.id);
@@ -819,6 +825,7 @@ export function ChatPanel({
             stage={activity.stage}
             summary={activity.summary}
             startedAt={activity.startedAt}
+            reasoning={streamingReasoning}
           />
         ) : null}
         {webNotice ? (

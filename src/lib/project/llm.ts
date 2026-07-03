@@ -1,5 +1,6 @@
 import type { ApiUrlMode, ProviderTokenUsage } from "./types";
 import type { ModelConversationItem, ModelToolDefinition, ModelToolCall, ModelTurnEvent } from "./model-tools";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS, readWithIdleTimeout } from "./stream-utils";
 
 export type LlmMessage = {
   role: "system" | "user" | "assistant";
@@ -89,6 +90,10 @@ export async function callOpenAICompatibleChatDetailed(
 
 export type StreamOpenAICompatibleChatInput = CallOpenAICompatibleChatInput & {
   signal?: AbortSignal;
+  /** Max ms to wait for the next stream chunk before treating the stream as
+   * stalled. Some providers accept stream_options but never send [DONE] or
+   * close the connection; this bounds the wait. Defaults to 60s. */
+  idleTimeoutMs?: number;
 };
 
 export type LlmStreamPart =
@@ -154,45 +159,59 @@ export async function* streamOpenAICompatibleChat(
   const reader = (response.body as ReadableStream<Uint8Array>).getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const idleTimeoutMs = input.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await readWithIdleTimeout(reader, idleTimeoutMs, input.signal);
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop()!;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data: ")) continue;
-      const data = trimmed.slice(6);
-      if (data === "[DONE]") return;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) continue;
+        const data = trimmed.slice(6);
+        if (data === "[DONE]") return;
 
-      try {
-        const parsed = JSON.parse(data) as {
-          choices?: Array<{
-            delta?: {
-              content?: string;
-              reasoning?: string;
-              reasoning_content?: string;
-              reasoningContent?: string;
-            };
-          }>;
-          usage?: ChatCompletionsUsage;
-        };
-        const delta = parsed.choices?.[0]?.delta;
-        const reasoning = delta?.reasoning_content ?? delta?.reasoningContent ?? delta?.reasoning;
-        if (reasoning) yield { type: "reasoning", content: reasoning };
-        if (delta?.content) yield { type: "content", content: delta.content };
-        if (parsed.usage) {
-          const usage = normalizeChatUsage(parsed.usage);
-          if (usage) yield { type: "usage", usage };
+        try {
+          const parsed = JSON.parse(data) as {
+            choices?: Array<{
+              delta?: {
+                content?: string;
+                reasoning?: string;
+                reasoning_content?: string;
+                reasoningContent?: string;
+              };
+            }>;
+            usage?: ChatCompletionsUsage;
+          };
+          const delta = parsed.choices?.[0]?.delta;
+          const reasoning = delta?.reasoning_content ?? delta?.reasoningContent ?? delta?.reasoning;
+          if (reasoning) yield { type: "reasoning", content: reasoning };
+          if (delta?.content) yield { type: "content", content: delta.content };
+          if (parsed.usage) {
+            const usage = normalizeChatUsage(parsed.usage);
+            if (usage) {
+              yield { type: "usage", usage };
+              // Per the OpenAI spec, usage arrives in the final chunk when
+              // include_usage is set. Return immediately so a provider that
+              // omits the trailing [DONE] cannot stall the turn.
+              return;
+            }
+          }
+        } catch {
+          // skip malformed chunks
         }
-      } catch {
-        // skip malformed chunks
       }
     }
+  } finally {
+    // Cancel rather than awaiting reader.closed: a provider that sends [DONE]
+    // but keeps the connection open would otherwise hang generator completion.
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }
 
@@ -220,6 +239,9 @@ export type ChatCompletionsTurnInput = {
   tools?: ModelToolDefinition[];
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+  /** Max ms to wait for the next stream chunk before treating the stream as
+   * stalled. Defaults to 60s. */
+  idleTimeoutMs?: number;
 };
 
 type OpenAIMessage = {
@@ -323,10 +345,11 @@ export async function* streamChatCompletionsTurn(
   const decoder = new TextDecoder();
   let buffer = "";
   const toolBuffers = new Map<number, { id?: string; name?: string; arguments: string }>();
+  const idleTimeoutMs = input.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithIdleTimeout(reader, idleTimeoutMs, input.signal);
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
@@ -379,7 +402,16 @@ export async function* streamChatCompletionsTurn(
           }
           if (parsed.usage) {
             const usage = normalizeChatUsage(parsed.usage);
-            if (usage) yield { type: "usage", usage };
+            if (usage) {
+              // Flush any buffered tool calls (mirrors the [DONE] path) in case
+              // the stream omitted an explicit finish_reason="tool_calls", then
+              // yield usage and return. Per the OpenAI spec, usage is the
+              // terminal event when include_usage is set; returning here bounds
+              // the turn against providers that never send [DONE].
+              for (const call of assembleToolCalls(toolBuffers)) yield { type: "tool_call", call };
+              yield { type: "usage", usage };
+              return;
+            }
           }
         } catch {
           // skip malformed chunks
@@ -387,7 +419,9 @@ export async function* streamChatCompletionsTurn(
       }
     }
   } finally {
-    await reader.closed.catch(() => {});
+    // Cancel rather than awaiting reader.closed: a provider that sends [DONE]
+    // but keeps the connection open would otherwise hang generator completion.
+    await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

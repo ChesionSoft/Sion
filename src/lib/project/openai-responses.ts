@@ -1,6 +1,7 @@
 import { createExternalSource } from "./external-source";
 import type { ApiUrlMode, ExternalSource, ModelProviderProtocol, ProviderTokenUsage, ReasoningEffort } from "./types";
 import type { ModelConversationItem, ModelToolDefinition, ModelToolCall, ModelTurnEvent } from "./model-tools";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS, readWithIdleTimeout } from "./stream-utils";
 
 export type ResponsesMessage = {
   role: "system" | "user" | "assistant";
@@ -17,6 +18,9 @@ export type ResponsesInput = {
   messages: ResponsesMessage[];
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+  /** Max ms to wait for the next stream chunk before treating the stream as
+   * stalled. Defaults to 60s. */
+  idleTimeoutMs?: number;
 };
 
 export type ResponsesTurnInput = {
@@ -30,6 +34,9 @@ export type ResponsesTurnInput = {
   tools?: ModelToolDefinition[];
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+  /** Max ms to wait for the next stream chunk before treating the stream as
+   * stalled. Defaults to 60s. */
+  idleTimeoutMs?: number;
 };
 
 export type ModelStreamPart =
@@ -96,22 +103,33 @@ function toResponsesInput(messages: ResponsesMessage[]) {
   }));
 }
 
-async function* readSseLines(response: Response): AsyncGenerator<string, void, void> {
+async function* readSseLines(
+  response: Response,
+  idleTimeoutMs: number,
+  signal?: AbortSignal,
+): AsyncGenerator<string, void, void> {
   if (!response.body) {
     throw new Error("Responses response did not include a streaming body");
   }
   const reader = (response.body as ReadableStream<Uint8Array>).getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop()!;
-    for (const line of lines) yield line;
+  try {
+    while (true) {
+      const { done, value } = await readWithIdleTimeout(reader, idleTimeoutMs, signal);
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
+      for (const line of lines) yield line;
+    }
+    if (buffer) yield buffer;
+  } finally {
+    // Cancel rather than awaiting reader.closed so a provider that never sends
+    // [DONE] and never closes the connection cannot hang the generator.
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
-  if (buffer) yield buffer;
 }
 
 function buildSourceFromAnnotation(annotation: Annotation): ExternalSource | null {
@@ -154,8 +172,9 @@ export async function* streamOpenAIResponses(
     throw new Error(`Responses request failed with status ${response.status}`);
   }
 
+  const idleTimeoutMs = input.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
   const seenSourceIds = new Set<string>();
-  for await (const line of readSseLines(response)) {
+  for await (const line of readSseLines(response, idleTimeoutMs, input.signal)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data: ")) continue;
     const data = trimmed.slice(6);
@@ -230,7 +249,9 @@ export async function* streamOpenAIResponses(
       }
       const usage = normalizeResponsesUsage(resp?.usage);
       if (usage) yield { type: "usage", usage };
-      continue;
+      // response.completed is the terminal event for the Responses stream;
+      // return immediately so a provider that omits [DONE] cannot stall.
+      return;
     }
     // Unknown event types are ignored.
   }
@@ -352,10 +373,11 @@ export async function* streamOpenAIResponsesTurn(
   const functionBuffers = new Map<string, FunctionCallBuffer>();
   // Calls registered without a streaming id (arguments present in the added item).
   const standaloneCalls: ModelToolCall[] = [];
+  const idleTimeoutMs = input.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithIdleTimeout(reader, idleTimeoutMs, input.signal);
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
@@ -435,12 +457,16 @@ export async function* streamOpenAIResponsesTurn(
           const resp = (parsed as { response?: CompletedResponse }).response;
           const usage = normalizeResponsesUsage(resp?.usage);
           if (usage) yield { type: "usage", usage };
-          continue;
+          // response.completed is the terminal event; return immediately so a
+          // provider that omits [DONE] cannot stall the turn.
+          return;
         }
       }
     }
   } finally {
-    await reader.closed.catch(() => {});
+    // Cancel rather than awaiting reader.closed: a provider that sends [DONE]
+    // but keeps the connection open would otherwise hang generator completion.
+    await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

@@ -9,14 +9,14 @@ import {
 } from "./openai-responses";
 import { toolDefinitions, type ModelConversationItem } from "./model-tools";
 
-function streamingResponse(chunks: string[]): Response {
+function streamingResponse(chunks: string[], close = true): Response {
   const encoder = new TextEncoder();
   return {
     ok: true,
     body: new ReadableStream({
       start(controller) {
         for (const c of chunks) controller.enqueue(encoder.encode(c));
-        controller.close();
+        if (close) controller.close();
       },
     }),
   } as unknown as Response;
@@ -231,6 +231,64 @@ describe("streamOpenAIResponses usage", () => {
       type: "usage",
       usage: { inputTokens: 21, outputTokens: 9, totalTokens: 30 },
     });
+  });
+});
+
+describe("streamOpenAIResponses stream termination", () => {
+  it("terminates on response.completed without [DONE] or stream close", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      streamingResponse(
+        [
+          'data: {"type":"response.output_text.delta","delta":"ans"}\n\n',
+          'data: {"type":"response.completed","response":{"id":"r-1","output":[],"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}}\n\n',
+        ],
+        false,
+      ),
+    );
+
+    const parts: { type: string; content?: string; usage?: unknown }[] = [];
+    for await (const part of streamOpenAIResponses({
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "sk-test",
+      model: "gpt-5",
+      protocol: "openai_responses",
+      messages: [{ role: "user", content: "q" }],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })) {
+      parts.push(part as { type: string; content?: string; usage?: unknown });
+    }
+
+    expect(parts).toEqual([
+      { type: "content", content: "ans" },
+      { type: "usage", usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 } },
+    ]);
+  });
+
+  it("breaks a hanging stream via the idle timeout", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      streamingResponse(
+        ['data: {"type":"response.output_text.delta","delta":"hi"}\n\n'],
+        false,
+      ),
+    );
+
+    const parts: { type: string; content?: string }[] = [];
+    const start = Date.now();
+    for await (const part of streamOpenAIResponses({
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "sk-test",
+      model: "gpt-5",
+      protocol: "openai_responses",
+      messages: [{ role: "user", content: "q" }],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      idleTimeoutMs: 50,
+    })) {
+      parts.push(part as { type: string; content?: string });
+    }
+    const elapsed = Date.now() - start;
+
+    expect(parts).toEqual([{ type: "content", content: "hi" }]);
+    expect(elapsed).toBeLessThan(1500);
   });
 });
 
@@ -465,5 +523,29 @@ describe("streamOpenAIResponsesTurn", () => {
       events.push(e as { type: string });
     }
     expect(events).toEqual([{ type: "content", delta: "ok" } as unknown as { type: string }]);
+  });
+
+  it("does not hang in finally when [DONE] arrives but the stream stays open", async () => {
+    // Provider sends [DONE] but keeps the connection open. The finally must
+    // cancel the reader (not await reader.closed) so the generator completes.
+    const fetchImpl = vi.fn().mockResolvedValue(streamingResponse(["data: [DONE]\n\n"], false));
+
+    const events: { type: string }[] = [];
+    const start = Date.now();
+    for await (const e of streamOpenAIResponsesTurn({
+      apiBaseUrl: "https://api.openai.com",
+      apiKey: "sk-test",
+      model: "gpt-5",
+      protocol: "openai_responses",
+      conversation: [{ type: "message", role: "user", content: "q" }],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      idleTimeoutMs: 5000,
+    })) {
+      events.push(e as { type: string });
+    }
+    const elapsed = Date.now() - start;
+
+    expect(events).toEqual([]);
+    expect(elapsed).toBeLessThan(1500);
   });
 });

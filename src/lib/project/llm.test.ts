@@ -96,14 +96,14 @@ describe("callOpenAICompatibleChat", () => {
   });
 });
 
-function createMockStreamBody(chunks: string[]): ReadableStream<Uint8Array> {
+function createMockStreamBody(chunks: string[], close = true): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
       const encoder = new TextEncoder();
       for (const chunk of chunks) {
         controller.enqueue(encoder.encode(chunk));
       }
-      controller.close();
+      if (close) controller.close();
     },
   });
 }
@@ -330,6 +330,62 @@ describe("streamOpenAICompatibleChat", () => {
       (fetchMock.mock.calls[1] as [string, { body: string }])[1].body,
     );
     expect(secondBody).not.toHaveProperty("stream_options");
+  });
+
+  it("terminates after usage without a [DONE] marker or stream close", async () => {
+    // Provider accepts stream_options, sends content + usage, then neither
+    // [DONE] nor a connection close. The generator must still complete.
+    const mockBody = createMockStreamBody(
+      [
+        'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
+      ],
+      false,
+    );
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+
+    const parts: { type: string; content?: string; usage?: unknown }[] = [];
+    for await (const part of streamOpenAICompatibleChat({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+    })) {
+      parts.push(part);
+    }
+
+    expect(parts).toEqual([
+      { type: "content", content: "ok" },
+      { type: "usage", usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } },
+    ]);
+  });
+
+  it("breaks a hanging stream via the idle timeout", async () => {
+    // One chunk, then the provider goes silent and never closes the stream.
+    const mockBody = createMockStreamBody(
+      ['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'],
+      false,
+    );
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+
+    const parts: { type: string; content?: string }[] = [];
+    const start = Date.now();
+    for await (const part of streamOpenAICompatibleChat({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      messages: [{ role: "user", content: "Hi" }],
+      idleTimeoutMs: 50,
+    })) {
+      parts.push(part);
+    }
+    const elapsed = Date.now() - start;
+
+    expect(parts).toEqual([{ type: "content", content: "hi" }]);
+    // Without the idle timeout this loop would hang forever.
+    expect(elapsed).toBeLessThan(1500);
   });
 });
 
@@ -578,5 +634,81 @@ describe("streamChatCompletionsTurn", () => {
       tools: toolDefinitions,
     });
     await expect(gen.next()).rejects.toThrow();
+  });
+
+  it("terminates after usage without a [DONE] marker or stream close", async () => {
+    const mockBody = createMockStreamBody(
+      [
+        'data: {"choices":[{"delta":{"content":"ans"}}]}\n\n',
+        'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}\n\n',
+      ],
+      false,
+    );
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+
+    const events: { type: string; delta?: string; usage?: unknown }[] = [];
+    for await (const e of streamChatCompletionsTurn({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      conversation: [{ type: "message", role: "user", content: "Hi" }],
+    })) {
+      events.push(e);
+    }
+
+    expect(events).toEqual([
+      { type: "content", delta: "ans" },
+      { type: "usage", usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } },
+    ]);
+  });
+
+  it("breaks a hanging stream via the idle timeout", async () => {
+    const mockBody = createMockStreamBody(
+      ['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'],
+      false,
+    );
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+
+    const events: { type: string; delta?: string }[] = [];
+    const start = Date.now();
+    for await (const e of streamChatCompletionsTurn({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      conversation: [{ type: "message", role: "user", content: "Hi" }],
+      idleTimeoutMs: 50,
+    })) {
+      events.push(e);
+    }
+    const elapsed = Date.now() - start;
+
+    expect(events).toEqual([{ type: "content", delta: "hi" }]);
+    expect(elapsed).toBeLessThan(1500);
+  });
+
+  it("does not hang in finally when [DONE] arrives but the stream stays open", async () => {
+    // Provider sends [DONE] but keeps the connection open. The finally must
+    // cancel the reader (not await reader.closed) so the generator completes.
+    const mockBody = createMockStreamBody(['data: [DONE]\n\n'], false);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: mockBody });
+
+    const events: { type: string }[] = [];
+    const start = Date.now();
+    for await (const e of streamChatCompletionsTurn({
+      fetchImpl: fetchMock,
+      apiBaseUrl: "https://api.example.com",
+      apiKey: "secret",
+      model: "m",
+      conversation: [{ type: "message", role: "user", content: "Hi" }],
+      idleTimeoutMs: 5000,
+    })) {
+      events.push(e);
+    }
+    const elapsed = Date.now() - start;
+
+    expect(events).toEqual([]);
+    expect(elapsed).toBeLessThan(1500);
   });
 });
