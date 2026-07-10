@@ -54,4 +54,19 @@ describe("MarkdownContent", () => {
     expect(document.querySelector("script")).toBeNull();
     spy.mockRestore();
   });
+
+  it("renders a delivery block as a collapsed 'written to doc' card", () => {
+    const md =
+      "已更新功能设计。\n```delivery\n" +
+      JSON.stringify({
+        changes: [{ sectionKey: "module_details", patchKind: "append_block", markdown: "客户管理功能包含 CRUD" }],
+      }) +
+      "\n```";
+    render(<MarkdownContent markdown={md} variant="chat" />);
+    expect(screen.getByText(/已写入交付稿/)).toBeInTheDocument();
+    // Collapsed by default: the patch content is not shown.
+    expect(screen.queryByText("客户管理功能包含 CRUD")).not.toBeInTheDocument();
+    // A delivery block must NOT get the ordinary code-block copy button.
+    expect(screen.queryByRole("button", { name: "复制" })).toBeNull();
+  });
 });
