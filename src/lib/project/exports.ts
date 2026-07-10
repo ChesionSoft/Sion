@@ -24,7 +24,7 @@ export async function exportProjectDocuments(store: ProjectStore, projectId: str
   const spec = createSpecMarkdown(project, nodes);
   const tasks = createTasksMarkdown(project, nodes);
   const agents = createAgentsMarkdown(project);
-  const docx = await createProjectDesignDocx(project, projectDesign);
+  const docx = await createProjectDesignDocx(project, nodes);
 
   const files = [
     { filename: "PROJECT_DESIGN.md", content: projectDesign },

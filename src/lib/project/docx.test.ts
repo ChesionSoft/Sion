@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildProjectDesignDocument, createProjectDesignDocx } from "./docx";
-import type { Project, ProjectNode } from "./types";
+import type { Project, ProjectNode, WorkflowNodeId } from "./types";
 
 const project: Project = {
   id: "p1",
@@ -12,14 +12,14 @@ const project: Project = {
   updatedAt: "2026-06-14T10:00:00.000Z",
 };
 
-function node(id: string, markdown: string): ProjectNode {
+function node(id: WorkflowNodeId, markdown: string): ProjectNode {
   return {
     id,
-    status: "completed",
+    status: "confirmed",
     markdown,
     revision: 1,
     updatedAt: "2026-06-14T10:00:00.000Z",
-  };
+  } as ProjectNode;
 }
 
 const xml = (o: unknown): string => JSON.stringify(o);
