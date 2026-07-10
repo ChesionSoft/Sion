@@ -1,0 +1,114 @@
+import { unified } from "unified";
+import remarkParse from "remark-parse";
+import remarkGfm from "remark-gfm";
+import { ExternalHyperlink, TextRun } from "docx";
+
+// ---- 本地 mdast 类型（@types/mdast 不可用，按 remark-parse + remark-gfm 实测形状） ----
+
+export type MdastInline =
+  | { type: "text"; value: string }
+  | { type: "strong"; children: MdastInline[] }
+  | { type: "emphasis"; children: MdastInline[] }
+  | { type: "delete"; children: MdastInline[] }
+  | { type: "inlineCode"; value: string }
+  | { type: "link"; url: string; title?: string | null; children: MdastInline[] }
+  | { type: "image"; url: string; alt?: string | null };
+
+export type MdastBlock =
+  | { type: "heading"; depth: number; children: MdastInline[] }
+  | { type: "paragraph"; children: MdastInline[] }
+  | { type: "list"; ordered: boolean; start?: number | null; children: MdastListItem[] }
+  | { type: "table"; align: ("left" | "center" | "right" | null)[]; children: MdastRow[] }
+  | { type: "code"; value: string; lang?: string | null }
+  | { type: "blockquote"; children: MdastBlock[] }
+  | { type: "thematicBreak" }
+  | { type: "html"; value: string };
+
+export type MdastListItem = { type: "listItem"; children: MdastBlock[] };
+export type MdastRow = { type: "tableRow"; children: MdastCell[] };
+export type MdastCell = { type: "tableCell"; children: MdastInline[] };
+export type MdastNode = { type: string; children?: unknown[] } & Record<string, unknown>;
+
+export function parseMarkdownToMdast(markdown: string): MdastNode {
+  const tree = unified().use(remarkParse).use(remarkGfm).parse(markdown);
+  return tree as unknown as MdastNode;
+}
+
+// ---- 行内 ----
+
+export type RunStyle = { bold?: boolean; italics?: boolean; strike?: boolean };
+
+/**
+ * 把 mdast 行内节点数组渲染为 docx 行内子元素（TextRun / ExternalHyperlink）。
+ * `inherited` 携带从父节点（strong/emphasis/delete）继承的粗/斜/删除线样式，
+ * 避免事后重建 TextRun。
+ */
+export function renderInline(
+  inlines: MdastInline[],
+  inherited: RunStyle = {},
+): (TextRun | ExternalHyperlink)[] {
+  const out: (TextRun | ExternalHyperlink)[] = [];
+  for (const node of inlines) {
+    switch (node.type) {
+      case "text":
+        out.push(new TextRun({ text: node.value, ...inherited }));
+        break;
+      case "strong":
+        out.push(...renderInline(node.children, { ...inherited, bold: true }));
+        break;
+      case "emphasis":
+        out.push(...renderInline(node.children, { ...inherited, italics: true }));
+        break;
+      case "delete":
+        out.push(...renderInline(node.children, { ...inherited, strike: true }));
+        break;
+      case "inlineCode":
+        out.push(new TextRun({ text: node.value, font: "Consolas", ...inherited }));
+        break;
+      case "link": {
+        const text = collectText(node.children);
+        out.push(
+          new ExternalHyperlink({
+            link: node.url,
+            children: [new TextRun({ text, color: "0563C1", underline: {} })],
+          }),
+        );
+        break;
+      }
+      case "image":
+        out.push(new TextRun({ text: `[${node.alt || "图片"}]`, italics: true }));
+        break;
+      default:
+        out.push(new TextRun({ text: collectText([node as MdastInline]) }));
+        break;
+    }
+  }
+  return out;
+}
+
+/** 收集行内节点数组的纯文本（用于链接显示文本等）。 */
+function collectText(inlines: MdastInline[]): string {
+  let s = "";
+  for (const n of inlines) {
+    switch (n.type) {
+      case "text":
+      case "inlineCode":
+        s += n.value;
+        break;
+      case "strong":
+      case "emphasis":
+      case "delete":
+      case "link":
+        s += collectText(n.children);
+        break;
+      case "image":
+        s += n.alt || "图片";
+        break;
+      default:
+        break;
+    }
+  }
+  return s;
+}
+
+// 后续 Task 实现：renderBlock / renderMdastBody / renderTable 等。
