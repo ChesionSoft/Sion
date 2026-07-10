@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ExternalHyperlink, Paragraph, Table, TextRun } from "docx";
-import { parseMarkdownToMdast, renderBlock, renderInline } from "./markdown-to-docx";
+import { parseMarkdownToMdast, renderBlock, renderInline, renderMdastBody } from "./markdown-to-docx";
 import type { MdastBlock, MdastInline } from "./markdown-to-docx";
 
 /** 取一段 markdown 第一个段落（或块）的行内子节点。 */
@@ -137,5 +137,47 @@ describe("renderBlock table", () => {
   it("applies right alignment to a right-aligned column", () => {
     const serialized = xml(renderBlock(firstBlockOf("| A |\n| ---: |\n| 1 |")));
     expect(serialized).toContain('"right"');
+  });
+});
+
+describe("renderBlock misc + renderMdastBody", () => {
+  it("renders a fenced code block as a shaded monospace paragraph", () => {
+    const els = renderBlock(firstBlockOf("```js\nconst x = 1\n```"));
+    expect(els).toHaveLength(1);
+    expect(els[0]).toBeInstanceOf(Paragraph);
+    const serialized = xml(els);
+    expect(serialized).toContain("const x = 1");
+    expect(serialized).toContain("Consolas");
+    expect(serialized.toUpperCase()).toContain("F2F2F2");
+  });
+
+  it("renders a blockquote with a left border", () => {
+    const els = renderBlock(firstBlockOf("> 引用文字"));
+    const serialized = xml(els);
+    expect(serialized).toContain("引用文字");
+    expect(serialized).toContain("w:pBdr");
+    expect(serialized).toContain("single");
+  });
+
+  it("renders a thematic break as a bottom-border paragraph", () => {
+    const els = renderBlock(firstBlockOf("---"));
+    expect(els[0]).toBeInstanceOf(Paragraph);
+    expect(xml(els)).toContain("bottom");
+  });
+
+  it("skips raw html blocks", () => {
+    // remark treats short inline-ish html as a paragraph; a true html block is
+    // rare in these docs. Test the branch directly with a constructed node.
+    const htmlBlock = { type: "html", value: '<a name="x"></a>' } as MdastBlock;
+    expect(renderBlock(htmlBlock)).toHaveLength(0);
+  });
+
+  it("renderMdastBody renders multiple blocks in order", () => {
+    const els = renderMdastBody("## 标题\n\n正文\n\n- 项");
+    expect(els.length).toBeGreaterThanOrEqual(3);
+    const serialized = xml(els);
+    expect(serialized).toContain("标题");
+    expect(serialized).toContain("正文");
+    expect(serialized).toContain("项");
   });
 });

@@ -14,6 +14,7 @@ import {
   TextRun,
   VerticalAlign,
   WidthType,
+  convertInchesToTwip,
 } from "docx";
 
 // ---- 本地 mdast 类型（@types/mdast 不可用，按 remark-parse + remark-gfm 实测形状） ----
@@ -162,9 +163,60 @@ export function renderBlock(node: MdastBlock): DocxBlockElement[] {
     }
     case "table":
       return [renderTable(node)];
+    case "code":
+      return [renderCodeBlock(node)];
+    case "blockquote": {
+      const out: DocxBlockElement[] = [];
+      for (const child of node.children) {
+        if (child.type === "paragraph") {
+          out.push(
+            new Paragraph({
+              indent: { left: convertInchesToTwip(0.25) },
+              border: { left: { style: BorderStyle.SINGLE, size: 12, color: "999999", space: 10 } },
+              children: renderInline(child.children),
+            }),
+          );
+        } else {
+          out.push(...renderBlock(child));
+        }
+      }
+      return out;
+    }
+    case "thematicBreak":
+      return [
+        new Paragraph({
+          children: [],
+          border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "auto", space: 1 } },
+        }),
+      ];
+    case "html":
+      return [];
     default:
       return [];
   }
+}
+
+/** fenced code block -> 等宽字体 + 底纹 + 左边框的单段落（多行用 break）。 */
+function renderCodeBlock(node: Extract<MdastBlock, { type: "code" }>): Paragraph {
+  const lines = node.value.replace(/\n$/, "").split("\n");
+  return new Paragraph({
+    spacing: { before: 80, after: 80 },
+    shading: { type: ShadingType.SOLID, color: "auto", fill: "F2F2F2" },
+    border: { left: { style: BorderStyle.SINGLE, size: 12, color: "BFBFBF", space: 8 } },
+    children: lines.map((line, i) =>
+      new TextRun({ text: line, font: "Consolas", ...(i > 0 ? { break: 1 } : {}) }),
+    ),
+  });
+}
+
+/** 把一段 markdown 的所有顶层块渲染为 docx 块元素数组（按顺序）。 */
+export function renderMdastBody(markdown: string): DocxBlockElement[] {
+  const root = parseMarkdownToMdast(markdown) as { children: MdastBlock[] };
+  const out: DocxBlockElement[] = [];
+  for (const block of root.children) {
+    out.push(...renderBlock(block));
+  }
+  return out;
 }
 
 /** 有序列表 numbering 引用名；Document 级需声明同名 numbering config。 */
