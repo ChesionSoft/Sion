@@ -30,9 +30,11 @@ function extractCodeMeta(node: ReactNode): { lang: string; text: string } {
 }
 
 /**
- * Renders the assistant's ```delivery block as an expandable "written to
- * delivery doc" card. Three states:
- *  - patches present → "已写入交付稿（N 条）", expandable.
+ * Renders the assistant's ```delivery block as an expandable "pending write
+ * to delivery doc" card. Three states:
+ *  - patches present → "拟写入交付稿（N 条）", expandable. Pending, not done —
+ *    the actual write is confirmed separately on the delivery-doc panel
+ *    ("正在修改交付稿…" → done), so the card must not claim "已写入".
  *  - a complete JSON object but zero patches ({"changes":[]} or all items
  *    malformed) → "本轮无需更新交付稿".
  *  - no complete object yet (block still streaming) → "正在整理…".
@@ -61,7 +63,7 @@ function DeliveryCard({ raw }: { raw: string }) {
         className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-medium hover:bg-muted/50"
         onClick={() => setOpen((o) => !o)}
       >
-        <span>已写入交付稿（{patches.length} 条）</span>
+        <span>拟写入交付稿（{patches.length} 条）</span>
         <span aria-hidden>{open ? "▾" : "▸"}</span>
       </button>
       {open && (
