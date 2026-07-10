@@ -43,7 +43,7 @@ describe("token usage", () => {
   it("marks a turn mixed when exact and estimated calls are combined", () => {
     const calls = [
       buildModelCallUsage({ id: "c1", category: "answer", model: "m", providerId: "p", exact: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, inputText: "", outputText: "" }),
-      buildModelCallUsage({ id: "c2", category: "fact_judge", model: "m", providerId: "p", inputText: "你好", outputText: "结果" }),
+      buildModelCallUsage({ id: "c2", category: "document_update", model: "m", providerId: "p", inputText: "你好", outputText: "结果" }),
     ];
     expect(aggregateTokenUsage("turn-1", calls)).toMatchObject({ source: "mixed", callCount: 2 });
   });

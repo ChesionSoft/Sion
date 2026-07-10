@@ -142,7 +142,7 @@ beforeEach(() => {
           callCount: 2,
           calls: [
             { id: "c-1", category: "answer", providerId: "mp-1", model: "GPT-5.5", source: "exact", status: "completed", inputTokens: 10, outputTokens: 5, totalTokens: 15 },
-            { id: "c-2", category: "fact_judge", providerId: "mp-1", model: "GPT-5.5", source: "exact", status: "completed", inputTokens: 8, outputTokens: 2, totalTokens: 10 },
+            { id: "c-2", category: "document_update", providerId: "mp-1", model: "GPT-5.5", source: "exact", status: "completed", inputTokens: 8, outputTokens: 2, totalTokens: 10 },
           ],
         },
       };

@@ -58,7 +58,7 @@ export type ChatMessage = {
 // ---------------------------------------------------------------------------
 
 export type TokenUsageSource = "exact" | "estimated" | "mixed";
-export type ModelCallCategory = "answer" | "tool_planning" | "fact_judge" | "document_update";
+export type ModelCallCategory = "answer" | "tool_planning" | "document_update";
 
 export type ProviderTokenUsage = {
   inputTokens: number;
