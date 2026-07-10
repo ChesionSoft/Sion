@@ -206,6 +206,20 @@ export function ChatPanel({
   const onGenStateChangeRef = useRef(onGenStateChange);
   useEffect(() => { onGenStateChangeRef.current = onGenStateChange; }, [onGenStateChange]);
 
+  // Abort the in-flight chat stream when ChatPanel unmounts. This component is
+  // keyed by activeNode.id in the workbench, so switching nodes unmounts it; if
+  // the SSE stream were left running, its orphaned handlers would keep driving
+  // the shared genState (via onGenStateChangeRef) with the old node's patches,
+  // applying them to the newly-active node and crashing buildPatchPreviewFrames.
+  // Aborting makes the stream lifecycle match the component lifecycle. The
+  // server still persists the user message + any partial assistant reply on
+  // disconnect, so no conversation is lost.
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
+
   // Tick the clock once per second while a turn is active so the reasoning
   // header can show a live duration.
   useEffect(() => {

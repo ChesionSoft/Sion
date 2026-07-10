@@ -1114,6 +1114,183 @@ describe("ChatPanel", () => {
     };
   }
 
+  // Like createHeldStreamMock, but simulates a real fetch: aborting the request
+  // signal errors the body stream so reader.read() rejects with AbortError.
+  // Used to verify ChatPanel aborts its in-flight chat stream on unmount --
+  // otherwise an orphaned stream drives the shared genState after a node switch
+  // and applies the old node's patches to the newly-active node, crashing.
+  function createAbortableHeldStreamMock(
+    events: (controller: ReadableStreamDefaultController<Uint8Array>) => void,
+  ) {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/settings/model-providers")) {
+        return new Response(JSON.stringify({ providers: defaultProviders }));
+      }
+      if (url.includes("/files")) {
+        return new Response(JSON.stringify({ files: [] }));
+      }
+      if (url.includes("/chat/sessions/s-1")) {
+        return new Response(JSON.stringify({ messages: [] }));
+      }
+      if (url.includes("/chat/sessions")) {
+        return new Response(
+          JSON.stringify({
+            sessions: [
+              { id: "s-1", nodeId: "feature-design", name: "6月14日 23:30", messageCount: 2, webSearchEnabled: false, createdAt: "x", updatedAt: "x" },
+            ],
+          }),
+        );
+      }
+      if (url.includes("/chat") && init?.method === "POST") {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              streamController = controller;
+              events(controller);
+              init.signal?.addEventListener(
+                "abort",
+                () => {
+                  try {
+                    controller.error(new DOMException("aborted", "AbortError"));
+                  } catch {
+                    // stream already closed/errored
+                  }
+                },
+                { once: true },
+              );
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({}));
+    }) as typeof fetch;
+    return { fetchMock, getController: () => streamController };
+  }
+
+  it("aborts the in-flight chat stream on unmount", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+    const abortSpy = vi.spyOn(AbortController.prototype, "abort");
+
+    const { fetchMock } = createAbortableHeldStreamMock((controller) => {
+      const encoder = new TextEncoder();
+      controller.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({ type: "activity", stage: "thinking", summary: "正在分析需求", at: "x" })}\n\n`,
+        ),
+      );
+      // Stay open: no `done`, so the turn is still in-flight at unmount.
+    });
+    globalThis.fetch = fetchMock;
+
+    const { unmount } = render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "切阶段前");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    // The stream is in-flight (only the "thinking" activity has landed).
+    await waitFor(() => {
+      expect(document.querySelector('.agent-activity[data-stage="thinking"]')).not.toBeNull();
+    });
+
+    const callsBefore = abortSpy.mock.calls.length;
+    unmount();
+
+    // The unmount cleanup must abort the in-flight stream so it can no longer
+    // drive shared genState (and apply patches) after the node switches.
+    await waitFor(() => {
+      expect(abortSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+    });
+    abortSpy.mockRestore();
+  });
+
+  it("does not apply the old node's patches after unmount (no orphaned previewing_increment)", async () => {
+    const user = userEvent.setup();
+    const ctx = createMockSharedContext();
+    const onGenStateChange = vi.fn();
+
+    const { fetchMock, getController } = createAbortableHeldStreamMock((controller) => {
+      const encoder = new TextEncoder();
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify({ type: "activity", stage: "thinking", summary: "正在分析需求", at: "x" })}\n\n`),
+      );
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "markdown_check_start" })}\n\n`));
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify({ type: "markdown_start", mode: "increment", baseRevision: 0 })}\n\n`),
+      );
+      controller.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({
+            type: "markdown_patch_preview",
+            patch: {
+              category: "confirmed_fact",
+              targetSectionKey: "module_details",
+              patchKind: "append_block",
+              markdown: "孤儿 patch",
+              evidence: { source: "assistant", quote: "x" },
+            },
+          })}\n\n`,
+        ),
+      );
+      // Do NOT enqueue `done` yet: the turn is in-flight with patches pending.
+    });
+    globalThis.fetch = fetchMock;
+
+    const { unmount } = render(
+      <ChatPanel activeNode={activeNode} projectId="p-1" sharedContext={ctx} onGenStateChange={onGenStateChange} />,
+    );
+
+    await screen.findByRole("button", { name: /发送/ });
+    await user.type(screen.getByPlaceholderText(/补充/), "切阶段前");
+    await user.click(screen.getByRole("button", { name: /发送/ }));
+
+    // Wait until fact-check starts, then flush so the buffered patch_preview
+    // is collected (pendingPatches populated) before we switch nodes.
+    await waitFor(() => {
+      expect(onGenStateChange).toHaveBeenCalledWith(expect.objectContaining({ phase: "checking" }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Switch nodes (unmount ChatPanel). The in-flight stream must be aborted.
+    unmount();
+
+    // Simulate the orphaned stream belatedly delivering `done` with the pending
+    // patches. With the fix, the stream was errored on abort, so this enqueues
+    // into an errored stream (a no-op) and onGenStateChange is never driven to
+    // previewing_increment — the old node's patches cannot land on the new node.
+    const controller = getController();
+    const encoder = new TextEncoder();
+    try {
+      controller?.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({
+            type: "done",
+            sessionId: "s-1",
+            assistantMessage: { id: "a-1", role: "assistant", content: "迟到的回复", createdAt: "2026-06-14T15:31:00.000Z" },
+          })}\n\n`,
+        ),
+      );
+    } catch {
+      // stream already errored on abort — exactly what we want
+    }
+
+    // Let any pending microtasks settle so an orphaned handler would have run.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const previewingCalls = onGenStateChange.mock.calls.filter((call: unknown[]) => {
+      const state = call[0] as MarkdownGenerationState;
+      return state?.phase === "previewing_increment";
+    });
+    expect(previewingCalls).toHaveLength(0);
+  });
+
   it("shows the live activity stage in the closed reasoning header while tokens stream", async () => {
     const user = userEvent.setup();
     const ctx = createMockSharedContext();

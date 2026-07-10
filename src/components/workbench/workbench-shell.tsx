@@ -61,6 +61,10 @@ export function WorkbenchShell({ project, nodes }: { project: Project; nodes: Pr
     ) {
       return;
     }
+    // Reset the shared generation state so a stale conflict/error (which carries
+    // the previous node's latestNode/message) does not leak into the newly
+    // active node's MarkdownPanel.
+    setGenState(INITIAL_GEN_STATE);
     setActiveNodeId(nodeId);
   }
 
