@@ -55,7 +55,7 @@ describe("MarkdownContent", () => {
     spy.mockRestore();
   });
 
-  it("renders a delivery block as a collapsed 'written to doc' card", () => {
+  it("renders a delivery block as a collapsed 'pending write to doc' card", () => {
     const md =
       "已更新功能设计。\n```delivery\n" +
       JSON.stringify({
@@ -63,7 +63,9 @@ describe("MarkdownContent", () => {
       }) +
       "\n```";
     render(<MarkdownContent markdown={md} variant="chat" />);
-    expect(screen.getByText(/已写入交付稿/)).toBeInTheDocument();
+    // Pending wording — the actual write is confirmed on the delivery-doc
+    // panel, so the card must not claim "已写入".
+    expect(screen.getByText(/拟写入交付稿/)).toBeInTheDocument();
     // Collapsed by default: the patch content is not shown.
     expect(screen.queryByText("客户管理功能包含 CRUD")).not.toBeInTheDocument();
     // A delivery block must NOT get the ordinary code-block copy button.
