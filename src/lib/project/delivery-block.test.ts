@@ -88,6 +88,44 @@ describe("parseDeliveryBlock", () => {
       "\n```";
     expect(parseDeliveryBlock(content)[0].targetSectionKey).toBe("goals");
   });
+
+  it("parses a block whose markdown value contains triple-backtick fences", () => {
+    // Regression: an ASCII topology diagram in a markdown value puts ``` inside
+    // the JSON string. The non-greedy fence regex used to close the delivery
+    // fence at that inner ```, truncating the JSON and yielding 0 patches.
+    // JSON strings escape newlines as \n, so the inner ``` is mid-line; the
+    // brace-balanced extractor reads the whole object.
+    const content =
+      "说明。\n```delivery\n" +
+      JSON.stringify({
+        changes: [
+          { sectionKey: "stack", patchKind: "append_bullet", markdown: "- 栈" },
+          {
+            sectionKey: "deployment",
+            patchKind: "append_block",
+            markdown: "```\n研发设备\n    │\n```\n拓扑",
+          },
+          { sectionKey: "dependencies", patchKind: "append_bullet", markdown: "- 依赖" },
+        ],
+      }) +
+      "\n```";
+    expect(parseDeliveryBlock(content).map((p) => p.targetSectionKey)).toEqual([
+      "stack",
+      "deployment",
+      "dependencies",
+    ]);
+  });
+
+  it("parses a block whose markdown value contains literal braces in a string", () => {
+    // Braces inside a JSON string must not break the brace-balanced count.
+    const content =
+      "```delivery\n" +
+      JSON.stringify({
+        changes: [{ sectionKey: "stack", patchKind: "append_block", markdown: "代码 `{ x: 1 }` 片段" }],
+      }) +
+      "\n```";
+    expect(parseDeliveryBlock(content)).toHaveLength(1);
+  });
 });
 
 describe("stripDeliveryBlock", () => {
@@ -101,6 +139,15 @@ describe("stripDeliveryBlock", () => {
 
   it("leaves fence-free content intact (trailing whitespace trimmed)", () => {
     expect(stripDeliveryBlock("纯散文")).toBe("纯散文");
+  });
+
+  it("removes a block whose JSON value contains triple-backtick fences", () => {
+    // The whole block — including the inner ``` from a diagram — must be
+    // stripped, leaving the surrounding prose.
+    const json = JSON.stringify({
+      changes: [{ sectionKey: "deployment", patchKind: "append_block", markdown: "```\n拓扑\n```" }],
+    });
+    expect(stripDeliveryBlock("答案。\n```delivery\n" + json + "\n```\n尾部")).toBe("答案。\n\n尾部");
   });
 });
 

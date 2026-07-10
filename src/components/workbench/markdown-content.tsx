@@ -7,7 +7,7 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { parseDeliveryBlock } from "@/lib/project/delivery-block";
+import { extractFirstJsonObject, parseDeliveryBlock } from "@/lib/project/delivery-block";
 
 type MarkdownVariant = "chat" | "document";
 
@@ -31,20 +31,25 @@ function extractCodeMeta(node: ReactNode): { lang: string; text: string } {
 
 /**
  * Renders the assistant's ```delivery block as an expandable "written to
- * delivery doc" card. While the block is still streaming (unclosed fence),
- * parseDeliveryBlock returns no patches and the card shows a placeholder.
+ * delivery doc" card. Three states:
+ *  - patches present → "已写入交付稿（N 条）", expandable.
+ *  - a complete JSON object but zero patches ({"changes":[]} or all items
+ *    malformed) → "本轮无需更新交付稿".
+ *  - no complete object yet (block still streaming) → "正在整理…".
  */
 function DeliveryCard({ raw }: { raw: string }) {
   const patches = useMemo(
     () => parseDeliveryBlock("```delivery\n" + raw + "\n```"),
     [raw],
   );
+  const hasCompleteObject = useMemo(() => extractFirstJsonObject(raw) != null, [raw]);
   const [open, setOpen] = useState(false);
 
   if (patches.length === 0) {
+    const message = hasCompleteObject ? "本轮无需更新交付稿" : "正在整理写入交付稿的内容…";
     return (
       <div className="my-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-        正在整理写入交付稿的内容…
+        {message}
       </div>
     );
   }
