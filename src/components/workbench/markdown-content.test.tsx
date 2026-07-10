@@ -69,4 +69,18 @@ describe("MarkdownContent", () => {
     // A delivery block must NOT get the ordinary code-block copy button.
     expect(screen.queryByRole("button", { name: "复制" })).toBeNull();
   });
+
+  it("shows 'no updates this turn' for a complete but empty delivery block", () => {
+    const md = "已答复。\n```delivery\n" + JSON.stringify({ changes: [] }) + "\n```";
+    render(<MarkdownContent markdown={md} variant="chat" />);
+    expect(screen.getByText(/本轮无需更新交付稿/)).toBeInTheDocument();
+    expect(screen.queryByText(/正在整理/)).not.toBeInTheDocument();
+  });
+
+  it("shows the streaming placeholder for an incomplete delivery block", () => {
+    // Unclosed fence with an unbalanced JSON object: still streaming.
+    const md = "已答复。\n```delivery\n" + '{"changes":[{"sectionKey":"goals"';
+    render(<MarkdownContent markdown={md} variant="chat" />);
+    expect(screen.getByText(/正在整理写入交付稿的内容/)).toBeInTheDocument();
+  });
 });

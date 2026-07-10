@@ -1,16 +1,23 @@
 import type { NodeMarkdownPatch, PatchKind, WorkflowNodeId } from "./types";
 import { getDeliverySchema } from "./node-delivery-schemas";
 
-const CLOSED_FENCE_RE = /```delivery\s*([\s\S]*?)```/g;
-const UNCLOSED_FENCE_RE = /```delivery\s*([\s\S]*)$/;
+// The ```delivery block is JSON, and `markdown` field values can themselves
+// contain triple-backtick fences (e.g. an ASCII topology diagram). A non-greedy
+// fence regex closes at that inner ```, truncating the JSON. So we don't rely
+// on the closing fence for the boundary: the opening ```delivery is just a
+// marker, and the object body is read by brace-balanced, string-aware
+// `findJsonObjectRange`, which treats ``` / { / } inside JSON strings as
+// ordinary characters. A fresh regex instance is created per call so its
+// lastIndex never leaks across invocations.
+const DELIVERY_OPEN = "```delivery";
 
 /**
- * Extract the first balanced `{...}` JSON object from `text`, tolerating prose
- * or thinking tags around it. Tracks brace depth while respecting string
- * literals and escapes so braces inside strings don't break the count. Moved
- * here from node-fact-judge.ts.
+ * Find the byte range of the first balanced `{...}` JSON object in `text`,
+ * tolerating prose or thinking tags before/after it. Tracks brace depth while
+ * respecting string literals and escapes so braces inside strings don't break
+ * the count. Moved here from node-fact-judge.ts.
  */
-export function extractFirstJsonObject(text: string): string | null {
+function findJsonObjectRange(text: string): { start: number; end: number } | null {
   const start = text.indexOf("{");
   if (start < 0) return null;
   let depth = 0;
@@ -34,11 +41,20 @@ export function extractFirstJsonObject(text: string): string | null {
       depth += 1;
     } else if (ch === "}") {
       depth -= 1;
-      if (depth === 0) return text.slice(start, i + 1);
+      if (depth === 0) return { start, end: i + 1 };
       if (depth < 0) return null;
     }
   }
   return null;
+}
+
+/**
+ * Extract the first balanced `{...}` JSON object from `text`, tolerating prose
+ * or thinking tags around it.
+ */
+export function extractFirstJsonObject(text: string): string | null {
+  const range = findJsonObjectRange(text);
+  return range ? text.slice(range.start, range.end) : null;
 }
 
 /** Parse a raw fence body as JSON, tolerating prose/thinking-tag wrapping. */
@@ -92,42 +108,68 @@ function toPatch(item: unknown): NodeMarkdownPatch | null {
  * applyPatches, which skips invalid patches via validateNodeMarkdownPatch.
  */
 export function parseDeliveryBlock(content: string): NodeMarkdownPatch[] {
-  const jsons: string[] = [];
-  for (const m of content.matchAll(CLOSED_FENCE_RE)) {
-    jsons.push(m[1]);
-  }
-  // Trailing unclosed fence (model never closed it): parse from the last
-  // ```delivery to end, on content with closed fences removed so a closed
-  // block is never double-counted.
-  const withoutClosed = content.replace(CLOSED_FENCE_RE, "");
-  const unclosed = UNCLOSED_FENCE_RE.exec(withoutClosed);
-  if (unclosed) jsons.push(unclosed[1]);
-
   const patches: NodeMarkdownPatch[] = [];
-  for (const raw of jsons) {
-    const parsed = parseJsonLenient(raw);
-    if (!parsed || typeof parsed !== "object") continue;
-    const changes = (parsed as { changes?: unknown[] }).changes;
-    if (!Array.isArray(changes)) continue;
-    for (const item of changes) {
-      const patch = toPatch(item);
-      if (patch) patches.push(patch);
+  const re = new RegExp(DELIVERY_OPEN, "g");
+  // Find each ```delivery marker; read the full JSON object after it by brace
+  // balance (string-aware), so inner ``` / braces in `markdown` values don't
+  // truncate the object. An incomplete object (still streaming) yields null
+  // and is skipped — the UI shows the streaming placeholder in that case.
+  for (let open = re.exec(content); open !== null; open = re.exec(content)) {
+    const after = content.slice(open.index + open[0].length);
+    const range = findJsonObjectRange(after);
+    if (range == null) {
+      // No object after this marker: advance just past it so we don't loop
+      // forever on a lone ```delivery.
+      re.lastIndex = open.index + open[0].length;
+      continue;
     }
+    const parsed = parseJsonLenient(after.slice(range.start, range.end));
+    if (parsed && typeof parsed === "object") {
+      const changes = (parsed as { changes?: unknown[] }).changes;
+      if (Array.isArray(changes)) {
+        for (const item of changes) {
+          const patch = toPatch(item);
+          if (patch) patches.push(patch);
+        }
+      }
+    }
+    // Advance past this object so a subsequent ```delivery block is found.
+    re.lastIndex = open.index + open[0].length + range.end;
   }
   return patches;
 }
 
 /**
  * Remove every ```delivery fenced block from `content` (used to keep the
- * model's chat history free of structured noise). Collapses 3+ blank lines
+ * model's chat history free of structured noise). Each block is taken as the
+ * ```delivery marker plus the balanced JSON object after it, plus an optional
+ * closing ``` fence; the body is read by brace balance so inner ``` in a
+ * `markdown` value doesn't leave a fragment behind. Collapses 3+ blank lines
  * left behind and trims trailing whitespace.
  */
 export function stripDeliveryBlock(content: string): string {
-  return content
-    .replace(CLOSED_FENCE_RE, "")
-    .replace(UNCLOSED_FENCE_RE, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/\s+$/, "");
+  const re = new RegExp(DELIVERY_OPEN, "g");
+  let out = "";
+  let cursor = 0;
+  for (let open = re.exec(content); open !== null; open = re.exec(content)) {
+    out += content.slice(cursor, open.index);
+    const after = content.slice(open.index + open[0].length);
+    const range = findJsonObjectRange(after);
+    if (range == null) {
+      // No object to bound the block: drop to end of content.
+      cursor = content.length;
+      break;
+    }
+    let blockEnd = open.index + open[0].length + range.end;
+    // Also consume an optional closing ``` fence (and the whitespace/newline
+    // right before it) so it doesn't linger in the stripped history.
+    const closeMatch = /^\s*```/.exec(content.slice(blockEnd));
+    if (closeMatch) blockEnd += closeMatch[0].length;
+    cursor = blockEnd;
+    re.lastIndex = blockEnd;
+  }
+  out += content.slice(cursor);
+  return out.replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "");
 }
 
 /**
