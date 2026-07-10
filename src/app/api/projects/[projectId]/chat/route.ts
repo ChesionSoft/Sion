@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { AgentOverrideStore } from "@/lib/project/agent-overrides";
 import { dedupeExternalSources } from "@/lib/project/external-source";
 import { FileStore } from "@/lib/project/files";
-import { judgeNodeFacts } from "@/lib/project/node-fact-judge";
+import { buildDeliverySectionsList, parseDeliveryBlock, stripDeliveryBlock } from "@/lib/project/delivery-block";
 import { isWorkflowNodeId } from "@/lib/project/nodes";
 import { ProjectStore } from "@/lib/project/store";
 import { stripToolCallLeakage } from "@/lib/project/tool-call-strip";
@@ -156,7 +156,13 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   const history: ModelConversationItem[] = priorMessages
     .filter((m) => m.role === "user" || (m.role === "assistant" && m.content.trim().length > 0))
     .slice(-MAX_HISTORY_MESSAGES)
-    .map((m) => ({ type: "message" as const, role: m.role, content: m.content }));
+    .map((m) => ({
+      type: "message" as const,
+      role: m.role,
+      // Keep the structured delivery block out of the model's replayed
+      // history; it stays in the persisted message for the chat card.
+      content: m.role === "assistant" ? stripDeliveryBlock(m.content) : m.content,
+    }));
 
   await projectStore.appendChatMessage(projectId, nodeId, {
     id: randomUUID(),
@@ -266,6 +272,18 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           "- 分析或检索得到的内容直接写进对应正文小节，不要单独留\"假设\"小节。",
           "- 不确定、需要用户确认的问题只在聊天里追问，绝不写进交付稿。",
           "- 不要修改其他节点负责的章节。",
+          "",
+          "## 交付稿写入",
+          "",
+          "回答完用户问题后，在回复末尾输出一个 ```delivery 围栏块，声明本轮要写入交付稿的内容。格式：",
+          "```delivery",
+          '{"changes":[{"sectionKey":"<sectionKey>","patchKind":"<append_bullet|append_block|append_table_row>","markdown":"<内容>"}]}',
+          "```",
+          "- 只输出相对上方「当前节点 Markdown」的新增或更新项；无新增则输出 {\"changes\":[]}。",
+          "- sectionKey 与 patchKind 必须来自下方可用 sections 列表；append_table_row 的管道分隔单元格数必须等于该 section 的 tableColumns 长度。",
+          "- markdown 内容会原样进入交付稿，质量要与你会在正文里给的建议一致；不要包含标题行（# 开头）。",
+          "- 可用 sections：",
+          buildDeliverySectionsList(nodeId),
         );
         const systemPrompt = baseSystemPromptParts.join("\n");
 
@@ -324,41 +342,27 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         sendActivity("updating_document", "正在检查交付稿更新");
         sendEvent({ type: "markdown_check_start" });
 
-        const result = await judgeNodeFacts({
-          apiBaseUrl: provider.apiBaseUrl,
-          apiUrlMode: provider.apiUrlMode,
-          apiKey: provider.apiKey,
-          model: body.model!,
-          protocol: provider.protocol,
-          nodeId,
-          userMessage: trimmedUserMessage,
-          assistantContent,
-          externalSources: dedupeExternalSources(consumedSources),
-          currentMarkdown: currentNode.markdown,
-          recentMessages: priorMessages
-            .slice(-10)
-            .map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
-          signal: abortController.signal,
-          turnId,
-          providerId: body.providerId!,
-          onUsage,
-        });
+        // The assistant declares its delivery-doc changes in a ```delivery
+        // block at the end of the reply (see the system prompt). Parse it
+        // straight into patches — no second model call, no re-translation.
+        // stripToolCallLeakage already ran above, so MiniMax wrappers that
+        // might wrap the block are gone before we parse.
+        const patches = parseDeliveryBlock(assistantContent);
 
         if (abortController.signal.aborted) return;
 
-        if (!result.ok) {
-          sendEvent({ type: "markdown_unchanged", warning: result.error });
-        } else if (result.decision.changes.length === 0) {
+        if (patches.length === 0) {
           sendEvent({ type: "markdown_unchanged" });
         } else {
           sendEvent({ type: "markdown_start", mode: "increment", baseRevision: currentNode.revision });
-          for (const patch of result.decision.changes) {
+          for (const patch of patches) {
             sendEvent({ type: "markdown_patch_preview", patch });
           }
         }
 
-        // Persist the authoritative assistant message after the judge completes
-        // so whole-turn usage (answer + fact_judge) is aggregated on it.
+        // Persist the authoritative assistant message after the delivery
+        // block is parsed so the patch-preview events precede the final
+        // message. The block stays in content so the chat card can render.
         const message = await persistAssistant(true);
         sendActivity("completed", "已完成");
         if (message) {

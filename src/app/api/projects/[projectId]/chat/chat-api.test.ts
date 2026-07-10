@@ -23,23 +23,6 @@ const ANSWER_USAGE: ModelCallUsage = {
   totalTokens: 15,
 };
 
-// A synthetic fact_judge usage record the mocked judge reports.
-const JUDGE_USAGE: ModelCallUsage = {
-  id: "c-judge",
-  category: "fact_judge",
-  providerId: "mp-1",
-  model: "test-model",
-  source: "exact",
-  status: "completed",
-  inputTokens: 8,
-  outputTokens: 2,
-  totalTokens: 10,
-};
-
-// Mock judgeNodeFacts so we control its results without real LLM calls.
-vi.mock("@/lib/project/node-fact-judge", () => ({
-  judgeNodeFacts: vi.fn(),
-}));
 
 // Mock the browser web service so no Playwright/network is touched.
 vi.mock("@/lib/project/browser-web-service", () => ({
@@ -134,13 +117,6 @@ beforeEach(async () => {
     { type: "content", delta: "已更新功能设计。" },
   ];
   orchestratorReportsUsage = true;
-
-  const { judgeNodeFacts } = await import("@/lib/project/node-fact-judge");
-  vi.mocked(judgeNodeFacts).mockReset();
-  vi.mocked(judgeNodeFacts).mockImplementation(async (input: Record<string, unknown>) => {
-    if (typeof input.onUsage === "function") input.onUsage(JUDGE_USAGE);
-    return { ok: true, decision: { changes: [] } };
-  });
 });
 
 afterEach(async () => {
@@ -350,7 +326,7 @@ describe("chat API SSE and persistence", () => {
     expect(assistant?.reasoningContent).toBe("先判断节点目标。");
   });
 
-  it("emits markdown_check_start -> markdown_unchanged -> done when judge returns no changes", async () => {
+  it("emits markdown_check_start -> markdown_unchanged -> done when the assistant emits no delivery block", async () => {
     const events = await readSseEvents(await POST(baseRequest(), { params: Promise.resolve({ projectId: "test-project" }) }));
     const types = events.map((e) => e.type);
     expect(types).toContain("markdown_check_start");
@@ -362,30 +338,35 @@ describe("chat API SSE and persistence", () => {
     expect(await getNodeRevision(store, "test-project", "feature-design")).toBe(0);
   });
 
-  it("emits markdown_start and markdown_patch_preview when judge returns changes", async () => {
-    const changesPatch: NodeMarkdownPatch = {
-      category: "confirmed_fact",
-      targetSectionKey: "module_details",
-      patchKind: "append_block",
-      markdown: "客户管理功能包含 CRUD",
-      evidence: { source: "user", quote: "客户管理" },
-    };
-    const { judgeNodeFacts } = await import("@/lib/project/node-fact-judge");
-    vi.mocked(judgeNodeFacts).mockResolvedValueOnce({ ok: true, decision: { changes: [changesPatch] } });
+  it("emits markdown_start and markdown_patch_preview when the assistant emits a delivery block", async () => {
+    const delivery = JSON.stringify({
+      changes: [{ sectionKey: "module_details", patchKind: "append_block", markdown: "客户管理功能包含 CRUD" }],
+    });
+    orchestratorEvents = [
+      { type: "content", delta: "已更新功能设计。\n```delivery\n" + delivery + "\n```" },
+    ];
     const events = await readSseEvents(await POST(baseRequest(), { params: Promise.resolve({ projectId: "test-project" }) }));
     const types = events.map((e) => e.type);
     expect(types).toContain("markdown_start");
     expect(types).toContain("markdown_patch_preview");
     const preview = events.find((e) => e.type === "markdown_patch_preview") as { patch: NodeMarkdownPatch };
-    expect(preview.patch).toEqual(changesPatch);
+    expect(preview.patch).toEqual({
+      category: "assumption",
+      targetSectionKey: "module_details",
+      patchKind: "append_block",
+      markdown: "客户管理功能包含 CRUD",
+      evidence: { source: "assistant", quote: "客户管理功能包含 CRUD" },
+    });
   });
 
-  it("emits markdown_unchanged with warning on judge failure", async () => {
-    const { judgeNodeFacts } = await import("@/lib/project/node-fact-judge");
-    vi.mocked(judgeNodeFacts).mockResolvedValueOnce({ ok: false, error: "judge failed" });
+  it("emits markdown_unchanged with no warning when the delivery block JSON is invalid", async () => {
+    orchestratorEvents = [
+      { type: "content", delta: "已更新功能设计。\n```delivery\nnot valid json\n```" },
+    ];
     const events = await readSseEvents(await POST(baseRequest(), { params: Promise.resolve({ projectId: "test-project" }) }));
-    const unchanged = events.find((e) => e.type === "markdown_unchanged") as { warning?: string };
-    expect(unchanged.warning).toBe("judge failed");
+    const unchanged = events.find((e) => e.type === "markdown_unchanged") as { warning?: string } | undefined;
+    expect(unchanged).toBeDefined();
+    expect(unchanged?.warning).toBeUndefined();
   });
 
   it("persists only the sources emitted by the orchestrator (deduped)", async () => {
@@ -542,12 +523,12 @@ describe("chat API activity and authoritative final message", () => {
     expect(done).toBeDefined();
     expect(done.sessionId).toBe(session.id);
     expect(done.assistantMessage.turnId).toEqual(expect.any(String));
-    expect(done.assistantMessage.usage.callCount).toBe(2);
+    expect(done.assistantMessage.usage.callCount).toBe(1);
 
     const messages = await store.getChatMessages("test-project", "feature-design", session.id);
     const assistant = messages.find((m) => m.role === "assistant");
     expect(assistant?.turnId).toBe(done.assistantMessage.turnId);
-    expect(assistant?.usage?.callCount).toBe(2);
+    expect(assistant?.usage?.callCount).toBe(1);
     expect(assistant?.reasoningDurationMs).toBeGreaterThanOrEqual(0);
   });
 
