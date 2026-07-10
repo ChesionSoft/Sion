@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ExternalHyperlink, Paragraph, TextRun } from "docx";
+import { ExternalHyperlink, Paragraph, Table, TextRun } from "docx";
 import { parseMarkdownToMdast, renderBlock, renderInline } from "./markdown-to-docx";
 import type { MdastBlock, MdastInline } from "./markdown-to-docx";
 
@@ -112,5 +112,30 @@ describe("renderBlock lists", () => {
     expect(xml(els)).toContain("nested");
     // ilvl=1 出现一次（嵌套项）
     expect(xml(els)).toContain('"w:ilvl","root":[{"rootKey":"_attr","root":{"val":1}');
+  });
+});
+
+describe("renderBlock table", () => {
+  it("renders a GFM table as a docx Table with header + data rows", () => {
+    const els = renderBlock(firstBlockOf("| A | B |\n| --- | ---: |\n| 1 | 2 |"));
+    expect(els[0]).toBeInstanceOf(Table);
+    const serialized = xml(els);
+    expect(serialized).toContain("A");
+    expect(serialized).toContain("B");
+    expect(serialized).toContain("1");
+    expect(serialized).toContain("2");
+    // 两行（表头 + 数据）
+    expect(serialized.match(/"rootKey":"w:tr"/g)).toHaveLength(2);
+  });
+
+  it("bolds and shades header cells", () => {
+    const serialized = xml(renderBlock(firstBlockOf("| H |\n| --- |\n| v |")));
+    expect(serialized).toContain("w:b");
+    expect(serialized.toUpperCase()).toContain("F2F2F2");
+  });
+
+  it("applies right alignment to a right-aligned column", () => {
+    const serialized = xml(renderBlock(firstBlockOf("| A |\n| ---: |\n| 1 |")));
+    expect(serialized).toContain('"right"');
   });
 });

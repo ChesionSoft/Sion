@@ -1,7 +1,20 @@
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
-import { ExternalHyperlink, HeadingLevel, Paragraph, Table, TextRun } from "docx";
+import {
+  AlignmentType,
+  BorderStyle,
+  ExternalHyperlink,
+  HeadingLevel,
+  Paragraph,
+  ShadingType,
+  Table,
+  TableCell,
+  TableRow,
+  TextRun,
+  VerticalAlign,
+  WidthType,
+} from "docx";
 
 // ---- 本地 mdast 类型（@types/mdast 不可用，按 remark-parse + remark-gfm 实测形状） ----
 
@@ -147,6 +160,8 @@ export function renderBlock(node: MdastBlock): DocxBlockElement[] {
       });
       return out;
     }
+    case "table":
+      return [renderTable(node)];
     default:
       return [];
   }
@@ -177,4 +192,53 @@ function renderListItem(item: MdastListItem, ordered: boolean, level: number): D
     }
   }
   return out;
+}
+
+/** GFM 表格 -> docx Table：首行表头加粗 + 底纹，列按 align 对齐，全边框。 */
+function renderTable(node: Extract<MdastBlock, { type: "table" }>): Table {
+  const rows = node.children.map((row, rowIndex) => {
+    const isHeader = rowIndex === 0;
+    const cells = row.children.map((cell, colIndex) => {
+      const align = node.align[colIndex] ?? null;
+      return new TableCell({
+        children: [
+          new Paragraph({
+            alignment: alignToAlignment(align),
+            children: renderInline(cell.children, isHeader ? { bold: true } : {}),
+          }),
+        ],
+        ...(isHeader
+          ? { shading: { type: ShadingType.SOLID, color: "auto", fill: "F2F2F2" } }
+          : {}),
+        verticalAlign: VerticalAlign.CENTER,
+      });
+    });
+    return new TableRow({ children: cells, tableHeader: isHeader });
+  });
+  return new Table({
+    rows,
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: singleBorders(),
+  });
+}
+
+function alignToAlignment(
+  align: "left" | "center" | "right" | null,
+): (typeof AlignmentType)[keyof typeof AlignmentType] | undefined {
+  if (align === "center") return AlignmentType.CENTER;
+  if (align === "right") return AlignmentType.RIGHT;
+  if (align === "left") return AlignmentType.LEFT;
+  return undefined;
+}
+
+function singleBorders() {
+  const edge = { style: BorderStyle.SINGLE, size: 4, color: "BFBFBF" };
+  return {
+    top: edge,
+    bottom: edge,
+    left: edge,
+    right: edge,
+    insideHorizontal: edge,
+    insideVertical: edge,
+  };
 }
