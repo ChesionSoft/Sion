@@ -73,7 +73,13 @@ export async function extractFileText(input: ExtractFileTextInput): Promise<Extr
     if (kind === "word") return await extractDocxText(input.buffer);
     if (kind === "excel") return await extractWorkbookText(input.buffer);
     return extractPlainText(kind, input.buffer);
-  } catch {
+  } catch (e) {
+    // Surface the real cause server-side; the user-facing string stays generic.
+    console.warn("[file-extraction] parse failed", {
+      kind,
+      name: e instanceof Error ? e.name : undefined,
+      message: e instanceof Error ? e.message : String(e),
+    });
     return {
       kind,
       extractionStatus: "failed",
