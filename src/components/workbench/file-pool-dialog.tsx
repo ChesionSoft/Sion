@@ -142,7 +142,7 @@ export function FilePoolDialog({
 
   return (
     <Dialog onOpenChange={(open) => { if (!open) onClose(); }} open={open}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>项目文件池</DialogTitle>
           <DialogDescription>
@@ -184,9 +184,9 @@ export function FilePoolDialog({
                     className="flex items-center justify-between rounded-lg border p-3"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
                         <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        <span className="truncate text-sm font-medium">{file.originalName}</span>
+                        <span className="truncate min-w-0 text-sm font-medium" title={file.originalName}>{file.originalName}</span>
                         <Badge variant="outline">{getKindLabel(file)}</Badge>
                         <Badge variant={file.status === "available" ? "secondary" : "outline"}>
                           {getStatusLabel(file)}
