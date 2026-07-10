@@ -87,3 +87,30 @@ describe("renderBlock (paragraph + heading)", () => {
     expect(xml(els)).toContain("Heading6");
   });
 });
+
+describe("renderBlock lists", () => {
+  it("renders an unordered list with bullet numbering at level 0", () => {
+    const els = renderBlock(firstBlockOf("- a\n- b"));
+    expect(els.every((e) => e instanceof Paragraph)).toBe(true);
+    expect(els).toHaveLength(2);
+    expect(xml(els)).toContain("a");
+    expect(xml(els)).toContain("b");
+    expect(xml(els)).toContain("w:numPr");
+    expect(xml(els)).not.toContain("ordered-list");
+  });
+
+  it("renders an ordered list referencing the ordered-list numbering", () => {
+    const els = renderBlock(firstBlockOf("1. one\n2. two"));
+    expect(els).toHaveLength(2);
+    expect(xml(els)).toContain("one");
+    expect(xml(els)).toContain("ordered-list");
+  });
+
+  it("renders nested list items at level 1", () => {
+    const els = renderBlock(firstBlockOf("- a\n  - nested\n- b"));
+    expect(els).toHaveLength(3);
+    expect(xml(els)).toContain("nested");
+    // ilvl=1 出现一次（嵌套项）
+    expect(xml(els)).toContain('"w:ilvl","root":[{"rootKey":"_attr","root":{"val":1}');
+  });
+});

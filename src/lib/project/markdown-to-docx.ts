@@ -140,7 +140,41 @@ export function renderBlock(node: MdastBlock): DocxBlockElement[] {
     }
     case "paragraph":
       return [new Paragraph({ children: renderInline(node.children) })];
+    case "list": {
+      const out: DocxBlockElement[] = [];
+      node.children.forEach((item) => {
+        out.push(...renderListItem(item, node.ordered, 0));
+      });
+      return out;
+    }
     default:
       return [];
   }
+}
+
+/** 有序列表 numbering 引用名；Document 级需声明同名 numbering config。 */
+export const ORDERED_LIST_REFERENCE = "ordered-list";
+
+/** 渲染一个列表项：段落用 bullet/numbering，嵌套 list 递归并 level+1。 */
+function renderListItem(item: MdastListItem, ordered: boolean, level: number): DocxBlockElement[] {
+  const out: DocxBlockElement[] = [];
+  for (const child of item.children) {
+    if (child.type === "list") {
+      child.children.forEach((sub) => {
+        out.push(...renderListItem(sub, child.ordered, level + 1));
+      });
+    } else if (child.type === "paragraph") {
+      out.push(
+        new Paragraph({
+          children: renderInline(child.children),
+          ...(ordered
+            ? { numbering: { reference: ORDERED_LIST_REFERENCE, level } }
+            : { bullet: { level } }),
+        }),
+      );
+    } else {
+      out.push(...renderBlock(child));
+    }
+  }
+  return out;
 }
