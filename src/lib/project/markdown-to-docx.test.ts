@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ExternalHyperlink, TextRun } from "docx";
-import { parseMarkdownToMdast, renderInline } from "./markdown-to-docx";
+import { ExternalHyperlink, Paragraph, TextRun } from "docx";
+import { parseMarkdownToMdast, renderBlock, renderInline } from "./markdown-to-docx";
 import type { MdastBlock, MdastInline } from "./markdown-to-docx";
 
 /** 取一段 markdown 第一个段落（或块）的行内子节点。 */
@@ -53,5 +53,37 @@ describe("renderInline", () => {
   it("renders an image as bracketed alt text", () => {
     const runs = renderInline(inlineOf("![alt text](https://i/x.png)"));
     expect(xml(runs)).toContain("[alt text]");
+  });
+});
+
+/** 取一段 markdown 的第一个顶层块。 */
+function firstBlockOf(md: string): MdastBlock {
+  const root = parseMarkdownToMdast(md) as { children: MdastBlock[] };
+  return root.children[0];
+}
+
+describe("renderBlock (paragraph + heading)", () => {
+  it("renders a paragraph with its inline runs", () => {
+    const els = renderBlock(firstBlockOf("正文 **粗**"));
+    expect(els).toHaveLength(1);
+    expect(els[0]).toBeInstanceOf(Paragraph);
+    expect(xml(els)).toContain("粗");
+  });
+
+  it("maps heading depth 2 to Heading2", () => {
+    const els = renderBlock(firstBlockOf("## 子小节"));
+    expect(els[0]).toBeInstanceOf(Paragraph);
+    expect(xml(els)).toContain("子小节");
+    expect(xml(els)).toContain("Heading2");
+  });
+
+  it("maps heading depth 3 to Heading3", () => {
+    const els = renderBlock(firstBlockOf("### 更深"));
+    expect(xml(els)).toContain("Heading3");
+  });
+
+  it("maps heading depth 6 to Heading6", () => {
+    const els = renderBlock(firstBlockOf("###### 最深"));
+    expect(xml(els)).toContain("Heading6");
   });
 });

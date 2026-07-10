@@ -1,7 +1,7 @@
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
-import { ExternalHyperlink, TextRun } from "docx";
+import { ExternalHyperlink, HeadingLevel, Paragraph, Table, TextRun } from "docx";
 
 // ---- 本地 mdast 类型（@types/mdast 不可用，按 remark-parse + remark-gfm 实测形状） ----
 
@@ -112,3 +112,35 @@ function collectText(inlines: MdastInline[]): string {
 }
 
 // 后续 Task 实现：renderBlock / renderMdastBody / renderTable 等。
+
+// ---- 块 ----
+
+export type DocxBlockElement = Paragraph | Table;
+
+const HEADING_LEVELS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingLevel]> = {
+  1: HeadingLevel.HEADING_1,
+  2: HeadingLevel.HEADING_2,
+  3: HeadingLevel.HEADING_3,
+  4: HeadingLevel.HEADING_4,
+  5: HeadingLevel.HEADING_5,
+  6: HeadingLevel.HEADING_6,
+};
+
+/** 把单个 mdast 块节点渲染为 docx 块元素数组。 */
+export function renderBlock(node: MdastBlock): DocxBlockElement[] {
+  switch (node.type) {
+    case "heading": {
+      const children = renderInline(node.children);
+      const level = HEADING_LEVELS[node.depth];
+      if (!level) {
+        // 超界（remark 不会产生 depth>6，防御性回落）：粗体普通段落
+        return [new Paragraph({ children: renderInline(node.children, { bold: true }) })];
+      }
+      return [new Paragraph({ heading: level, children })];
+    }
+    case "paragraph":
+      return [new Paragraph({ children: renderInline(node.children) })];
+    default:
+      return [];
+  }
+}
