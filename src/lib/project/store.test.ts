@@ -553,7 +553,8 @@ describe("ProjectStore", () => {
 
       const files = await store.listExports(project.id);
 
-      expect(files.map((f) => f.filename)).toEqual(["PROJECT_DESIGN.md", "项目开发设计文档.docx"]);
+      // EXPORT_FILENAMES orders the formal docx before PROJECT_DESIGN.md.
+      expect(files.map((f) => f.filename)).toEqual(["项目开发设计文档.docx", "PROJECT_DESIGN.md"]);
       const md = files.find((f) => f.filename === "PROJECT_DESIGN.md")!;
       expect(md.size).toBe(11);
       expect(md.mtime).toBeGreaterThan(0);
