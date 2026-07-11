@@ -75,29 +75,40 @@ export async function runDocxQa(docxPath: string, deps: DocxQaDeps = {}): Promis
 
     const pngs = (await readdir(workDir))
       .filter((f) => f.startsWith("page-") && f.endsWith(".png"))
-      .sort();
+      .sort((a, b) => pageNumber(a) - pageNumber(b));
     if (pngs.length === 0) {
       return { passed: false, pageCount: 0, issues: [{ code: "no_pages", message: "未渲染出任何页面" }], renderedAt: NOW() };
     }
 
     const issues: DocxQaIssue[] = [];
     for (let i = 0; i < pngs.length; i++) {
+      const page = i + 1;
       const info = await stat(path.join(workDir, pngs[i]));
       if (info.size === 0) {
-        issues.push({ code: "empty_page", page: i + 1, message: `第 ${i + 1} 页为空` });
+        issues.push({ code: "empty_page", page, message: `第 ${page} 页为空` });
+        continue;
       }
-    }
-
-    const textRes = await run("pdftotext", [pdfPath, "-"]);
-    const text = textRes.code === 0 ? textRes.stdout : "";
-    if (!/[一-鿿]/.test(text)) {
-      issues.push({ code: "missing_cjk_text", message: "未检出中文字符" });
+      const textRes = await run("pdftotext", ["-f", String(page), "-l", String(page), pdfPath, "-"]);
+      if (textRes.code !== 0) {
+        issues.push({ code: "render_failed", page, message: `第 ${page} 页文本提取失败` });
+        continue;
+      }
+      const text = textRes.stdout.trim();
+      if (!text) {
+        issues.push({ code: "empty_page", page, message: `第 ${page} 页为空` });
+      } else if (!/[一-鿿]/.test(text)) {
+        issues.push({ code: "missing_cjk_text", page, message: `第 ${page} 页未检出中文字符` });
+      }
     }
 
     return { passed: issues.length === 0, pageCount: pngs.length, issues, renderedAt: NOW() };
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
+}
+
+function pageNumber(filename: string): number {
+  return Number(filename.match(/-(\d+)\.png$/)?.[1] ?? 0);
 }
 
 function runProcess(cmd: string, args: string[]): Promise<DocxQaRunResult> {

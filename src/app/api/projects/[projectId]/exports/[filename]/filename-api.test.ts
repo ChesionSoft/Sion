@@ -57,6 +57,19 @@ describe("GET /exports/[filename]", () => {
     expect(await res.text()).toBe("# 设计");
   });
 
+  it("serves formal review artifacts as markdown", async () => {
+    await writeFile(
+      path.join(tmpDir, "projects", "test-project", "exports", "formal-prd-draft.md"),
+      "# 正式正文",
+      "utf8",
+    );
+
+    const res = await GET(req("formal-prd-draft.md"), ctx("formal-prd-draft.md"));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
+  });
+
   it("sets attachment Content-Disposition with ?download=1", async () => {
     await writeFile(
       path.join(tmpDir, "projects", "test-project", "exports", "SPEC.md"),
@@ -101,9 +114,26 @@ describe("GET /exports/[filename]", () => {
       "PK",
       "utf8",
     );
+    await writeFile(
+      path.join(tmpDir, "projects", "test-project", "exports", "formal-prd-state.json"),
+      JSON.stringify({ qaStatus: "passed", updatedAt: "2026-07-11T00:00:00.000Z" }),
+      "utf8",
+    );
     const res = await GET(req("项目开发设计文档.docx", "?as=html"), ctx("项目开发设计文档.docx"));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.html).toBe("<h1>hi</h1>");
+  });
+
+  it("does not serve a Word file unless the current stage passed QA", async () => {
+    await writeFile(
+      path.join(tmpDir, "projects", "test-project", "exports", "项目开发设计文档.docx"),
+      "PK",
+      "utf8",
+    );
+
+    const res = await GET(req("项目开发设计文档.docx", "?download=1"), ctx("项目开发设计文档.docx"));
+
+    expect(res.status).toBe(404);
   });
 });

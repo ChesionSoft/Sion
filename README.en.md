@@ -9,7 +9,6 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)
-![License](https://img.shields.io/badge/License-MIT-808080)
 
 </div>
 
@@ -23,7 +22,7 @@
 - [Core Features](#core-features)
 - [Quick Start](#quick-start)
 - [Design Nodes](#design-nodes)
-- [Model Configuration](#model-configuration)
+- [Model Configuration and Browser Search](#model-configuration-and-browser-search)
 - [Export Artifacts](#export-artifacts)
 - [Usage Tips](#usage-tips)
 - [Local Data](#local-data)
@@ -43,16 +42,19 @@
 |---------|-------------|
 | **12-node design path** | Progress from project basics to final document generation, one node at a time. |
 | **Per-node Agent chat** | Each node has its own rules, sessions, and context, focused on the current section. |
-| **Model provider config** | Supports OpenAI-compatible Chat Completions API with multiple providers and models. |
+| **Model provider config** | Supports OpenAI-compatible Chat Completions and OpenAI Responses protocols with multiple providers and models. |
 | **Reasoning effort** | Choose Low / Medium / High / Ultra reasoning effort per node. |
 | **Project file pool** | Upload Markdown reference files and select them for the model to read during a chat. |
+| **Browser search** | Configure browser search through a local safe proxy; no third-party search API key is required. |
 | **Markdown deliverables** | Edit, preview, and save Markdown content for each node. |
 | **Agent rule overrides** | Default rules are read-only; copy and customize per project. |
-| **Export artifacts** | Generate a formal Word document and an AI development context bundle. |
+| **Staged export center** | Review a blueprint and formal draft; a server-side render gate must pass before the Word document is available. |
 
 ## Quick Start
 
 ```bash
+# Requires Node.js 20.9 or later
+
 # 1. Install dependencies
 npm install
 
@@ -71,6 +73,7 @@ Common check commands:
 ```bash
 npm run test    # run tests
 npm run lint    # run ESLint
+npm run typecheck # check TypeScript types
 npm run build   # production build
 ```
 
@@ -93,33 +96,47 @@ The project workbench organizes the design flow into 12 nodes:
 | 11 | Open Items & Risks | Record assumptions, open questions, and risks. |
 | 12 | Final Document Generation | Assemble and export the deliverables. |
 
-## Model Configuration
+## Model Configuration and Browser Search
 
-Sion uses the OpenAI-compatible Chat Completions API. Compatible providers include OpenAI, DeepSeek, Qwen, SiliconFlow, and other similar services.
+Sion supports the OpenAI-compatible **Chat Completions** and **OpenAI Responses** protocols. Compatible providers include OpenAI, DeepSeek, Qwen, SiliconFlow, and similar services, subject to the protocol each provider actually supports.
 
 In the main menu, open **Model Configuration** and add:
 
 - **Provider Name**: A display name, e.g. `OpenAI`, `DeepSeek`.
-- **API Base URL**: Only the base address, without the `/chat/completions` suffix.
+- **API Protocol**: Choose Chat Completions or OpenAI Responses.
+- **URL Mode**: Let Sion complete the endpoint from an API base URL, or enter the full endpoint supplied by the provider.
+- **API Base URL / Full API URL**: Fill in the address that matches the selected URL mode.
 - **API Key**: The key from your provider.
 - **Model List**: Callable model names, e.g. `gpt-4.1`, `deepseek-chat`.
 - **Default Model**: The preferred model.
 - **Context Length**: Optional; helps you judge how much reference material the model can read.
 
-Example: if the provider docs list `https://api.example.com/v1/chat/completions`, enter this in Sion:
+Example: when using the base-URL mode, if provider documentation lists `https://api.example.com/v1/chat/completions`, enter:
 
 ```text
 https://api.example.com
 ```
 
+The landing page also contains **Browser Search** settings. Searches go through Sion's local safe proxy; choose a system Chrome/Edge browser or managed Chromium without configuring a third-party search API key.
+
 ## Export Artifacts
 
-Click **Generate Deliverables** in the workbench to produce files in the project export directory:
+Open the **Export Center** from a project workbench. The formal PRD flow is gated in this order:
+
+1. Generate and review `export-blueprint.md`, which selects the outward-facing content.
+2. Approve the blueprint, then generate and review `formal-prd-draft.md`.
+3. Approve the draft to generate Word and run server-side LibreOffice/Poppler render QA.
+4. The DOCX is downloadable only after QA passes. On failure, use `formal-prd-qa-report.md` and regenerate the draft.
+
+The project export directory can contain:
 
 | File | Description |
 |------|-------------|
+| `export-blueprint.md` | PRD sections, sources, and inclusion choices for review. |
+| `formal-prd-draft.md` | Formal outward-facing Markdown draft for review. |
+| `formal-prd-qa-report.md` | DOCX render QA report; Word remains unavailable on failure. |
 | `PROJECT_DESIGN.md` | Consolidated project design Markdown. |
-| `项目开发设计文档.docx` | Formal Word deliverable document. |
+| `项目开发设计文档.docx` | Formal Word deliverable that passed current render QA. |
 | `SPEC.md` | Requirements and design context for AI coding tools. |
 | `TASKS.md` | Development task breakdown. |
 | `AGENTS.md` | Project rules context for AI coding agents. |
@@ -148,6 +165,7 @@ projects/
 
 settings/
   model-providers.json
+  browser-search.json
 ```
 
 These directories may contain client requirements, API keys, chat history, and exported documents. Do not commit them to a public repository.

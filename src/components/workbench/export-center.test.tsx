@@ -66,7 +66,7 @@ beforeEach(() => {
           const op = body.operation as string;
           if (op === "blueprint") currentStage = { ...currentStage, blueprintDigest: "bp-d" };
           if (op === "approve_blueprint") currentStage = { ...currentStage, blueprintApprovedDigest: currentStage.blueprintDigest };
-          if (op === "draft") currentStage = { ...currentStage, draftDigest: "dr-d" };
+          if (op === "draft") currentStage = { ...currentStage, draftDigest: "dr-d", draftApprovedDigest: undefined, qaStatus: undefined, qaReport: undefined };
           if (op === "approve_draft") currentStage = { ...currentStage, draftApprovedDigest: currentStage.draftDigest };
           if (op === "finalize") {
             currentStage = { ...currentStage, qaStatus: "passed", qaReport: { passed: true, pageCount: 1, issues: [], renderedAt: "" } };
@@ -150,6 +150,25 @@ describe("ExportCenter review gates", () => {
     render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={[]} />);
     expect(await screen.findByText(/第 2 页中文缺失/)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /下载/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /重新生成正式正文/ })).toBeInTheDocument();
+  });
+
+  it("re-generates the draft instead of immediately re-finalizing after QA fails", async () => {
+    currentStage = {
+      blueprintDigest: "bp-d",
+      blueprintApprovedDigest: "bp-d",
+      draftDigest: "dr-d",
+      draftApprovedDigest: "dr-d",
+      qaStatus: "failed",
+      qaReport: { passed: false, pageCount: 1, issues: [{ code: "empty_page", message: "空白页" }], renderedAt: "" },
+      updatedAt: "",
+    };
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={[]} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /重新生成正式正文/ }));
+
+    await waitFor(() => expect(posts.some((p) => p.operation === "draft")).toBe(true));
+    expect(posts.some((p) => p.operation === "finalize")).toBe(false);
   });
 
   it("offers the Word download after QA passes", async () => {

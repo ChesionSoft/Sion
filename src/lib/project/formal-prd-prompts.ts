@@ -63,7 +63,14 @@ export function buildDraftSystemPrompt(): string {
 }
 
 export function buildDraftUserPrompt(blueprint: FormalPrdBlueprint, nodes: ProjectNode[]): string {
-  const referenced = new Set(blueprint.sections.flatMap((s) => s.sourceNodeIds));
+  const confirmedNodeIds = new Set<ProjectNode["id"]>(
+    nodes.filter((node) => node.status === "confirmed" && node.id !== "final-export").map((node) => node.id),
+  );
+  const includedSections = blueprint.sections.filter(
+    (section) =>
+      section.inclusion !== "omit" && section.sourceNodeIds.every((nodeId) => confirmedNodeIds.has(nodeId)),
+  );
+  const referenced = new Set<ProjectNode["id"]>(includedSections.flatMap((section) => section.sourceNodeIds));
   const ordered = [...nodes].sort(
     (a, b) =>
       WORKFLOW_NODES.findIndex((n) => n.id === a.id) - WORKFLOW_NODES.findIndex((n) => n.id === b.id),
@@ -77,7 +84,7 @@ export function buildDraftUserPrompt(blueprint: FormalPrdBlueprint, nodes: Proje
     })
     .join("\n\n");
 
-  const sectionList = blueprint.sections
+  const sectionList = includedSections
     .map(
       (s) =>
         `- ${s.title}（id=${s.id}, inclusion=${s.inclusion}, presentation=${s.presentation}, source=${s.sourceNodeIds.join(",") || "-"}）`,

@@ -29,13 +29,14 @@ type PreviewState =
   | { kind: "md"; filename: string; markdown: string }
   | { kind: "docx"; filename: string; html: string };
 
-type Step = "blueprint" | "approve-blueprint" | "approve-draft" | "done";
+type Step = "blueprint" | "approve-blueprint" | "approve-draft" | "retry-draft" | "done";
 
 function currentStep(stage: StageState | null): Step {
   const g = stage ?? { updatedAt: "" };
   const blueprintApproved = Boolean(g.blueprintDigest && g.blueprintApprovedDigest === g.blueprintDigest);
   if (!g.blueprintDigest) return "blueprint";
   if (!blueprintApproved || !g.draftDigest) return "approve-blueprint";
+  if (g.qaStatus === "failed") return "retry-draft";
   if (g.qaStatus === "passed") return "done";
   return "approve-draft";
 }
@@ -44,6 +45,7 @@ const PRIMARY_LABEL: Record<Step, string> = {
   blueprint: "生成导出蓝图",
   "approve-blueprint": "确认蓝图并生成正文",
   "approve-draft": "确认正文并生成正式 Word",
+  "retry-draft": "重新生成正式正文",
   done: "",
 };
 
@@ -225,6 +227,23 @@ export function ExportCenter({
     }
   }
 
+  async function regenerateDraft() {
+    if (!providerId || !model || busy) return;
+    setBusy(true);
+    setMessage("正在重新生成正式正文…");
+    try {
+      const draft = await postJson({ providerId, model, reasoningEffort, operation: "draft" });
+      if (!draft.ok) {
+        setMessage((draft.data.error as string) || "正文生成失败,请重试");
+        return;
+      }
+      setMessage("正式正文已重新生成。请审阅后确认。");
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const onPrimary =
     step === "blueprint"
       ? runBlueprint
@@ -232,10 +251,12 @@ export function ExportCenter({
         ? approveBlueprintAndDraft
         : step === "approve-draft"
           ? approveDraftAndFinalize
+          : step === "retry-draft"
+            ? regenerateDraft
           : null;
 
   const primaryLabel = PRIMARY_LABEL[step];
-  const showModelPicker = step === "blueprint" || step === "approve-blueprint";
+  const showModelPicker = step === "blueprint" || step === "approve-blueprint" || step === "retry-draft";
   const canPrimary =
     !!onPrimary &&
     !busy &&
