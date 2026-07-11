@@ -83,7 +83,11 @@ export function ExportCenter({
   );
 
   useEffect(() => {
-    void loadPreview(selected);
+    // Deferred via queueMicrotask so we don't call setState (inside
+    // loadPreview) directly within the effect body (react-hooks/set-state-in-effect).
+    queueMicrotask(() => {
+      void loadPreview(selected);
+    });
   }, [selected, loadPreview]);
 
   async function refreshList() {
