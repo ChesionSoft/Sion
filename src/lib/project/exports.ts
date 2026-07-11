@@ -36,6 +36,8 @@ export type ExportStageState = {
   draftDigest?: string;
   draftApprovedDigest?: string;
   qaStatus?: "passed" | "failed";
+  /** Last render-QA report, so the UI can show why finalization blocked. */
+  qaReport?: DocxQaReport;
   updatedAt: string;
 };
 
@@ -231,7 +233,7 @@ export async function finalizeFormalPrdExport(
     await unlink(docxPath).catch(() => {
       // DOCX already absent; the failure result still holds.
     });
-    const next: ExportStageState = { ...state, qaStatus: "failed", updatedAt: new Date().toISOString() };
+    const next: ExportStageState = { ...state, qaStatus: "failed", qaReport, updatedAt: new Date().toISOString() };
     await persistState(store, projectId, next);
     return { status: 422, qaReport, stage: next };
   }
@@ -239,7 +241,7 @@ export async function finalizeFormalPrdExport(
   // QA passed: write the four internal Markdown exports alongside the formal
   // Word, and record the successful QA state.
   await exportProjectDocuments(store, projectId);
-  const next: ExportStageState = { ...state, qaStatus: "passed", updatedAt: new Date().toISOString() };
+  const next: ExportStageState = { ...state, qaStatus: "passed", qaReport, updatedAt: new Date().toISOString() };
   await persistState(store, projectId, next);
   return { status: 200, qaReport, stage: next };
 }

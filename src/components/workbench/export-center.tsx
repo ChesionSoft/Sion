@@ -10,11 +10,42 @@ import { ModelPicker } from "./model-picker";
 import { EXPORT_FILENAMES, type ExportFileInfo } from "@/lib/project/export-files";
 import type { ModelProvider, ReasoningEffort } from "@/lib/project/types";
 
+type QaIssue = { code: string; message: string; page?: number };
+type QaReport = { passed: boolean; pageCount: number; issues: QaIssue[]; renderedAt: string };
+
+type StageState = {
+  blueprintDigest?: string;
+  blueprintApprovedDigest?: string;
+  draftDigest?: string;
+  draftApprovedDigest?: string;
+  qaStatus?: "passed" | "failed";
+  qaReport?: QaReport;
+  updatedAt: string;
+};
+
 type PreviewState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
   | { kind: "md"; filename: string; markdown: string }
   | { kind: "docx"; filename: string; html: string };
+
+type Step = "blueprint" | "approve-blueprint" | "approve-draft" | "done";
+
+function currentStep(stage: StageState | null): Step {
+  const g = stage ?? { updatedAt: "" };
+  const blueprintApproved = Boolean(g.blueprintDigest && g.blueprintApprovedDigest === g.blueprintDigest);
+  if (!g.blueprintDigest) return "blueprint";
+  if (!blueprintApproved || !g.draftDigest) return "approve-blueprint";
+  if (g.qaStatus === "passed") return "done";
+  return "approve-draft";
+}
+
+const PRIMARY_LABEL: Record<Step, string> = {
+  blueprint: "生成导出蓝图",
+  "approve-blueprint": "确认蓝图并生成正文",
+  "approve-draft": "确认正文并生成正式 Word",
+  done: "",
+};
 
 export function ExportCenter({
   projectId,
@@ -26,16 +57,16 @@ export function ExportCenter({
   initialFiles: ExportFileInfo[];
 }) {
   const [files, setFiles] = useState<ExportFileInfo[]>(initialFiles);
-  const [selected, setSelected] = useState<string | null>(initialFiles[0]?.filename ?? null);
+  const [stage, setStage] = useState<StageState | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewState>({ kind: "loading" });
   const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [providerId, setProviderId] = useState("");
   const [model, setModel] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
-  const [generating, setGenerating] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
-  // Load model providers + pick the default (same as the chat panel).
   useEffect(() => {
     fetch("/api/settings/model-providers")
       .then((r) => r.json())
@@ -75,7 +106,7 @@ export function ExportCenter({
         const reason = err instanceof Error ? err.message : "预览失败";
         setPreview({
           kind: "error",
-          message: reason === "文件尚未生成" ? "该文件尚未生成,点重新生成" : reason,
+          message: reason === "文件尚未生成" ? "该文件尚未生成,请先生成" : reason,
         });
       }
     },
@@ -83,48 +114,135 @@ export function ExportCenter({
   );
 
   useEffect(() => {
-    // Deferred via queueMicrotask so we don't call setState (inside
-    // loadPreview) directly within the effect body (react-hooks/set-state-in-effect).
     queueMicrotask(() => {
       void loadPreview(selected);
     });
   }, [selected, loadPreview]);
 
-  async function refreshList() {
+  // Pull the staged state + file list, then auto-select the latest artifact.
+  const refresh = useCallback(async () => {
     const res = await fetch(`/api/projects/${projectId}/exports`);
     if (!res.ok) return;
-    const { files: list } = (await res.json()) as { files: ExportFileInfo[] };
-    setFiles(list);
-    setSelected(list[0]?.filename ?? null);
+    const data = (await res.json()) as { files: ExportFileInfo[]; stage: StageState };
+    setFiles(data.files);
+    setStage(data.stage ?? { updatedAt: "" });
+    setSelected(autoSelectFor(data.stage, data.files));
+  }, [projectId]);
+
+  useEffect(() => {
+    // Deferred via queueMicrotask so setState (inside refresh) is not called
+    // synchronously within the effect body (react-hooks/set-state-in-effect).
+    queueMicrotask(() => {
+      void refresh();
+    });
+  }, [refresh]);
+
+  const step = currentStep(stage);
+
+  async function postJson(body: Record<string, unknown>): Promise<{ ok: boolean; data: Record<string, unknown> }> {
+    const res = await fetch(`/api/projects/${projectId}/exports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    return { ok: res.ok, data };
   }
 
-  async function generate() {
-    if (!providerId || !model || generating) return;
-    setGenerating(true);
-    setMessage("正在综合整理并生成文档…");
+  async function runBlueprint() {
+    if (!providerId || !model || busy) return;
+    setBusy(true);
+    setMessage("正在生成导出蓝图…");
     try {
-      const res = await fetch(`/api/projects/${projectId}/exports`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerId, model, reasoningEffort }),
-      });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        setMessage(data.error || "综合整理失败,请重试");
+      const { ok, data } = await postJson({ providerId, model, reasoningEffort, operation: "blueprint" });
+      if (!ok) {
+        setMessage((data.error as string) || "蓝图生成失败,请重试或更换模型");
         return;
       }
-      setMessage("已生成交付文档");
-      await refreshList();
-    } catch {
-      setMessage("综合整理失败,请重试");
+      setMessage("导出蓝图已生成。请审阅后确认。");
+      await refresh();
     } finally {
-      setGenerating(false);
+      setBusy(false);
     }
   }
 
-  const hasFiles = files.length > 0;
-  const lastMtime = files.reduce((max, f) => Math.max(max, f.mtime), 0);
-  const canGenerate = Boolean(providerId && model) && !generating;
+  async function approveBlueprintAndDraft() {
+    if (!stage?.blueprintDigest || !providerId || !model || busy) return;
+    setBusy(true);
+    setMessage("正在确认蓝图并生成正文…");
+    try {
+      const approve = await postJson({
+        providerId,
+        model,
+        reasoningEffort,
+        operation: "approve_blueprint",
+        artifactDigest: stage.blueprintDigest,
+      });
+      if (!approve.ok) {
+        setMessage((approve.data.error as string) || "蓝图确认失败,请重新生成");
+        return;
+      }
+      const draft = await postJson({ providerId, model, reasoningEffort, operation: "draft" });
+      if (!draft.ok) {
+        setMessage((draft.data.error as string) || "正文生成失败,请重试");
+        return;
+      }
+      setMessage("正式正文已生成。请审阅后确认。");
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function approveDraftAndFinalize() {
+    if (!stage?.draftDigest || busy) return;
+    setBusy(true);
+    setMessage("正在生成正式 Word…");
+    try {
+      const approve = await postJson({
+        operation: "approve_draft",
+        artifactDigest: stage.draftDigest,
+      });
+      if (!approve.ok) {
+        setMessage((approve.data.error as string) || "正文确认失败,请重新生成");
+        return;
+      }
+      const finalize = await postJson({ operation: "finalize" });
+      if (!finalize.ok) {
+        const qa = finalize.data.qaReport as QaReport | undefined;
+        if (qa && qa.issues.length > 0) {
+          setMessage(`渲染质检未通过：${qa.issues[0].message}`);
+        } else {
+          setMessage((finalize.data.error as string) || "正式 Word 生成失败,请重试");
+        }
+        await refresh();
+        return;
+      }
+      setMessage("正式 Word 已生成并通过渲染质检。");
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const onPrimary =
+    step === "blueprint"
+      ? runBlueprint
+      : step === "approve-blueprint"
+        ? approveBlueprintAndDraft
+        : step === "approve-draft"
+          ? approveDraftAndFinalize
+          : null;
+
+  const primaryLabel = PRIMARY_LABEL[step];
+  const showModelPicker = step === "blueprint" || step === "approve-blueprint";
+  const canPrimary =
+    !!onPrimary &&
+    !busy &&
+    (step === "approve-draft" || Boolean(providerId && model));
+
+  const qaFailed = stage?.qaStatus === "failed";
+  const qaDone = stage?.qaStatus === "passed";
 
   return (
     <main className="flex h-screen min-h-[720px] flex-col overflow-hidden bg-background text-foreground">
@@ -141,25 +259,50 @@ export function ExportCenter({
           <span className="text-xs text-muted-foreground">导出中心</span>
         </div>
         <div className="flex items-center gap-2">
-          <ModelPicker
-            providers={providers}
-            providerId={providerId}
-            model={model}
-            reasoningEffort={reasoningEffort}
-            onProviderIdChange={setProviderId}
-            onModelChange={setModel}
-            onReasoningEffortChange={setReasoningEffort}
-            placement="bottom"
-          />
-          <Button disabled={!canGenerate} onClick={generate} size="sm" type="button" variant="outline">
-            <RefreshCwIcon data-icon="inline-start" className={generating ? "animate-spin" : ""} />
-            {generating ? "生成中…" : hasFiles ? "重新生成" : "生成交付文档"}
-          </Button>
+          {showModelPicker ? (
+            <ModelPicker
+              providers={providers}
+              providerId={providerId}
+              model={model}
+              reasoningEffort={reasoningEffort}
+              onProviderIdChange={setProviderId}
+              onModelChange={setModel}
+              onReasoningEffortChange={setReasoningEffort}
+              placement="bottom"
+            />
+          ) : null}
+          {onPrimary ? (
+            <Button disabled={!canPrimary} onClick={onPrimary} size="sm" type="button" variant="outline">
+              <RefreshCwIcon data-icon="inline-start" className={busy ? "animate-spin" : ""} />
+              {busy ? "处理中…" : primaryLabel}
+            </Button>
+          ) : null}
         </div>
       </header>
 
       {message ? (
         <div className="border-b bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground">{message}</div>
+      ) : null}
+
+      {step === "approve-blueprint" ? (
+        <div className="border-b bg-blue-500/10 px-4 py-1.5 text-xs text-blue-700 dark:text-blue-300">
+          确认导出蓝图仅锁定对外内容选择，不等于最终排版；确认后将生成正式正文供审阅。
+        </div>
+      ) : null}
+
+      {qaFailed && stage?.qaReport ? (
+        <div className="border-b bg-red-500/10 px-4 py-2 text-xs text-red-700 dark:text-red-300">
+          <p className="font-medium">渲染质检未通过，正式 Word 暂不可下载。请调整正文后重新生成。</p>
+          {stage.qaReport.issues.map((issue, i) => (
+            <p key={i}>· [{issue.code}]{issue.page ? `（第 ${issue.page} 页）` : ""} {issue.message}</p>
+          ))}
+        </div>
+      ) : null}
+
+      {qaDone ? (
+        <div className="border-b bg-emerald-500/10 px-4 py-2 text-xs text-emerald-700 dark:text-emerald-300">
+          正式 Word 已通过渲染质检，可下载。质检报告见侧栏“formal-prd-qa-report.md”。
+        </div>
       ) : null}
 
       <section className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)] overflow-hidden">
@@ -191,20 +334,11 @@ export function ExportCenter({
               );
             })}
           </ul>
-          {hasFiles ? (
-            <p className="mt-3 text-xs text-muted-foreground">
-              上次生成
-              <br />
-              {new Date(lastMtime).toLocaleString()}
-            </p>
-          ) : (
-            <p className="mt-3 text-xs text-muted-foreground">尚未生成任何产物</p>
-          )}
         </aside>
 
         <div className="flex min-h-0 flex-col">
           <div className="flex h-10 shrink-0 items-center justify-between border-b px-4">
-            <span className="truncate text-sm font-medium">{selected ?? "-"}</span>
+            <span className="truncate text-sm font-medium">{selected ?? "—"}</span>
             {selected ? (
               <a
                 className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "text-xs")}
@@ -241,4 +375,17 @@ export function ExportCenter({
       </section>
     </main>
   );
+}
+
+function autoSelectFor(stage: StageState | null, files: ExportFileInfo[]): string | null {
+  const g = stage ?? { updatedAt: "" };
+  const exists = (name: string) => files.some((f) => f.filename === name);
+  if (g.qaStatus === "failed") return null; // show the blocking QA banner instead
+  if (g.qaStatus === "passed") {
+    if (exists("项目开发设计文档.docx")) return "项目开发设计文档.docx";
+    if (exists("formal-prd-qa-report.md")) return "formal-prd-qa-report.md";
+  }
+  if (g.draftDigest) return exists("formal-prd-draft.md") ? "formal-prd-draft.md" : null;
+  if (g.blueprintDigest) return exists("export-blueprint.md") ? "export-blueprint.md" : null;
+  return files[0]?.filename ?? null;
 }

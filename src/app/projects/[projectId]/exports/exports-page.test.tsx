@@ -22,10 +22,20 @@ beforeEach(async () => {
     ),
     "utf8",
   );
-  // ExportCenter fetches providers on mount; stub fetch so the effect resolves.
+  // ExportCenter fetches providers and the staged export list on mount; stub
+  // fetch so both effects resolve with the shapes the component expects.
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => new Response(JSON.stringify({ providers: [] }), { status: 200 })),
+    vi.fn(async (url: string) => {
+      const u = new URL(url, "http://localhost");
+      if (u.pathname.endsWith("/api/settings/model-providers")) {
+        return new Response(JSON.stringify({ providers: [] }), { status: 200 });
+      }
+      if (u.pathname.endsWith("/exports")) {
+        return new Response(JSON.stringify({ files: [], stage: { updatedAt: "" } }), { status: 200 });
+      }
+      return new Response("", { status: 200 });
+    }),
   );
 });
 
