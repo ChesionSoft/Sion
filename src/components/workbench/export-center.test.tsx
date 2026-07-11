@@ -45,6 +45,11 @@ const PROVIDERS = [
   },
 ];
 
+const REVISE_APPLIED = [
+  { status: "applied" },
+  { status: "skipped", reason: "未找到章节：不存在" },
+];
+
 beforeEach(() => {
   currentStage = { updatedAt: "" };
   currentFiles = [];
@@ -74,6 +79,36 @@ beforeEach(() => {
               { filename: "项目开发设计文档.docx", size: 1000, mtime: 1000 },
               { filename: "formal-prd-qa-report.md", size: 50, mtime: 1000 },
             ];
+          }
+          if (op === "edit_blueprint") {
+            if (typeof body.markdown === "string" && body.markdown.includes("待确认")) {
+              return jsonResponse({ error: "正文包含待确认" }, { status: 422 });
+            }
+            currentStage = {
+              ...currentStage,
+              blueprintDigest: "bp-ed",
+              blueprintApprovedDigest: undefined,
+              draftDigest: undefined,
+              draftApprovedDigest: undefined,
+              qaStatus: undefined,
+            };
+          }
+          if (op === "edit_draft") {
+            if (typeof body.markdown === "string" && body.markdown.includes("待确认")) {
+              return jsonResponse({ error: "正文包含待确认" }, { status: 422 });
+            }
+            currentStage = {
+              ...currentStage,
+              draftDigest: "dr-ed",
+              draftApprovedDigest: undefined,
+              qaStatus: undefined,
+            };
+          }
+          if (op === "revise_blueprint" || op === "revise_draft") {
+            if (body.artifactDigest === "stale") {
+              return jsonResponse({ error: "摘要不匹配,请重新加载" }, { status: 409 });
+            }
+            return jsonResponse({ stage: currentStage, applied: REVISE_APPLIED });
           }
           return jsonResponse({ stage: currentStage, digest: "x" });
         }
@@ -197,5 +232,127 @@ describe("ExportCenter review gates", () => {
     render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={[]} />);
     expect(screen.getByRole("button", { name: "export-blueprint.md" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "AGENTS.md" })).toBeInTheDocument();
+  });
+});
+
+describe("ExportCenter manual editing", () => {
+  it("shows an 编辑 button for the blueprint but not for PROJECT_DESIGN.md", async () => {
+    currentStage = { blueprintDigest: "bp-d", updatedAt: "" };
+    currentFiles = [
+      { filename: "export-blueprint.md", size: 10, mtime: 1000 },
+      { filename: "PROJECT_DESIGN.md", size: 10, mtime: 1000 },
+    ];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    expect(await screen.findByRole("button", { name: "编辑" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "PROJECT_DESIGN.md" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "编辑" })).not.toBeInTheDocument());
+  });
+
+  it("edits the blueprint markdown and saves", async () => {
+    currentStage = { blueprintDigest: "bp-d", updatedAt: "" };
+    currentFiles = [{ filename: "export-blueprint.md", size: 10, mtime: 1000 }];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    await userEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    const textarea = await screen.findByRole("textbox", { name: "编辑正文" });
+    expect(textarea).toHaveValue("# 设计正文");
+    await userEvent.clear(textarea);
+    await userEvent.type(textarea, "# 编辑后的蓝图");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(posts.some((p) => p.operation === "edit_blueprint")).toBe(true));
+    expect(posts.find((p) => p.operation === "edit_blueprint")?.body.markdown).toBe("# 编辑后的蓝图");
+    await screen.findByText(/已保存/);
+  });
+
+  it("cancel restores preview mode without a POST", async () => {
+    currentStage = { blueprintDigest: "bp-d", updatedAt: "" };
+    currentFiles = [{ filename: "export-blueprint.md", size: 10, mtime: 1000 }];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    await userEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    expect(screen.getByRole("textbox", { name: "编辑正文" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "编辑正文" })).not.toBeInTheDocument());
+    expect(posts.some((p) => p.operation === "edit_blueprint")).toBe(false);
+  });
+
+  it("keeps the editor open and shows the error on a 422 edit response", async () => {
+    currentStage = { blueprintDigest: "bp-d", updatedAt: "" };
+    currentFiles = [{ filename: "export-blueprint.md", size: 10, mtime: 1000 }];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    await userEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    const textarea = screen.getByRole("textbox", { name: "编辑正文" });
+    await userEvent.clear(textarea);
+    await userEvent.type(textarea, "包含待确认的内容");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByText(/正文包含待确认/);
+    expect(screen.getByRole("textbox", { name: "编辑正文" })).toBeInTheDocument();
+  });
+});
+
+describe("ExportCenter agent revision", () => {
+  it("shows the revision request box, button, and model picker for a blueprint with a digest", async () => {
+    currentStage = { blueprintDigest: "bp-d", updatedAt: "" };
+    currentFiles = [{ filename: "export-blueprint.md", size: 10, mtime: 1000 }];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    expect(await screen.findByRole("textbox", { name: "Agent 修订指令" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "让 Agent 修订" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /模型/ })).toBeInTheDocument();
+  });
+
+  it("hides revision controls for non-editable files and during editing", async () => {
+    currentStage = { blueprintDigest: "bp-d", updatedAt: "" };
+    currentFiles = [
+      { filename: "export-blueprint.md", size: 10, mtime: 1000 },
+      { filename: "PROJECT_DESIGN.md", size: 10, mtime: 1000 },
+    ];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    await screen.findByRole("textbox", { name: "Agent 修订指令" });
+    await userEvent.click(screen.getByRole("button", { name: "PROJECT_DESIGN.md" }));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Agent 修订指令" })).not.toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "export-blueprint.md" }));
+    await screen.findByRole("textbox", { name: "Agent 修订指令" });
+    await userEvent.click(screen.getByRole("button", { name: "编辑" }));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Agent 修订指令" })).not.toBeInTheDocument());
+  });
+
+  it("posts revise_blueprint with instruction, digest, provider, model, and reasoning effort", async () => {
+    currentStage = { blueprintDigest: "bp-d", updatedAt: "" };
+    currentFiles = [{ filename: "export-blueprint.md", size: 10, mtime: 1000 }];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    const textarea = await screen.findByRole("textbox", { name: "Agent 修订指令" });
+    await screen.findByRole("button", { name: /模型/ });
+    await userEvent.type(textarea, "改一下执行摘要");
+    const reviseButton = screen.getByRole("button", { name: "让 Agent 修订" });
+    await waitFor(() => expect(reviseButton).toBeEnabled());
+    await userEvent.click(reviseButton);
+    await waitFor(() => expect(posts.some((p) => p.operation === "revise_blueprint")).toBe(true));
+    const body = posts.find((p) => p.operation === "revise_blueprint")!.body;
+    expect(body.instruction).toBe("改一下执行摘要");
+    expect(body.artifactDigest).toBe("bp-d");
+    expect(body.providerId).toBe("p1");
+    expect(body.model).toBe("m1");
+    expect(body.reasoningEffort).toBe("medium");
+  });
+
+  it("shows applied/skipped counts on a partial applied response", async () => {
+    currentStage = { blueprintDigest: "bp-d", updatedAt: "" };
+    currentFiles = [{ filename: "export-blueprint.md", size: 10, mtime: 1000 }];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    const textarea = await screen.findByRole("textbox", { name: "Agent 修订指令" });
+    await screen.findByRole("button", { name: /模型/ });
+    await userEvent.type(textarea, "改一下");
+    await userEvent.click(screen.getByRole("button", { name: "让 Agent 修订" }));
+    expect(await screen.findByText(/已应用 1 条修订/)).toBeInTheDocument();
+    expect(screen.getByText(/已跳过/)).toBeInTheDocument();
+  });
+
+  it("shows the stale message on a 409", async () => {
+    currentStage = { blueprintDigest: "stale", updatedAt: "" };
+    currentFiles = [{ filename: "export-blueprint.md", size: 10, mtime: 1000 }];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    const textarea = await screen.findByRole("textbox", { name: "Agent 修订指令" });
+    await screen.findByRole("button", { name: /模型/ });
+    await userEvent.type(textarea, "改一下");
+    await userEvent.click(screen.getByRole("button", { name: "让 Agent 修订" }));
+    expect(await screen.findByText(/摘要不匹配|重新加载/)).toBeInTheDocument();
   });
 });
