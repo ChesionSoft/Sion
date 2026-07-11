@@ -25,6 +25,13 @@ const BLUEPRINT_OBJECT = {
 
 const DRAFT_MD = "## 执行摘要\n\n已确认背景内容。";
 
+const DEFAULT_BLUEPRINT_REVISION = {
+  ops: [{ op: "update", sectionId: "executive-summary", fields: { rationale: "修订后的理由" } }],
+};
+const DEFAULT_DRAFT_REVISION = {
+  ops: [{ op: "replace", heading: "执行摘要", body: "修订后的正文。" }],
+};
+
 vi.mock("@/lib/project/model-chat", () => ({
   streamModelChat: vi.fn(async function* ({
     messages,
@@ -32,7 +39,11 @@ vi.mock("@/lib/project/model-chat", () => ({
     messages: { role: string; content: string }[];
   }): AsyncGenerator<ModelStreamPart> {
     const sys = messages.find((m) => m.role === "system")?.content ?? "";
-    if (sys.includes("JSON 对象")) {
+    if (sys.includes("蓝图的修订编辑")) {
+      yield { type: "content", content: "```json\n" + JSON.stringify(DEFAULT_BLUEPRINT_REVISION) + "\n```" };
+    } else if (sys.includes("正文的修订编辑")) {
+      yield { type: "content", content: "```json\n" + JSON.stringify(DEFAULT_DRAFT_REVISION) + "\n```" };
+    } else if (sys.includes("JSON 对象")) {
       yield { type: "content", content: "```json\n" + JSON.stringify(BLUEPRINT_OBJECT) + "\n```" };
     } else if (sys.includes("撰稿编辑")) {
       yield { type: "content", content: DRAFT_MD };
@@ -193,6 +204,206 @@ describe("POST /api/projects/[projectId]/exports (staged)", () => {
     );
     const res = await postOp("blueprint");
     expect(res.status).toBe(502);
+  });
+});
+
+async function setupBlueprint(): Promise<string> {
+  const res = await postOp("blueprint");
+  return (await res.json()).digest as string;
+}
+
+async function setupApprovedBlueprintAndDraft(): Promise<{ bpDigest: string; draftDigest: string }> {
+  const bpDigest = await setupBlueprint();
+  await postOp("approve_blueprint", { artifactDigest: bpDigest });
+  const draftRes = await postOp("draft");
+  const draftDigest = (await draftRes.json()).digest as string;
+  return { bpDigest, draftDigest };
+}
+
+async function mockModelOnce(content: string): Promise<void> {
+  const { streamModelChat } = await import("@/lib/project/model-chat");
+  vi.mocked(streamModelChat).mockImplementationOnce(
+    async function* (): AsyncGenerator<ModelStreamPart> {
+      yield { type: "content", content };
+    },
+  );
+}
+
+describe("POST edit_blueprint / edit_draft", () => {
+  it("edits a blueprint with valid line-format markdown and clears approvals/draft state", async () => {
+    const originalDigest = await setupBlueprint();
+    const edited = [
+      "# 正式 PRD 导出蓝图",
+      "",
+      "## 执行摘要",
+      "- id: executive-summary",
+      "- inclusion: confirmed-summary",
+      "- presentation: paragraphs",
+      "- source: basic-info",
+      "- headings: 背景",
+      "- rationale: 编辑后的理由",
+    ].join("\n");
+    const res = await postOp("edit_blueprint", { markdown: edited });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.stage.blueprintDigest).toBeTruthy();
+    expect(body.stage.blueprintDigest).not.toBe(originalDigest);
+    expect(body.stage.blueprintApprovedDigest).toBeUndefined();
+    expect(body.stage.draftDigest).toBeUndefined();
+    const md = await readFile(
+      path.join(tmpDir, "projects", "test-project", "exports", "export-blueprint.md"),
+      "utf8",
+    );
+    expect(md).toContain("编辑后的理由");
+  });
+
+  it("returns 422 when the edited blueprint has a section missing id", async () => {
+    await setupBlueprint();
+    const bad = [
+      "# 蓝图",
+      "",
+      "## 执行摘要",
+      "- inclusion: omit",
+      "- presentation: paragraphs",
+      "- source: -",
+      "- headings: -",
+      "- rationale: r",
+    ].join("\n");
+    const res = await postOp("edit_blueprint", { markdown: bad });
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 409 when no blueprint exists", async () => {
+    const res = await postOp("edit_blueprint", {
+      markdown: [
+        "# 蓝图",
+        "",
+        "## 执行摘要",
+        "- id: x",
+        "- inclusion: omit",
+        "- presentation: paragraphs",
+        "- source: -",
+        "- headings: -",
+        "- rationale: r",
+      ].join("\n"),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("edits a draft and clears QA/approval", async () => {
+    const { draftDigest } = await setupApprovedBlueprintAndDraft();
+    const res = await postOp("edit_draft", { markdown: "## 执行摘要\n\n编辑后的正文。" });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.stage.draftDigest).toBeTruthy();
+    expect(body.stage.draftDigest).not.toBe(draftDigest);
+    expect(body.stage.draftApprovedDigest).toBeUndefined();
+    expect(body.stage.qaStatus).toBeUndefined();
+    const md = await readFile(
+      path.join(tmpDir, "projects", "test-project", "exports", "formal-prd-draft.md"),
+      "utf8",
+    );
+    expect(md).toContain("编辑后的正文。");
+  });
+
+  it("returns 422 when the edited draft contains 待确认", async () => {
+    await setupApprovedBlueprintAndDraft();
+    const res = await postOp("edit_draft", { markdown: "## 执行摘要\n\n待确认：补充内容。" });
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 409 when the draft's blueprint is no longer approved", async () => {
+    await setupApprovedBlueprintAndDraft();
+    const statePath = path.join(tmpDir, "projects", "test-project", "exports", "formal-prd-state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    state.blueprintApprovedDigest = "no-longer-matching";
+    await writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+    const res = await postOp("edit_draft", { markdown: "## 执行摘要\n\n正文。" });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe("POST revise_blueprint / revise_draft", () => {
+  it("applies a blueprint revision patch from the model", async () => {
+    const bpDigest = await setupBlueprint();
+    const res = await postOp("revise_blueprint", {
+      instruction: "更新执行摘要理由",
+      artifactDigest: bpDigest,
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.stage.blueprintDigest).not.toBe(bpDigest);
+    expect(Array.isArray(body.applied)).toBe(true);
+    expect(body.applied.some((r: { status: string }) => r.status === "applied")).toBe(true);
+  });
+
+  it("applies a draft revision patch and reports a skipped missing heading", async () => {
+    const { draftDigest } = await setupApprovedBlueprintAndDraft();
+    await mockModelOnce(
+      "```json\n" +
+        JSON.stringify({
+          ops: [
+            { op: "replace", heading: "不存在", body: "x" },
+            { op: "replace", heading: "执行摘要", body: "修订后的正文。" },
+          ],
+        }) +
+        "\n```",
+    );
+    const res = await postOp("revise_draft", { instruction: "修订正文", artifactDigest: draftDigest });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.applied).toHaveLength(2);
+    expect(body.applied.filter((r: { status: string }) => r.status === "skipped")).toHaveLength(1);
+    expect(body.applied.filter((r: { status: string }) => r.status === "applied")).toHaveLength(1);
+    const md = await readFile(
+      path.join(tmpDir, "projects", "test-project", "exports", "formal-prd-draft.md"),
+      "utf8",
+    );
+    expect(md).toContain("修订后的正文。");
+  });
+
+  it("returns 409 for a stale supplied digest (blueprint)", async () => {
+    await setupBlueprint();
+    const res = await postOp("revise_blueprint", { instruction: "x", artifactDigest: "stale" });
+    expect(res.status).toBe(409);
+  });
+
+  it("returns 409 when the draft is absent", async () => {
+    const bpDigest = await setupBlueprint();
+    await postOp("approve_blueprint", { artifactDigest: bpDigest });
+    const res = await postOp("revise_draft", { instruction: "x", artifactDigest: "any" });
+    expect(res.status).toBe(409);
+  });
+
+  it("returns 502 when the model returns malformed JSON", async () => {
+    const bpDigest = await setupBlueprint();
+    await mockModelOnce("这不是 JSON");
+    const res = await postOp("revise_blueprint", { instruction: "x", artifactDigest: bpDigest });
+    expect(res.status).toBe(502);
+  });
+
+  it("returns 422 when every draft patch op is skipped", async () => {
+    const { draftDigest } = await setupApprovedBlueprintAndDraft();
+    await mockModelOnce(
+      "```json\n" + JSON.stringify({ ops: [{ op: "replace", heading: "不存在", body: "x" }] }) + "\n```",
+    );
+    const res = await postOp("revise_draft", { instruction: "x", artifactDigest: draftDigest });
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 and leaves the draft unchanged when a patch introduces TBD", async () => {
+    const { draftDigest } = await setupApprovedBlueprintAndDraft();
+    const draftPath = path.join(tmpDir, "projects", "test-project", "exports", "formal-prd-draft.md");
+    const before = await readFile(draftPath, "utf8");
+    await mockModelOnce(
+      "```json\n" +
+        JSON.stringify({ ops: [{ op: "replace", heading: "执行摘要", body: "此处内容 TBD。" }] }) +
+        "\n```",
+    );
+    const res = await postOp("revise_draft", { instruction: "x", artifactDigest: draftDigest });
+    expect(res.status).toBe(422);
+    const after = await readFile(draftPath, "utf8");
+    expect(after).toBe(before);
   });
 });
 
