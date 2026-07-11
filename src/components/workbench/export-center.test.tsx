@@ -131,6 +131,15 @@ describe("ExportCenter review gates", () => {
     expect(screen.queryByRole("button", { name: "确认正文并生成正式 Word" })).not.toBeInTheDocument();
   });
 
+  it("shows the model picker and generate button in the bottom composer at the initial step, with no revision box", async () => {
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={[]} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /生成导出蓝图/ })).toBeEnabled());
+    // model picker moved from the header into the bottom composer
+    expect(screen.getByRole("button", { name: /模型/ })).toBeInTheDocument();
+    // no artifact yet -> no revision box
+    expect(screen.queryByRole("textbox", { name: "Agent 修订指令" })).not.toBeInTheDocument();
+  });
+
   it("posts the blueprint operation when generating the blueprint", async () => {
     render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={[]} />);
     const button = await screen.findByRole("button", { name: /生成导出蓝图/ });
@@ -226,6 +235,26 @@ describe("ExportCenter review gates", () => {
       "href",
       "/api/projects/p/exports/%E9%A1%B9%E7%9B%AE%E5%BC%80%E5%8F%91%E8%AE%BE%E8%AE%A1%E6%96%87%E6%A1%A3.docx?download=1",
     );
+  });
+
+  it("hides the composer once QA passes (no model picker, no revision box at done)", async () => {
+    currentStage = {
+      blueprintDigest: "bp-d",
+      blueprintApprovedDigest: "bp-d",
+      draftDigest: "dr-d",
+      draftApprovedDigest: "dr-d",
+      qaStatus: "passed",
+      qaReport: { passed: true, pageCount: 1, issues: [], renderedAt: "" },
+      updatedAt: "",
+    };
+    currentFiles = [
+      { filename: "项目开发设计文档.docx", size: 1000, mtime: 1000 },
+      { filename: "formal-prd-qa-report.md", size: 50, mtime: 1000 },
+    ];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    await screen.findByRole("link", { name: /下载/ });
+    expect(screen.queryByRole("button", { name: /模型/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Agent 修订指令" })).not.toBeInTheDocument();
   });
 
   it("lists all export filenames in the sidebar", async () => {
