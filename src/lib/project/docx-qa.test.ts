@@ -9,6 +9,7 @@ type RunResult = { code: number; stdout: string; stderr: string };
 function fakeRunner(opts: {
   pngs?: string[];
   text?: string;
+  pageTexts?: string[];
   sofficeCode?: number;
   pdftoppmCode?: number;
 }): (cmd: string, args: string[]) => Promise<RunResult> {
@@ -27,7 +28,11 @@ function fakeRunner(opts: {
       }
       return { code: 0, stdout: "", stderr: "" };
     }
-    if (cmd.endsWith("pdftotext")) return { code: 0, stdout: opts.text ?? "已确认中文内容。", stderr: "" };
+    if (cmd.endsWith("pdftotext")) {
+      const pageFlag = args.indexOf("-f");
+      const page = pageFlag === -1 ? 0 : Number(args[pageFlag + 1]) - 1;
+      return { code: 0, stdout: opts.pageTexts?.[page] ?? opts.text ?? "已确认中文内容。", stderr: "" };
+    }
     return { code: 0, stdout: "", stderr: "" };
   };
 }
@@ -60,6 +65,24 @@ describe("runDocxQa", () => {
     });
     expect(report.passed).toBe(false);
     expect(report.issues).toEqual([expect.objectContaining({ code: "missing_cjk_text" })]);
+  });
+
+  it("reports the exact page when one rendered page is missing CJK text", async () => {
+    const report = await runDocxQa("/tmp/a.docx", {
+      run: fakeRunner({ pngs: ["page-1.png", "page-2.png"], pageTexts: ["第 1 页中文", "latin only"] }),
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.issues).toContainEqual(expect.objectContaining({ code: "missing_cjk_text", page: 2 }));
+  });
+
+  it("reports an empty rendered page from its page text", async () => {
+    const report = await runDocxQa("/tmp/a.docx", {
+      run: fakeRunner({ pngs: ["page-1.png", "page-2.png"], pageTexts: ["第 1 页中文", "   "] }),
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.issues).toContainEqual(expect.objectContaining({ code: "empty_page", page: 2 }));
   });
 
   it("fails when soffice reports a non-zero render error", async () => {

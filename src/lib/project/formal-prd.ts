@@ -41,7 +41,6 @@ const workflowNodeIdSchema = z.enum([
   "architecture-deployment",
   "development-tasks",
   "risks-open-questions",
-  "final-export",
 ]);
 
 const blueprintSectionSchema = z.object({

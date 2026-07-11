@@ -19,8 +19,8 @@ const project: Project = {
   updatedAt: "2026-06-14T10:00:00.000Z",
 };
 
-function node(id: WorkflowNodeId, markdown: string): ProjectNode {
-  return { id, status: "confirmed", markdown, revision: 1, updatedAt: "2026-06-14T10:00:00.000Z" };
+function node(id: WorkflowNodeId, markdown: string, status: ProjectNode["status"] = "confirmed"): ProjectNode {
+  return { id, status, markdown, revision: 1, updatedAt: "2026-06-14T10:00:00.000Z" };
 }
 
 describe("buildBlueprintSystemPrompt", () => {
@@ -96,6 +96,51 @@ describe("buildDraftUserPrompt", () => {
     expect(prompt).toContain("目标 A。");
     // a non-referenced node must not be fed as a draft source
     expect(prompt).not.toContain("其他。");
+  });
+
+  it("excludes omitted and unconfirmed source nodes from the draft context", () => {
+    const curatedBlueprint: FormalPrdBlueprint = {
+      title: "正式 PRD 导出蓝图",
+      sections: [
+        {
+          id: "included",
+          title: "已纳入",
+          inclusion: "confirmed",
+          presentation: "paragraphs",
+          sourceNodeIds: ["goals"],
+          sourceHeadings: ["总体目标"],
+          rationale: "r",
+        },
+        {
+          id: "omitted",
+          title: "不纳入",
+          inclusion: "omit",
+          presentation: "paragraphs",
+          sourceNodeIds: ["risks-open-questions"],
+          sourceHeadings: ["开放问题"],
+          rationale: "r",
+        },
+        {
+          id: "unconfirmed",
+          title: "未确认",
+          inclusion: "confirmed-summary",
+          presentation: "paragraphs",
+          sourceNodeIds: ["basic-info"],
+          sourceHeadings: ["背景"],
+          rationale: "r",
+        },
+      ],
+    };
+
+    const prompt = buildDraftUserPrompt(curatedBlueprint, [
+      node("goals", "# 目标\n\n已确认目标。"),
+      node("risks-open-questions", "# 风险\n\n不得外发的风险。"),
+      node("basic-info", "# 基本信息\n\n尚未确认的背景。", "needs_confirmation"),
+    ]);
+
+    expect(prompt).toContain("已确认目标。");
+    expect(prompt).not.toContain("不得外发的风险。");
+    expect(prompt).not.toContain("尚未确认的背景。");
   });
 });
 

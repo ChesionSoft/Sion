@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -46,6 +46,7 @@ beforeEach(async () => {
     now: "2026-06-14T10:00:00.000Z",
   });
   projectId = project.id;
+  await store.updateProjectNode(projectId, "goals", { status: "confirmed" });
 });
 
 afterEach(async () => {
@@ -104,6 +105,22 @@ describe("staged artifacts", () => {
     await expect(approveBlueprintArtifact(store, projectId, "stale")).rejects.toThrow();
   });
 
+  it("rejects approval when the blueprint file changed after it was generated", async () => {
+    const state = await writeBlueprintArtifact(store, projectId, blueprint);
+    await writeFile(store.exportPath(projectId, "export-blueprint.md"), "# 已被改写的蓝图\n", "utf8");
+
+    await expect(approveBlueprintArtifact(store, projectId, state.blueprintDigest!)).rejects.toThrow("摘要不匹配");
+  });
+
+  it("rejects a blueprint that maps included content to an unconfirmed node", async () => {
+    const invalidBlueprint: FormalPrdBlueprint = {
+      ...blueprint,
+      sections: [{ ...blueprint.sections[0], sourceNodeIds: ["basic-info"] }],
+    };
+
+    await expect(writeBlueprintArtifact(store, projectId, invalidBlueprint)).rejects.toThrow("已确认");
+  });
+
   it("writeDraftArtifact refuses before the blueprint is approved", async () => {
     await expect(writeDraftArtifact(store, projectId, "## 执行摘要\n\n已确认正文。")).rejects.toThrow();
   });
@@ -121,6 +138,33 @@ describe("staged artifacts", () => {
     const bp = await writeBlueprintArtifact(store, projectId, blueprint);
     await approveBlueprintArtifact(store, projectId, bp.blueprintDigest!);
     await expect(writeDraftArtifact(store, projectId, "## 执行摘要\n\n待确认：补充内容。")).rejects.toThrow();
+  });
+
+  it("removes prior Word and QA artifacts when a new blueprint is generated", async () => {
+    await writeBlueprintArtifact(store, projectId, blueprint);
+    const docxPath = store.exportPath(projectId, "项目开发设计文档.docx");
+    const reportPath = store.exportPath(projectId, "formal-prd-qa-report.md");
+    await writeFile(docxPath, "old docx");
+    await writeFile(reportPath, "old report");
+
+    await writeBlueprintArtifact(store, projectId, blueprint);
+
+    expect(existsSync(docxPath)).toBe(false);
+    expect(existsSync(reportPath)).toBe(false);
+  });
+
+  it("removes prior Word and QA artifacts when a new draft is generated", async () => {
+    const bp = await writeBlueprintArtifact(store, projectId, blueprint);
+    await approveBlueprintArtifact(store, projectId, bp.blueprintDigest!);
+    const docxPath = store.exportPath(projectId, "项目开发设计文档.docx");
+    const reportPath = store.exportPath(projectId, "formal-prd-qa-report.md");
+    await writeFile(docxPath, "old docx");
+    await writeFile(reportPath, "old report");
+
+    await writeDraftArtifact(store, projectId, "## 执行摘要\n\n更新后的正文。");
+
+    expect(existsSync(docxPath)).toBe(false);
+    expect(existsSync(reportPath)).toBe(false);
   });
 
   it("full approval flow enables finalization", async () => {
@@ -209,5 +253,17 @@ describe("finalizeFormalPrdExport", () => {
     expect(existsSync(path.join(rootDir, projectId, "exports", "PROJECT_DESIGN.md"))).toBe(true);
     expect(existsSync(path.join(rootDir, projectId, "exports", "AGENTS.md"))).toBe(true);
     expect((await readStageState(store, projectId)).qaStatus).toBe("passed");
+  });
+
+  it("rejects finalization when the approved draft file changed", async () => {
+    await approveFullFlow();
+    await writeFile(store.exportPath(projectId, "formal-prd-draft.md"), "## 执行摘要\n\n篡改后的正文。", "utf8");
+
+    await expect(
+      finalizeFormalPrdExport(store, projectId, {
+        buildDocx: async () => fakeDocx,
+        runDocxQa: async () => passedReport,
+      }),
+    ).rejects.toThrow("摘要不匹配");
   });
 });

@@ -169,8 +169,8 @@ function formalCoverSection(project: Project) {
         spacing: { before: 120, after: 360 },
         children: [new TextRun({ text: project.name, bold: true, size: 32, font: { ...CJK_FONT } })],
       }),
-      meta(`客户名称：${project.customerName || "未填写"}`),
-      meta(`编制方：${project.authorName || "未填写"}`),
+      ...(project.customerName ? [meta(`客户名称：${project.customerName}`)] : []),
+      ...(project.authorName ? [meta(`编制方：${project.authorName}`)] : []),
       meta(`版本号：${project.version}`),
       meta(`生成日期：${today()}`),
     ],
@@ -214,7 +214,7 @@ function formalBodySection(project: Project, draftMarkdown: string) {
   const body = stripFirstHeading(draftMarkdown);
   const root = parseMarkdownToMdast(body) as { children: MdastBlock[] };
   for (const block of root.children) {
-    if (block.type === "heading" && block.depth === 2) {
+    if (children.length > 0 && block.type === "heading" && block.depth === 2) {
       children.push(new Paragraph({ children: [new PageBreak()] }));
     }
     children.push(...renderBlock(block, { headingOffset: 1, font: { ...CJK_FONT }, formal: true }));

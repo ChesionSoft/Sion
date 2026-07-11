@@ -11,7 +11,7 @@ import {
 } from "./formal-prd";
 import { assembleProjectDesignMarkdown, createAgentsMarkdown, createSpecMarkdown, createTasksMarkdown } from "./markdown";
 import type { ProjectStore } from "./store";
-import type { Project } from "./types";
+import type { Project, ProjectNode } from "./types";
 
 export type ExportedFile = {
   filename: string;
@@ -73,6 +73,55 @@ async function persistState(store: ProjectStore, projectId: string, state: Expor
   await writeFile(statePath(store, projectId), `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
+async function removeArtifacts(store: ProjectStore, projectId: string, filenames: string[]): Promise<void> {
+  await Promise.all(
+    filenames.map((filename) =>
+      unlink(store.exportPath(projectId, filename)).catch(() => {
+        // An artifact that does not exist is already invalidated.
+      }),
+    ),
+  );
+}
+
+async function assertEligibleBlueprintSources(
+  store: ProjectStore,
+  projectId: string,
+  blueprint: FormalPrdBlueprint,
+): Promise<void> {
+  const nodesById = new Map((await store.getProjectNodes(projectId)).map((node) => [node.id, node]));
+  for (const section of blueprint.sections) {
+    if (section.inclusion === "omit") continue;
+    for (const nodeId of section.sourceNodeIds) {
+      const node: ProjectNode | undefined = nodesById.get(nodeId);
+      if (!node || node.status !== "confirmed") {
+        throw new Error("正式 PRD 只能引用已确认节点内容");
+      }
+    }
+  }
+}
+
+async function assertArtifactDigest(
+  store: ProjectStore,
+  projectId: string,
+  filename: string,
+  expectedDigest: string | undefined,
+  submittedDigest?: string,
+  message = "导出产物摘要不匹配，请重新确认",
+): Promise<string> {
+  if (!expectedDigest) throw new Error(message);
+  let content: string;
+  try {
+    content = await readFile(store.exportPath(projectId, filename), "utf8");
+  } catch {
+    throw new Error(message);
+  }
+  const currentDigest = digest(content);
+  if (currentDigest !== expectedDigest || (submittedDigest && currentDigest !== submittedDigest)) {
+    throw new Error(message);
+  }
+  return content;
+}
+
 /**
  * Serialize and persist the blueprint, record its digest, and clear any prior
  * draft/approval/QA state so the draft must be regenerated and re-approved
@@ -83,8 +132,14 @@ export async function writeBlueprintArtifact(
   projectId: string,
   blueprint: FormalPrdBlueprint,
 ): Promise<ExportStageState> {
+  await assertEligibleBlueprintSources(store, projectId, blueprint);
   const content = serializeBlueprint(blueprint);
   await writeFile(store.exportPath(projectId, "export-blueprint.md"), content, "utf8");
+  await removeArtifacts(store, projectId, [
+    "formal-prd-draft.md",
+    "formal-prd-qa-report.md",
+    "项目开发设计文档.docx",
+  ]);
   const prev = await readStageState(store, projectId);
   const state: ExportStageState = {
     ...prev,
@@ -111,9 +166,14 @@ export async function approveBlueprintArtifact(
   artifactDigest: string,
 ): Promise<ExportStageState> {
   const state = await readStageState(store, projectId);
-  if (!state.blueprintDigest || state.blueprintDigest !== artifactDigest) {
-    throw new Error("蓝图摘要不匹配，请重新确认");
-  }
+  await assertArtifactDigest(
+    store,
+    projectId,
+    "export-blueprint.md",
+    state.blueprintDigest,
+    artifactDigest,
+    "蓝图摘要不匹配，请重新确认",
+  );
   const next: ExportStageState = {
     ...state,
     blueprintApprovedDigest: state.blueprintDigest,
@@ -138,6 +198,7 @@ export async function writeDraftArtifact(
   if (!state.blueprint || !state.blueprintDigest || state.blueprintApprovedDigest !== state.blueprintDigest) {
     throw new Error("请先确认导出蓝图");
   }
+  await assertEligibleBlueprintSources(store, projectId, state.blueprint);
   const sourceMap = state.blueprint.sections
     .filter((section) => section.inclusion !== "omit")
     .map((section) => ({
@@ -147,6 +208,7 @@ export async function writeDraftArtifact(
     }));
   const draft = validateDraft({ markdown: draftMarkdown, sourceMap });
   await writeFile(store.exportPath(projectId, "formal-prd-draft.md"), draft.markdown, "utf8");
+  await removeArtifacts(store, projectId, ["formal-prd-qa-report.md", "项目开发设计文档.docx"]);
   const next: ExportStageState = {
     ...state,
     draftDigest: digest(draft.markdown),
@@ -168,9 +230,14 @@ export async function approveDraftArtifact(
   artifactDigest: string,
 ): Promise<ExportStageState> {
   const state = await readStageState(store, projectId);
-  if (!state.draftDigest || state.draftDigest !== artifactDigest) {
-    throw new Error("正文摘要不匹配，请重新确认");
-  }
+  await assertArtifactDigest(
+    store,
+    projectId,
+    "formal-prd-draft.md",
+    state.draftDigest,
+    artifactDigest,
+    "正文摘要不匹配，请重新确认",
+  );
   const next: ExportStageState = {
     ...state,
     draftApprovedDigest: state.draftDigest,
@@ -218,7 +285,15 @@ export async function finalizeFormalPrdExport(
     throw new Error(`Project not found: ${projectId}`);
   }
 
-  const draftMarkdown = await readFile(store.exportPath(projectId, "formal-prd-draft.md"), "utf8");
+  await assertArtifactDigest(store, projectId, "export-blueprint.md", state.blueprintDigest);
+  const draftMarkdown = await assertArtifactDigest(
+    store,
+    projectId,
+    "formal-prd-draft.md",
+    state.draftDigest,
+    undefined,
+    "已确认正文摘要不匹配，请重新确认",
+  );
   const buildDocx = deps.buildDocx ?? defaultBuildDocx;
   const runQa = deps.runDocxQa ?? ((docxPath: string) => runDocxQa(docxPath));
 

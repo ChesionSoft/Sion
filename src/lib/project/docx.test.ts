@@ -110,6 +110,15 @@ describe("buildFormalPrdDocument", () => {
     expect(serialized).toContain("eastAsia");
   });
 
+  it("omits optional cover metadata instead of rendering unresolved placeholders", () => {
+    const doc = buildFormalPrdDocument(
+      { ...project, customerName: "", authorName: "" },
+      "## 执行摘要\n\n已确认结论。",
+    );
+
+    expect(xml(doc)).not.toContain("未填写");
+  });
+
   it("renders a constrained flow block as a diagram image, not literal ASCII text", () => {
     const doc = buildFormalPrdDocument(project, "## 核心流程\n\n```flow\n报告解读 -> 健康评估 -> 调理方案\n```");
     const serialized = xml(doc);

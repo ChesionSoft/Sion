@@ -2,17 +2,10 @@ import { NextResponse } from "next/server";
 import { readFile } from "node:fs/promises";
 import { ProjectStore } from "@/lib/project/store";
 import { isExportFilename } from "@/lib/project/export-files";
+import { readStageState } from "@/lib/project/exports";
 
 const MARKDOWN_TYPE = "text/markdown; charset=utf-8";
 const DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
-const CONTENT_TYPES: Record<string, string> = {
-  "PROJECT_DESIGN.md": MARKDOWN_TYPE,
-  "项目开发设计文档.docx": DOCX_TYPE,
-  "SPEC.md": MARKDOWN_TYPE,
-  "TASKS.md": MARKDOWN_TYPE,
-  "AGENTS.md": MARKDOWN_TYPE,
-};
 
 const DOCX_FILENAME = "项目开发设计文档.docx";
 
@@ -41,6 +34,13 @@ export async function GET(
   const download = url.searchParams.get("download") === "1";
   const filePath = store.exportPath(projectId, filename);
 
+  if (filename === DOCX_FILENAME) {
+    const stage = await readStageState(store, projectId);
+    if (stage.qaStatus !== "passed") {
+      return NextResponse.json({ error: "正式 Word 尚未通过当前渲染质检" }, { status: 404 });
+    }
+  }
+
   if (asHtml) {
     if (filename !== DOCX_FILENAME) {
       return NextResponse.json({ error: "该文件不支持 HTML 预览" }, { status: 400 });
@@ -58,7 +58,9 @@ export async function GET(
 
   try {
     const buffer = await readFile(filePath);
-    const headers: Record<string, string> = { "Content-Type": CONTENT_TYPES[filename] };
+    const headers: Record<string, string> = {
+      "Content-Type": filename.endsWith(".md") ? MARKDOWN_TYPE : DOCX_TYPE,
+    };
     if (download) {
       headers["Content-Disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`;
     }
