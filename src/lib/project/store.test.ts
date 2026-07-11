@@ -540,4 +540,31 @@ describe("ProjectStore", () => {
       store.updateSessionWebSearch(project.id, "feature-design", "missing", true),
     ).rejects.toThrow("会话不存在");
   });
+
+  describe("listExports", () => {
+    it("returns existing export files with size/mtime and skips missing ones", async () => {
+      const store = new ProjectStore(rootDir);
+      const project = await store.createProject({
+        name: "T",
+        now: "2026-06-14T10:00:00.000Z",
+      });
+      await writeFile(store.exportPath(project.id, "PROJECT_DESIGN.md"), "hello world", "utf8");
+      await writeFile(store.exportPath(project.id, "项目开发设计文档.docx"), "PK");
+
+      const files = await store.listExports(project.id);
+
+      expect(files.map((f) => f.filename)).toEqual(["PROJECT_DESIGN.md", "项目开发设计文档.docx"]);
+      const md = files.find((f) => f.filename === "PROJECT_DESIGN.md")!;
+      expect(md.size).toBe(11);
+      expect(md.mtime).toBeGreaterThan(0);
+      expect(files.find((f) => f.filename === "SPEC.md")).toBeUndefined();
+    });
+
+    it("returns an empty array when no exports exist", async () => {
+      const store = new ProjectStore(rootDir);
+      const project = await store.createProject({ name: "T", now: "2026-06-14T10:00:00.000Z" });
+      const files = await store.listExports(project.id);
+      expect(files).toEqual([]);
+    });
+  });
 });
