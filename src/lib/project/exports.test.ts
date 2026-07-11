@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,10 +8,12 @@ import {
   approveDraftArtifact,
   canFinalize,
   exportProjectDocuments,
+  finalizeFormalPrdExport,
   readStageState,
   writeBlueprintArtifact,
   writeDraftArtifact,
 } from "./exports";
+import type { DocxQaReport } from "./docx-qa";
 import type { FormalPrdBlueprint } from "./formal-prd";
 import { ProjectStore } from "./store";
 
@@ -153,5 +156,58 @@ describe("exportProjectDocuments (internal exports)", () => {
     const md = await readFile(path.join(rootDir, projectId, "exports", "PROJECT_DESIGN.md"), "utf8");
     expect(md).toContain("综合后的前言");
     expect(md).not.toContain("原始拼接");
+  });
+});
+
+describe("finalizeFormalPrdExport", () => {
+  async function approveFullFlow() {
+    const bp = await writeBlueprintArtifact(store, projectId, blueprint);
+    await approveBlueprintArtifact(store, projectId, bp.blueprintDigest!);
+    const draft = await writeDraftArtifact(store, projectId, "## 执行摘要\n\n已确认正文。");
+    await approveDraftArtifact(store, projectId, draft.draftDigest!);
+  }
+
+  const fakeDocx = Buffer.from([0x50, 0x4b, 0x05, 0x06, 0x00, 0x00]);
+  const passedReport: DocxQaReport = { passed: true, pageCount: 1, issues: [], renderedAt: "2026-07-11T00:00:00.000Z" };
+  const failedReport: DocxQaReport = {
+    passed: false,
+    pageCount: 1,
+    issues: [{ code: "missing_cjk_text", message: "未检出中文字符" }],
+    renderedAt: "2026-07-11T00:00:00.000Z",
+  };
+
+  it("throws when the flow is not fully approved", async () => {
+    await expect(finalizeFormalPrdExport(store, projectId)).rejects.toThrow();
+  });
+
+  it("returns 422 and removes the docx when QA fails, persisting the QA report", async () => {
+    await approveFullFlow();
+    const result = await finalizeFormalPrdExport(store, projectId, {
+      buildDocx: async () => fakeDocx,
+      runDocxQa: async () => failedReport,
+    });
+    expect(result.status).toBe(422);
+    expect(result.qaReport.passed).toBe(false);
+    // the failed DOCX is removed so it cannot be downloaded
+    expect(existsSync(path.join(rootDir, projectId, "exports", "项目开发设计文档.docx"))).toBe(false);
+    // the QA report is retained for review
+    const report = await readFile(path.join(rootDir, projectId, "exports", "formal-prd-qa-report.md"), "utf8");
+    expect(report).toContain("missing_cjk_text");
+    expect((await readStageState(store, projectId)).qaStatus).toBe("failed");
+  });
+
+  it("returns 200, keeps the docx, and writes the internal exports when QA passes", async () => {
+    await approveFullFlow();
+    const result = await finalizeFormalPrdExport(store, projectId, {
+      buildDocx: async () => fakeDocx,
+      runDocxQa: async () => passedReport,
+    });
+    expect(result.status).toBe(200);
+    expect(existsSync(path.join(rootDir, projectId, "exports", "项目开发设计文档.docx"))).toBe(true);
+    expect(existsSync(path.join(rootDir, projectId, "exports", "formal-prd-qa-report.md"))).toBe(true);
+    // the four internal markdown exports are written alongside the formal docx
+    expect(existsSync(path.join(rootDir, projectId, "exports", "PROJECT_DESIGN.md"))).toBe(true);
+    expect(existsSync(path.join(rootDir, projectId, "exports", "AGENTS.md"))).toBe(true);
+    expect((await readStageState(store, projectId)).qaStatus).toBe("passed");
   });
 });

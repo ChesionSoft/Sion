@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { Packer } from "docx";
+import { buildFormalPrdDocument } from "./docx";
+import { runDocxQa, type DocxQaReport } from "./docx-qa";
 import {
   serializeBlueprint,
   validateDraft,
@@ -8,6 +11,7 @@ import {
 } from "./formal-prd";
 import { assembleProjectDesignMarkdown, createAgentsMarkdown, createSpecMarkdown, createTasksMarkdown } from "./markdown";
 import type { ProjectStore } from "./store";
+import type { Project } from "./types";
 
 export type ExportedFile = {
   filename: string;
@@ -172,6 +176,97 @@ export async function approveDraftArtifact(
   };
   await persistState(store, projectId, next);
   return next;
+}
+
+/**
+ * Finalization dependencies. Both are injectable so the staged approval flow
+ * can be unit-tested without invoking LibreOffice. Defaults build the formal
+ * DOCX from the approved draft and run the real server-side render QA.
+ */
+export type FinalizeDeps = {
+  buildDocx?: (project: Project, draftMarkdown: string) => Promise<Buffer>;
+  runDocxQa?: (docxPath: string) => Promise<DocxQaReport>;
+};
+
+export type FinalizeResult = {
+  status: 200 | 422;
+  qaReport: DocxQaReport;
+  stage: ExportStageState;
+};
+
+/**
+ * Finalize the formal PRD: build the formal Word document from the approved
+ * draft, render it through LibreOffice QA, and only retain the DOCX when QA
+ * passes. On failure the DOCX is removed and a 422 result (with the persisted
+ * QA report) is returned. Requires `canFinalize(state)`; the route enforces
+ * the 409 gate, this function guards again defensively.
+ */
+export async function finalizeFormalPrdExport(
+  store: ProjectStore,
+  projectId: string,
+  deps: FinalizeDeps = {},
+): Promise<FinalizeResult> {
+  const state = await readStageState(store, projectId);
+  if (!canFinalize(state)) {
+    throw new Error("请先确认导出蓝图与正式正文后再生成正式 Word");
+  }
+
+  const project = await store.getProject(projectId);
+  if (!project) {
+    throw new Error(`Project not found: ${projectId}`);
+  }
+
+  const draftMarkdown = await readFile(store.exportPath(projectId, "formal-prd-draft.md"), "utf8");
+  const buildDocx = deps.buildDocx ?? defaultBuildDocx;
+  const runQa = deps.runDocxQa ?? ((docxPath: string) => runDocxQa(docxPath));
+
+  const docxPath = store.exportPath(projectId, "项目开发设计文档.docx");
+  const buffer = await buildDocx(project, draftMarkdown);
+  await writeFile(docxPath, buffer);
+
+  const qaReport = await runQa(docxPath);
+  await writeFile(store.exportPath(projectId, "formal-prd-qa-report.md"), renderQaReportMarkdown(qaReport), "utf8");
+
+  if (!qaReport.passed) {
+    await unlink(docxPath).catch(() => {
+      // DOCX already absent; the failure result still holds.
+    });
+    const next: ExportStageState = { ...state, qaStatus: "failed", updatedAt: new Date().toISOString() };
+    await persistState(store, projectId, next);
+    return { status: 422, qaReport, stage: next };
+  }
+
+  // QA passed: write the four internal Markdown exports alongside the formal
+  // Word, and record the successful QA state.
+  await exportProjectDocuments(store, projectId);
+  const next: ExportStageState = { ...state, qaStatus: "passed", updatedAt: new Date().toISOString() };
+  await persistState(store, projectId, next);
+  return { status: 200, qaReport, stage: next };
+}
+
+async function defaultBuildDocx(project: Project, draftMarkdown: string): Promise<Buffer> {
+  return Buffer.from(await Packer.toBuffer(buildFormalPrdDocument(project, draftMarkdown)));
+}
+
+function renderQaReportMarkdown(report: DocxQaReport): string {
+  const lines = [
+    "# 正式 PRD 渲染质检报告",
+    "",
+    `- 通过：${report.passed ? "是" : "否"}`,
+    `- 渲染时间：${report.renderedAt}`,
+    `- 页数：${report.pageCount}`,
+    "",
+  ];
+  if (report.issues.length === 0) {
+    lines.push("无问题。");
+  } else {
+    lines.push("## 问题");
+    for (const issue of report.issues) {
+      const page = issue.page ? `（第 ${issue.page} 页）` : "";
+      lines.push(`- [${issue.code}]${page} ${issue.message}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 /**

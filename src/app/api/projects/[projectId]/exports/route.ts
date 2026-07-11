@@ -3,6 +3,7 @@ import {
   approveBlueprintArtifact,
   approveDraftArtifact,
   canFinalize,
+  finalizeFormalPrdExport,
   readStageState,
   writeBlueprintArtifact,
   writeDraftArtifact,
@@ -164,6 +165,17 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   if (!canFinalize(state)) {
     return NextResponse.json({ error: "请先确认导出蓝图与正式正文后再生成正式 Word" }, { status: 409 });
   }
-  // The docx + render-QA finalization is wired in the render-QA task.
-  return NextResponse.json({ error: "正式 Word 生成尚未启用" }, { status: 501 });
+  try {
+    const result = await finalizeFormalPrdExport(store, projectId);
+    if (result.status === 422) {
+      return NextResponse.json(
+        { error: "渲染质检未通过，请查看质检报告后调整正文再重新生成", stage: result.stage, qaReport: result.qaReport },
+        { status: 422 },
+      );
+    }
+    return NextResponse.json({ stage: result.stage, qaReport: result.qaReport });
+  } catch (err) {
+    console.error("[exports] finalize failed:", err);
+    return NextResponse.json({ error: "正式 Word 生成失败,请重试" }, { status: 500 });
+  }
 }
