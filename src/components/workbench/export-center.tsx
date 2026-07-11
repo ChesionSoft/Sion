@@ -29,6 +29,8 @@ type PreviewState =
   | { kind: "md"; filename: string; markdown: string }
   | { kind: "docx"; filename: string; html: string };
 
+type EditableExportFilename = "export-blueprint.md" | "formal-prd-draft.md";
+
 type Step = "blueprint" | "approve-blueprint" | "approve-draft" | "retry-draft" | "done";
 
 function currentStep(stage: StageState | null): Step {
@@ -69,6 +71,7 @@ export function ExportCenter({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [editing, setEditing] = useState(false);
+  const [editingFilename, setEditingFilename] = useState<EditableExportFilename | null>(null);
   const [editorText, setEditorText] = useState("");
   const [revision, setRevision] = useState("");
   const [reviseBusy, setReviseBusy] = useState(false);
@@ -249,23 +252,31 @@ export function ExportCenter({
   }
 
   function enterEdit() {
-    if (preview.kind !== "md") return;
+    if (
+      busy ||
+      reviseBusy ||
+      preview.kind !== "md" ||
+      preview.filename !== selected ||
+      (selected !== "export-blueprint.md" && selected !== "formal-prd-draft.md")
+    ) return;
     setEditorText(preview.markdown);
+    setEditingFilename(selected);
     setEditing(true);
     setMessage("");
   }
 
   function cancelEdit() {
     setEditing(false);
+    setEditingFilename(null);
     setEditorText("");
   }
 
   async function saveEdit() {
-    if (!selected || busy) return;
+    if (!editingFilename || busy || reviseBusy) return;
     setBusy(true);
     setMessage("正在保存…");
     try {
-      const operation = selected === "export-blueprint.md" ? "edit_blueprint" : "edit_draft";
+      const operation = editingFilename === "export-blueprint.md" ? "edit_blueprint" : "edit_draft";
       const { ok, data } = await postJson({ operation, markdown: editorText });
       if (!ok) {
         // keep the editor open so the user can fix the error
@@ -273,6 +284,7 @@ export function ExportCenter({
         return;
       }
       setEditing(false);
+      setEditingFilename(null);
       setEditorText("");
       setMessage("已保存。");
       await refresh();
@@ -328,7 +340,7 @@ export function ExportCenter({
 
   const primaryLabel = PRIMARY_LABEL[step];
   const isEditableFile = selected === "export-blueprint.md" || selected === "formal-prd-draft.md";
-  const canEdit = isEditableFile && preview.kind === "md";
+  const canEdit = isEditableFile && preview.kind === "md" && preview.filename === selected;
   const canRevise =
     canEdit &&
     !editing &&
@@ -339,6 +351,7 @@ export function ExportCenter({
   const canPrimary =
     !!onPrimary &&
     !busy &&
+    !reviseBusy &&
     (step === "approve-draft" || Boolean(providerId && model));
 
   const qaFailed = stage?.qaStatus === "failed";
@@ -423,7 +436,7 @@ export function ExportCenter({
                           ? "hover:bg-muted"
                           : "text-muted-foreground/50",
                     )}
-                    disabled={!exists}
+                    disabled={!exists || editing || busy || reviseBusy}
                     onClick={() => setSelected(name)}
                     type="button"
                   >
@@ -442,17 +455,17 @@ export function ExportCenter({
             <div className="flex items-center gap-1">
               {editing ? (
                 <>
-                  <Button disabled={busy} onClick={cancelEdit} size="sm" type="button" variant="ghost">
+                  <Button disabled={busy || reviseBusy} onClick={cancelEdit} size="sm" type="button" variant="ghost">
                     取消
                   </Button>
-                  <Button disabled={busy} onClick={saveEdit} size="sm" type="button" variant="outline">
+                  <Button disabled={busy || reviseBusy} onClick={saveEdit} size="sm" type="button" variant="outline">
                     {busy ? "保存中…" : "保存"}
                   </Button>
                 </>
               ) : (
                 <>
                   {canEdit ? (
-                    <Button onClick={enterEdit} size="sm" type="button" variant="ghost">
+                    <Button disabled={busy || reviseBusy} onClick={enterEdit} size="sm" type="button" variant="ghost">
                       编辑
                     </Button>
                   ) : null}

@@ -130,6 +130,34 @@ describe("formal PRD contracts", () => {
     ).toThrow();
   });
 
+  it("rejects duplicate section ids because patches address sections by id", () => {
+    expect(() =>
+      validateBlueprint({
+        title: "蓝图",
+        sections: [
+          {
+            id: "same",
+            title: "第一节",
+            inclusion: "confirmed",
+            presentation: "paragraphs",
+            sourceNodeIds: ["goals"],
+            sourceHeadings: [],
+            rationale: "r",
+          },
+          {
+            id: "same",
+            title: "第二节",
+            inclusion: "confirmed",
+            presentation: "paragraphs",
+            sourceNodeIds: ["goals"],
+            sourceHeadings: [],
+            rationale: "r",
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
   it("lint flags TBD/TODO/待确认/agent 建议/历史结论", () => {
     const issues = lintFormalPrdMarkdown("TBD\nTODO\n待确认\nagent 建议\n历史结论");
     expect(issues.length).toBeGreaterThanOrEqual(5);
@@ -191,6 +219,14 @@ describe("formal PRD contracts", () => {
 describe("parseBlueprint (line format)", () => {
   it("round-trips a two-section blueprint including an omit section with empty arrays", () => {
     expect(parseBlueprint(serializeBlueprint(twoSectionBlueprint))).toEqual(twoSectionBlueprint);
+  });
+
+  it("round-trips a source heading containing the visible separator", () => {
+    const blueprint = {
+      ...twoSectionBlueprint,
+      sections: [{ ...twoSectionBlueprint.sections[0], sourceHeadings: ["新增 / 编辑"] }],
+    };
+    expect(parseBlueprint(serializeBlueprint(blueprint))).toEqual(blueprint);
   });
 
   it("throws when there is no level-1 title", () => {
@@ -371,6 +407,12 @@ describe("validateBlueprintPatch", () => {
   it("rejects an empty ops array", () => {
     expect(() => validateBlueprintPatch({ artifactDigest: "d", ops: [] })).toThrow();
   });
+
+  it("rejects an update with no fields", () => {
+    expect(() =>
+      validateBlueprintPatch({ artifactDigest: "d", ops: [{ op: "update", sectionId: "x", fields: {} }] }),
+    ).toThrow();
+  });
 });
 
 describe("applyBlueprintPatches", () => {
@@ -436,6 +478,20 @@ describe("applyBlueprintPatches", () => {
     });
     expect(applied[0].status).toBe("applied");
     expect(blueprint.sections.at(-1)?.id).toBe("tail");
+  });
+
+  it("skips an add whose id already exists", () => {
+    const { blueprint, applied } = applyBlueprintPatches(twoSectionBlueprint, {
+      artifactDigest: "d",
+      ops: [
+        {
+          op: "add",
+          section: { ...twoSectionBlueprint.sections[0] },
+        },
+      ],
+    });
+    expect(applied).toEqual([expect.objectContaining({ status: "skipped" })]);
+    expect(blueprint.sections).toEqual(twoSectionBlueprint.sections);
   });
 });
 

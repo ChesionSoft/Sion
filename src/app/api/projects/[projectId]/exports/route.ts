@@ -278,8 +278,12 @@ export async function POST(request: Request, context: { params: Promise<{ projec
 
     let revised;
     let applied;
+    const latestState = await readStageState(store, projectId);
+    if (!latestState.blueprint || latestState.blueprintDigest !== body.artifactDigest) {
+      return NextResponse.json({ error: "蓝图摘要不匹配,请重新加载" }, { status: 409 });
+    }
     try {
-      const result = applyBlueprintPatches(state.blueprint, patch);
+      const result = applyBlueprintPatches(latestState.blueprint, patch);
       revised = result.blueprint;
       applied = result.applied;
     } catch (err) {
@@ -357,6 +361,10 @@ export async function POST(request: Request, context: { params: Promise<{ projec
 
     let revisedMarkdown: string;
     let applied;
+    const latestState = await readStageState(store, projectId);
+    if (latestState.draftDigest !== body.artifactDigest) {
+      return NextResponse.json({ error: "正文摘要不匹配,请重新加载" }, { status: 409 });
+    }
     try {
       const result = applyDraftPatches(draftMarkdown, patch);
       revisedMarkdown = result.markdown;

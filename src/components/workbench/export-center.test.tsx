@@ -274,6 +274,22 @@ describe("ExportCenter manual editing", () => {
     expect(posts.some((p) => p.operation === "edit_blueprint")).toBe(false);
   });
 
+  it("locks file selection while editing so content cannot be saved to another artifact", async () => {
+    currentStage = {
+      blueprintDigest: "bp-d",
+      blueprintApprovedDigest: "bp-d",
+      draftDigest: "dr-d",
+      updatedAt: "",
+    };
+    currentFiles = [
+      { filename: "export-blueprint.md", size: 10, mtime: 1000 },
+      { filename: "formal-prd-draft.md", size: 10, mtime: 1000 },
+    ];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    await userEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    expect(screen.getByRole("button", { name: "formal-prd-draft.md" })).toBeDisabled();
+  });
+
   it("keeps the editor open and shows the error on a 422 edit response", async () => {
     currentStage = { blueprintDigest: "bp-d", updatedAt: "" };
     currentFiles = [{ filename: "export-blueprint.md", size: 10, mtime: 1000 }];

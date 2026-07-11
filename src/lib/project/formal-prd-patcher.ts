@@ -19,8 +19,8 @@ import type { DraftPatch, DraftPatchOp, DraftPatchResult } from "./formal-prd";
  * Malformed parser/runtime failures are rethrown.
  */
 
-/** A line beginning with exactly two `#` and whitespace (an H2 heading line). */
-const H2_LINE_PATTERN = /^##\s+/m;
+/** A CommonMark H2 line, allowing up to three leading spaces but not H3+. */
+const H2_LINE_PATTERN = /^(?: {0,3})##(?!#)[\t ]+/m;
 
 function parseMarkdown(markdown: string): Root {
   return fromMarkdown(markdown, {
@@ -108,15 +108,19 @@ function collapseBlankLines(markdown: string): string {
 }
 
 function replaceBody(markdown: string, range: SectionRange, body: string): string {
-  if (H2_LINE_PATTERN.test(body)) {
-    throw new UnpatchableError("替换正文不得包含二级标题（##）行");
-  }
+  assertNoH2Body(body);
   const normalized = normalizeBody(body);
   const atEnd = range.bodyEnd >= markdown.length;
   // One blank line after the H2; one blank line before the next section (or a
   // single trailing newline at EOF).
   const replacement = atEnd ? `\n\n${normalized}\n` : `\n\n${normalized}\n\n`;
   return markdown.slice(0, range.bodyStart) + replacement + markdown.slice(range.bodyEnd);
+}
+
+function assertNoH2Body(body: string): void {
+  if (H2_LINE_PATTERN.test(body)) {
+    throw new UnpatchableError("章节正文不得包含二级标题（##）行");
+  }
 }
 
 function removeSection(markdown: string, range: SectionRange): string {
@@ -129,6 +133,7 @@ function insertSection(
   heading: string,
   body: string,
 ): string {
+  assertNoH2Body(body);
   const normalized = normalizeBody(body);
   const section = `## ${heading}\n\n${normalized}`;
 

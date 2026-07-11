@@ -368,6 +368,47 @@ describe("POST revise_blueprint / revise_draft", () => {
     expect(res.status).toBe(409);
   });
 
+  it("returns 409 when the blueprint changes while a revision is waiting on the model", async () => {
+    const digest = await setupBlueprint();
+    const { streamModelChat } = await import("@/lib/project/model-chat");
+    let signalStarted!: () => void;
+    let releaseModel!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      releaseModel = resolve;
+    });
+    vi.mocked(streamModelChat).mockImplementationOnce(async function* (): AsyncGenerator<ModelStreamPart> {
+      signalStarted();
+      await released;
+      yield {
+        type: "content",
+        content: "```json\n" + JSON.stringify(DEFAULT_BLUEPRINT_REVISION) + "\n```",
+      };
+    });
+
+    const pendingRevision = postOp("revise_blueprint", { instruction: "更新理由", artifactDigest: digest });
+    await started;
+    const edit = await postOp("edit_blueprint", {
+      markdown: [
+        "# 正式 PRD 导出蓝图",
+        "",
+        "## 执行摘要",
+        "- id: executive-summary",
+        "- inclusion: confirmed-summary",
+        "- presentation: paragraphs",
+        "- source: basic-info",
+        "- headings: 背景",
+        "- rationale: 同时编辑后的理由",
+      ].join("\n"),
+    });
+    expect(edit.status).toBe(200);
+    releaseModel();
+
+    expect((await pendingRevision).status).toBe(409);
+  });
+
   it("returns 409 when the draft is absent", async () => {
     const bpDigest = await setupBlueprint();
     await postOp("approve_blueprint", { artifactDigest: bpDigest });

@@ -66,6 +66,10 @@ export const blueprintSchema = z
         (section) => section.inclusion === "omit" || section.sourceNodeIds.length > 0,
       ),
     { message: "non-omit section must map to at least one workflow node" },
+  )
+  .refine(
+    (blueprint) => new Set(blueprint.sections.map((section) => section.id)).size === blueprint.sections.length,
+    { message: "blueprint section ids must be unique" },
   );
 
 export type FormalPrdBlueprint = z.infer<typeof blueprintSchema>;
@@ -138,6 +142,32 @@ function singleLine(text: string): string {
   return text.replace(/[\r\n]+/g, " ").trim();
 }
 
+function serializeSourceHeadings(headings: string[]): string {
+  return headings
+    .map((heading) => singleLine(heading).replaceAll("\\", "\\\\").replaceAll(" / ", " \\/ "))
+    .join(" / ");
+}
+
+function parseSourceHeadings(serialized: string): string[] {
+  if (serialized === "-") return [];
+  const headings: string[] = [];
+  let current = "";
+  for (let index = 0; index < serialized.length; index += 1) {
+    if (serialized[index] === "\\" && index + 1 < serialized.length) {
+      current += serialized[index + 1];
+      index += 1;
+    } else if (serialized.slice(index, index + 3) === " / ") {
+      headings.push(current.trim());
+      current = "";
+      index += 2;
+    } else {
+      current += serialized[index];
+    }
+  }
+  headings.push(current.trim());
+  return headings.filter(Boolean);
+}
+
 /**
  * Serialize a blueprint to stable, human-editable Markdown. Every section
  * carries its metadata as visible `- key: value` lines so the stored file is
@@ -152,7 +182,7 @@ export function serializeBlueprint(blueprint: FormalPrdBlueprint): string {
     lines.push(`- inclusion: ${section.inclusion}`);
     lines.push(`- presentation: ${section.presentation}`);
     lines.push(`- source: ${section.sourceNodeIds.join(", ") || "-"}`);
-    lines.push(`- headings: ${section.sourceHeadings.map(singleLine).join(" / ") || "-"}`);
+    lines.push(`- headings: ${serializeSourceHeadings(section.sourceHeadings) || "-"}`);
     lines.push(`- rationale: ${singleLine(section.rationale)}`, "");
   }
   return lines.join("\n");
@@ -213,10 +243,7 @@ function parseBlueprintSectionMeta(sectionTitle: string, lines: string[]): RawBl
       sourceRaw === "-"
         ? []
         : sourceRaw.split(",").map((s) => s.trim()).filter(Boolean),
-    sourceHeadings:
-      headingsRaw === "-"
-        ? []
-        : headingsRaw.split(" / ").map((s) => s.trim()).filter(Boolean),
+    sourceHeadings: parseSourceHeadings(headingsRaw),
     rationale: meta.rationale as string,
   };
 }
@@ -270,10 +297,15 @@ export function parseBlueprint(markdown: string): FormalPrdBlueprint {
 // Blueprint revision patches.
 // ---------------------------------------------------------------------------
 
+const blueprintUpdateFieldsSchema = blueprintSectionSchema
+  .omit({ id: true })
+  .partial()
+  .refine((fields) => Object.keys(fields).length > 0, { message: "update fields must not be empty" });
+
 const blueprintPatchOpSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("add"), section: blueprintSectionSchema, afterSectionId: z.string().min(1).optional() }),
   z.object({ op: z.literal("remove"), sectionId: z.string().min(1) }),
-  z.object({ op: z.literal("update"), sectionId: z.string().min(1), fields: blueprintSectionSchema.omit({ id: true }).partial() }),
+  z.object({ op: z.literal("update"), sectionId: z.string().min(1), fields: blueprintUpdateFieldsSchema }),
   z.object({ op: z.literal("reorder"), sectionId: z.string().min(1), afterSectionId: z.string().min(1).optional() }),
 ]);
 
@@ -311,6 +343,10 @@ export function applyBlueprintPatches(
 
   for (const op of patch.ops) {
     if (op.op === "add") {
+      if (sections.some((section) => section.id === op.section.id)) {
+        applied.push({ op, status: "skipped", reason: `章节 id 已存在：${op.section.id}` });
+        continue;
+      }
       if (op.afterSectionId) {
         const anchorIdx = sections.findIndex((s) => s.id === op.afterSectionId);
         if (anchorIdx === -1) {

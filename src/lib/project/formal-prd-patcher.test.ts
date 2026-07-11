@@ -130,4 +130,17 @@ describe("applyDraftPatches", () => {
     // original background body is intact
     expect(markdown).toContain("## 背景\n\n背景正文。");
   });
+
+  it("skips inserted or indented replacement bodies that introduce an H2", () => {
+    const { markdown, applied } = applyDraftPatches(
+      DOC,
+      patch([
+        { op: "insert", heading: "新增", body: "新增正文。\n## 偷渡章节\n\n不应写入。" },
+        { op: "replace", heading: "背景", body: "  ## 缩进偷渡\n\n不应写入。" },
+      ]),
+    );
+    expect(applied.map((result) => result.status)).toEqual(["skipped", "skipped"]);
+    expect(markdown).not.toContain("偷渡章节");
+    expect(markdown).not.toContain("缩进偷渡");
+  });
 });
