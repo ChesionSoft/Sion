@@ -12,7 +12,11 @@ export type ExportProjectDocumentsResult = {
   files: ExportedFile[];
 };
 
-export async function exportProjectDocuments(store: ProjectStore, projectId: string): Promise<ExportProjectDocumentsResult> {
+export async function exportProjectDocuments(
+  store: ProjectStore,
+  projectId: string,
+  masterMarkdown?: string,
+): Promise<ExportProjectDocumentsResult> {
   const project = await store.getProject(projectId);
 
   if (!project) {
@@ -20,11 +24,11 @@ export async function exportProjectDocuments(store: ProjectStore, projectId: str
   }
 
   const nodes = await store.getProjectNodes(projectId);
-  const projectDesign = assembleProjectDesignMarkdown(project, nodes);
+  const projectDesign = masterMarkdown ?? assembleProjectDesignMarkdown(project, nodes);
   const spec = createSpecMarkdown(project, nodes);
   const tasks = createTasksMarkdown(project, nodes);
   const agents = createAgentsMarkdown(project);
-  const docx = await createProjectDesignDocx(project, nodes);
+  const docx = await createProjectDesignDocx(project, nodes, masterMarkdown);
 
   const files = [
     { filename: "PROJECT_DESIGN.md", content: projectDesign },

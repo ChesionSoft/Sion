@@ -115,7 +115,12 @@ export function WorkbenchShell({ project, nodes }: { project: Project; nodes: Pr
             <FolderOpenIcon data-icon="inline-start" />
             项目文件池
           </Button>
-          <ExportPanel projectId={project.id} />
+          <ExportPanel
+            projectId={project.id}
+            providerId={providerId}
+            model={model}
+            reasoningEffort={reasoningEffort}
+          />
         </div>
         <FilePoolDialog
           onClose={() => setShowFilePool(false)}

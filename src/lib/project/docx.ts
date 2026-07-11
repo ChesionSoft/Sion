@@ -20,18 +20,26 @@ import {
   WidthType,
 } from "docx";
 import { WORKFLOW_NODES } from "./nodes";
-import { ORDERED_LIST_REFERENCE, renderMdastBody } from "./markdown-to-docx";
-import type { DocxBlockElement } from "./markdown-to-docx";
+import {
+  ORDERED_LIST_REFERENCE,
+  parseMarkdownToMdast,
+  renderBlock,
+  renderMdastBody,
+} from "./markdown-to-docx";
+import type { DocxBlockElement, MdastBlock } from "./markdown-to-docx";
 import type { Project, ProjectNode } from "./types";
 
 const today = (): string => new Date().toISOString().slice(0, 10);
 
 /**
- * Build the `项目开发设计文档` as a docx `Document` from structured nodes:
- * 封面页 -> 自动目录 -> 修订记录表 -> 逐节点章节（页眉页脚 + 章节分页）。
- * Pure（不触碰磁盘、不打包），便于测试结构。
+ * Build the `项目开发设计文档` as a docx `Document`. 有 `masterMarkdown` 时正文渲染
+ * master(`##`->H1、章节前分页);否则按结构化节点逐章渲染。Pure(不碰磁盘/不打包)。
  */
-export function buildProjectDesignDocument(project: Project, nodes: ProjectNode[]): Document {
+export function buildProjectDesignDocument(
+  project: Project,
+  nodes: ProjectNode[],
+  masterMarkdown?: string,
+): Document {
   return new Document({
     creator: project.authorName || "Sion",
     title: `${project.name}项目开发设计文档`,
@@ -57,13 +65,17 @@ export function buildProjectDesignDocument(project: Project, nodes: ProjectNode[
         },
       ],
     },
-    sections: [coverSection(project), tocSection(), bodySection(project, nodes)],
+    sections: [coverSection(project), tocSection(), bodySection(project, nodes, masterMarkdown)],
   });
 }
 
 /** 生成 `项目开发设计文档.docx` 的二进制 Buffer。 */
-export async function createProjectDesignDocx(project: Project, nodes: ProjectNode[]): Promise<Buffer> {
-  return Buffer.from(await Packer.toBuffer(buildProjectDesignDocument(project, nodes)));
+export async function createProjectDesignDocx(
+  project: Project,
+  nodes: ProjectNode[],
+  masterMarkdown?: string,
+): Promise<Buffer> {
+  return Buffer.from(await Packer.toBuffer(buildProjectDesignDocument(project, nodes, masterMarkdown)));
 }
 
 function coverSection(project: Project) {
@@ -103,7 +115,7 @@ function tocSection() {
   };
 }
 
-function bodySection(project: Project, nodes: ProjectNode[]) {
+function bodySection(project: Project, nodes: ProjectNode[], masterMarkdown?: string) {
   const header = new Header({
     children: [
       new Paragraph({
@@ -126,19 +138,31 @@ function bodySection(project: Project, nodes: ProjectNode[]) {
     revisionTable(project),
   ];
 
-  const ordered = [...nodes].sort(
-    (a, b) =>
-      WORKFLOW_NODES.findIndex((n) => n.id === a.id) - WORKFLOW_NODES.findIndex((n) => n.id === b.id),
-  );
-  for (const node of ordered) {
-    if (node.id === "final-export") continue;
-    const def = WORKFLOW_NODES.find((n) => n.id === node.id);
-    const heading = def?.documentHeading ?? node.id;
-    children.push(new Paragraph({ children: [new PageBreak()] }));
-    children.push(
-      new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: heading, bold: true })] }),
+  if (masterMarkdown && masterMarkdown.trim()) {
+    // master 路径:渲染综合后的整篇。## -> H1(headingOffset=1),每个 ## 章节前分页。
+    const body = stripFirstHeading(masterMarkdown);
+    const root = parseMarkdownToMdast(body) as { children: MdastBlock[] };
+    for (const block of root.children) {
+      if (block.type === "heading" && block.depth === 2) {
+        children.push(new Paragraph({ children: [new PageBreak()] }));
+      }
+      children.push(...renderBlock(block, { headingOffset: 1 }));
+    }
+  } else {
+    const ordered = [...nodes].sort(
+      (a, b) =>
+        WORKFLOW_NODES.findIndex((n) => n.id === a.id) - WORKFLOW_NODES.findIndex((n) => n.id === b.id),
     );
-    children.push(...renderMdastBody(stripFirstHeading(node.markdown)));
+    for (const node of ordered) {
+      if (node.id === "final-export") continue;
+      const def = WORKFLOW_NODES.find((n) => n.id === node.id);
+      const heading = def?.documentHeading ?? node.id;
+      children.push(new Paragraph({ children: [new PageBreak()] }));
+      children.push(
+        new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: heading, bold: true })] }),
+      );
+      children.push(...renderMdastBody(stripFirstHeading(node.markdown)));
+    }
   }
 
   return {

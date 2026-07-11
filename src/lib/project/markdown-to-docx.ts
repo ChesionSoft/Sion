@@ -131,6 +131,8 @@ function collectText(inlines: MdastInline[]): string {
 
 export type DocxBlockElement = Paragraph | Table;
 
+export type RenderBlockOptions = { headingOffset?: number };
+
 const HEADING_LEVELS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingLevel]> = {
   1: HeadingLevel.HEADING_1,
   2: HeadingLevel.HEADING_2,
@@ -141,11 +143,12 @@ const HEADING_LEVELS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingL
 };
 
 /** 把单个 mdast 块节点渲染为 docx 块元素数组。 */
-export function renderBlock(node: MdastBlock): DocxBlockElement[] {
+export function renderBlock(node: MdastBlock, opts: RenderBlockOptions = {}): DocxBlockElement[] {
+  const offset = opts.headingOffset ?? 0;
   switch (node.type) {
     case "heading": {
       const children = renderInline(node.children);
-      const level = HEADING_LEVELS[node.depth];
+      const level = HEADING_LEVELS[node.depth - offset];
       if (!level) {
         // 超界（remark 不会产生 depth>6，防御性回落）：粗体普通段落
         return [new Paragraph({ children: renderInline(node.children, { bold: true }) })];
@@ -157,7 +160,7 @@ export function renderBlock(node: MdastBlock): DocxBlockElement[] {
     case "list": {
       const out: DocxBlockElement[] = [];
       node.children.forEach((item) => {
-        out.push(...renderListItem(item, node.ordered, 0));
+        out.push(...renderListItem(item, node.ordered, 0, opts));
       });
       return out;
     }
@@ -177,7 +180,7 @@ export function renderBlock(node: MdastBlock): DocxBlockElement[] {
             }),
           );
         } else {
-          out.push(...renderBlock(child));
+          out.push(...renderBlock(child, opts));
         }
       }
       return out;
@@ -210,11 +213,11 @@ function renderCodeBlock(node: Extract<MdastBlock, { type: "code" }>): Paragraph
 }
 
 /** 把一段 markdown 的所有顶层块渲染为 docx 块元素数组（按顺序）。 */
-export function renderMdastBody(markdown: string): DocxBlockElement[] {
+export function renderMdastBody(markdown: string, opts: RenderBlockOptions = {}): DocxBlockElement[] {
   const root = parseMarkdownToMdast(markdown) as { children: MdastBlock[] };
   const out: DocxBlockElement[] = [];
   for (const block of root.children) {
-    out.push(...renderBlock(block));
+    out.push(...renderBlock(block, opts));
   }
   return out;
 }
@@ -223,12 +226,12 @@ export function renderMdastBody(markdown: string): DocxBlockElement[] {
 export const ORDERED_LIST_REFERENCE = "ordered-list";
 
 /** 渲染一个列表项：段落用 bullet/numbering，嵌套 list 递归并 level+1。 */
-function renderListItem(item: MdastListItem, ordered: boolean, level: number): DocxBlockElement[] {
+function renderListItem(item: MdastListItem, ordered: boolean, level: number, opts: RenderBlockOptions): DocxBlockElement[] {
   const out: DocxBlockElement[] = [];
   for (const child of item.children) {
     if (child.type === "list") {
       child.children.forEach((sub) => {
-        out.push(...renderListItem(sub, child.ordered, level + 1));
+        out.push(...renderListItem(sub, child.ordered, level + 1, opts));
       });
     } else if (child.type === "paragraph") {
       out.push(
@@ -240,7 +243,7 @@ function renderListItem(item: MdastListItem, ordered: boolean, level: number): D
         }),
       );
     } else {
-      out.push(...renderBlock(child));
+      out.push(...renderBlock(child, opts));
     }
   }
   return out;
