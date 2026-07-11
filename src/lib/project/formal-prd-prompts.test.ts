@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildBlueprintReviseSystemPrompt,
+  buildBlueprintReviseUserPrompt,
   buildBlueprintSystemPrompt,
   buildBlueprintUserPrompt,
+  buildDraftReviseSystemPrompt,
+  buildDraftReviseUserPrompt,
   buildDraftSystemPrompt,
   buildDraftUserPrompt,
   parseModelJson,
@@ -160,5 +164,116 @@ describe("parseModelJson", () => {
 
   it("accepts a bare JSON object as the whole payload", () => {
     expect(parseModelJson('{"title":"y","sections":[]}')).toEqual({ title: "y", sections: [] });
+  });
+});
+
+describe("buildBlueprintReviseSystemPrompt", () => {
+  it("lists the four allowed ops, demands one JSON object, and mentions artifactDigest", () => {
+    const p = buildBlueprintReviseSystemPrompt();
+    expect(p).toContain("add");
+    expect(p).toContain("remove");
+    expect(p).toContain("update");
+    expect(p).toContain("reorder");
+    expect(p).toContain("一个 JSON 对象");
+    expect(p).toContain("artifactDigest");
+  });
+
+  it("forbids invented facts and process noise", () => {
+    const p = buildBlueprintReviseSystemPrompt();
+    expect(p).toContain("不得新增产品事实");
+    expect(p).toContain("待确认");
+  });
+});
+
+describe("buildBlueprintReviseUserPrompt", () => {
+  const blueprint: FormalPrdBlueprint = {
+    title: "正式 PRD 导出蓝图",
+    sections: [
+      {
+        id: "executive-summary",
+        title: "执行摘要",
+        inclusion: "confirmed-summary",
+        presentation: "paragraphs",
+        sourceNodeIds: ["goals"],
+        sourceHeadings: ["总体目标"],
+        rationale: "向外部说明已确认的建设目标",
+      },
+      {
+        id: "omitted-risks",
+        title: "风险",
+        inclusion: "omit",
+        presentation: "bullets",
+        sourceNodeIds: [],
+        sourceHeadings: [],
+        rationale: "不对外披露",
+      },
+    ],
+  };
+
+  it("includes the user instruction, the current section ids, and confirmed source node content", () => {
+    const prompt = buildBlueprintReviseUserPrompt(
+      blueprint,
+      [node("goals", "# 需求背景与建设目标\n\n## 总体目标\n\n目标 A。")],
+      "把执行摘要改名为总览",
+    );
+    expect(prompt).toContain("把执行摘要改名为总览");
+    expect(prompt).toContain("executive-summary");
+    expect(prompt).toContain("omitted-risks");
+    expect(prompt).toContain("artifactDigest");
+    // confirmed source node content is included so an update can keep source mapping valid
+    expect(prompt).toContain("目标 A。");
+  });
+});
+
+describe("buildDraftReviseSystemPrompt", () => {
+  it("lists replace/remove/insert ops and the one-JSON-object rule", () => {
+    const p = buildDraftReviseSystemPrompt();
+    expect(p).toContain("replace");
+    expect(p).toContain("remove");
+    expect(p).toContain("insert");
+    expect(p).toContain("一个 JSON 对象");
+    expect(p).toContain("artifactDigest");
+  });
+
+  it("prohibits ## lines in replacement bodies", () => {
+    const p = buildDraftReviseSystemPrompt();
+    expect(p).toContain("##");
+    expect(p).toContain("不得");
+  });
+});
+
+describe("buildDraftReviseUserPrompt", () => {
+  const blueprint: FormalPrdBlueprint = {
+    title: "正式 PRD 导出蓝图",
+    sections: [
+      {
+        id: "executive-summary",
+        title: "执行摘要",
+        inclusion: "confirmed-summary",
+        presentation: "paragraphs",
+        sourceNodeIds: ["goals"],
+        sourceHeadings: ["总体目标"],
+        rationale: "r",
+      },
+      {
+        id: "omitted-risks",
+        title: "风险",
+        inclusion: "omit",
+        presentation: "bullets",
+        sourceNodeIds: [],
+        sourceHeadings: [],
+        rationale: "r",
+      },
+    ],
+  };
+
+  it("includes the current markdown, the approved blueprint's included sections, and the instruction", () => {
+    const prompt = buildDraftReviseUserPrompt("## 执行摘要\n\n已确认结论。", blueprint, "补充一句背景");
+    expect(prompt).toContain("## 执行摘要\n\n已确认结论。");
+    expect(prompt).toContain("执行摘要");
+    // the omitted section is not listed as an included section
+    expect(prompt).not.toContain("风险");
+    expect(prompt).toContain("补充一句背景");
+    expect(prompt).toContain("artifactDigest");
   });
 });
