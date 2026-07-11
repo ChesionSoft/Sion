@@ -68,6 +68,10 @@ export function ExportCenter({
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editorText, setEditorText] = useState("");
+  const [revision, setRevision] = useState("");
+  const [reviseBusy, setReviseBusy] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings/model-providers")
@@ -244,6 +248,73 @@ export function ExportCenter({
     }
   }
 
+  function enterEdit() {
+    if (preview.kind !== "md") return;
+    setEditorText(preview.markdown);
+    setEditing(true);
+    setMessage("");
+  }
+
+  function cancelEdit() {
+    setEditing(false);
+    setEditorText("");
+  }
+
+  async function saveEdit() {
+    if (!selected || busy) return;
+    setBusy(true);
+    setMessage("正在保存…");
+    try {
+      const operation = selected === "export-blueprint.md" ? "edit_blueprint" : "edit_draft";
+      const { ok, data } = await postJson({ operation, markdown: editorText });
+      if (!ok) {
+        // keep the editor open so the user can fix the error
+        setMessage((data.error as string) || "保存失败");
+        return;
+      }
+      setEditing(false);
+      setEditorText("");
+      setMessage("已保存。");
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runRevise() {
+    if (!selected || !providerId || !model || busy || reviseBusy || !revision.trim()) return;
+    const digest = selected === "export-blueprint.md" ? stage?.blueprintDigest : stage?.draftDigest;
+    if (!digest) return;
+    const operation = selected === "export-blueprint.md" ? "revise_blueprint" : "revise_draft";
+    setReviseBusy(true);
+    setMessage("正在让 Agent 修订…");
+    try {
+      const { ok, data } = await postJson({
+        operation,
+        instruction: revision,
+        artifactDigest: digest,
+        providerId,
+        model,
+        reasoningEffort,
+      });
+      if (!ok) {
+        setMessage((data.error as string) || "修订失败");
+        return;
+      }
+      const applied = (data.applied as Array<{ status: string; reason?: string }> | undefined) ?? [];
+      const appliedCount = applied.filter((r) => r.status === "applied").length;
+      const skipped = applied.filter((r) => r.status === "skipped");
+      const skippedText = skipped.map((r) => r.reason).filter(Boolean).join("；");
+      setMessage(
+        `已应用 ${appliedCount} 条修订` + (skipped.length > 0 ? `；已跳过 ${skipped.length} 条：${skippedText}` : ""),
+      );
+      setRevision("");
+      await refresh();
+    } finally {
+      setReviseBusy(false);
+    }
+  }
+
   const onPrimary =
     step === "blueprint"
       ? runBlueprint
@@ -256,7 +327,15 @@ export function ExportCenter({
           : null;
 
   const primaryLabel = PRIMARY_LABEL[step];
-  const showModelPicker = step === "blueprint" || step === "approve-blueprint" || step === "retry-draft";
+  const isEditableFile = selected === "export-blueprint.md" || selected === "formal-prd-draft.md";
+  const canEdit = isEditableFile && preview.kind === "md";
+  const canRevise =
+    canEdit &&
+    !editing &&
+    ((selected === "export-blueprint.md" && Boolean(stage?.blueprintDigest)) ||
+      (selected === "formal-prd-draft.md" && Boolean(stage?.draftDigest)));
+  const showModelPicker =
+    step === "blueprint" || step === "approve-blueprint" || step === "retry-draft" || canRevise;
   const canPrimary =
     !!onPrimary &&
     !busy &&
@@ -359,20 +438,47 @@ export function ExportCenter({
 
         <div className="flex min-h-0 flex-col">
           <div className="flex h-10 shrink-0 items-center justify-between border-b px-4">
-            <span className="truncate text-sm font-medium">{selected ?? "—"}</span>
-            {selected ? (
-              <a
-                className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "text-xs")}
-                download={selected}
-                href={`/api/projects/${projectId}/exports/${encodeURIComponent(selected)}?download=1`}
-              >
-                <DownloadIcon data-icon="inline-start" />
-                下载
-              </a>
-            ) : null}
+            <span className="truncate text-sm font-medium">{selected ?? "-"}</span>
+            <div className="flex items-center gap-1">
+              {editing ? (
+                <>
+                  <Button disabled={busy} onClick={cancelEdit} size="sm" type="button" variant="ghost">
+                    取消
+                  </Button>
+                  <Button disabled={busy} onClick={saveEdit} size="sm" type="button" variant="outline">
+                    {busy ? "保存中…" : "保存"}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  {canEdit ? (
+                    <Button onClick={enterEdit} size="sm" type="button" variant="ghost">
+                      编辑
+                    </Button>
+                  ) : null}
+                  {selected ? (
+                    <a
+                      className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "text-xs")}
+                      download={selected}
+                      href={`/api/projects/${projectId}/exports/${encodeURIComponent(selected)}?download=1`}
+                    >
+                      <DownloadIcon data-icon="inline-start" />
+                      下载
+                    </a>
+                  ) : null}
+                </>
+              )}
+            </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {preview.kind === "loading" ? (
+            {editing ? (
+              <textarea
+                aria-label="编辑正文"
+                className="h-full w-full resize-none bg-transparent p-4 font-mono text-xs leading-relaxed outline-none"
+                value={editorText}
+                onChange={(e) => setEditorText(e.target.value)}
+              />
+            ) : preview.kind === "loading" ? (
               <div className="p-8 text-sm text-muted-foreground">加载预览…</div>
             ) : preview.kind === "error" ? (
               <div className="p-8 text-sm text-muted-foreground">{preview.message}</div>
@@ -392,6 +498,27 @@ export function ExportCenter({
               </div>
             )}
           </div>
+          {canRevise ? (
+            <div className="flex shrink-0 flex-col gap-2 border-t p-3">
+              <textarea
+                aria-label="Agent 修订指令"
+                className="min-h-[60px] w-full resize-none rounded-md border bg-background p-2 text-xs outline-none"
+                placeholder="描述一次聚焦的修订需求,例如：把执行摘要改名为总览"
+                value={revision}
+                onChange={(e) => setRevision(e.target.value)}
+              />
+              <Button
+                className="self-end"
+                disabled={!revision.trim() || !providerId || !model || busy || reviseBusy}
+                onClick={runRevise}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                {reviseBusy ? "修订中…" : "让 Agent 修订"}
+              </Button>
+            </div>
+          ) : null}
         </div>
       </section>
     </main>
