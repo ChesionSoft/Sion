@@ -2,13 +2,16 @@ import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { POST } from "./route";
+import type { ModelStreamPart } from "@/lib/project/model-chat";
+import { GET, POST } from "./route";
 
 let tmpDir: string;
 const originalCwd = process.cwd;
 
 vi.mock("@/lib/project/model-chat", () => ({
-  callModelChat: vi.fn(async () => "## 项目概述\n\n综合前言。\n\n## 1. 项目基本信息\n\n综合正文。"),
+  streamModelChat: vi.fn(async function* (): AsyncGenerator<ModelStreamPart> {
+    yield { type: "content", content: "## 项目概述\n\n综合前言。\n\n## 1. 项目基本信息\n\n综合正文。" };
+  }),
 }));
 
 beforeEach(async () => {
@@ -71,7 +74,7 @@ beforeEach(async () => {
     "utf8",
   );
 
-  vi.mocked(await import("@/lib/project/model-chat")).callModelChat.mockClear();
+  vi.mocked(await import("@/lib/project/model-chat")).streamModelChat.mockClear();
 });
 
 afterEach(async () => {
@@ -93,11 +96,11 @@ function baseRequest(overrides: Record<string, unknown> = {}) {
 }
 
 describe("POST /api/projects/[projectId]/exports", () => {
-  it("synthesizes via callModelChat and writes files with master content", async () => {
-    const { callModelChat } = await import("@/lib/project/model-chat");
+  it("synthesizes via streamModelChat and writes files with master content", async () => {
+    const { streamModelChat } = await import("@/lib/project/model-chat");
     const res = await POST(baseRequest(), { params: Promise.resolve({ projectId: "test-project" }) });
     expect(res.status).toBe(200);
-    expect(vi.mocked(callModelChat)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(streamModelChat)).toHaveBeenCalledTimes(1);
     const body = await res.json();
     expect(body.files.map((f: { filename: string }) => f.filename)).toEqual([
       "PROJECT_DESIGN.md",
@@ -122,9 +125,46 @@ describe("POST /api/projects/[projectId]/exports", () => {
   });
 
   it("returns 502 when synthesis throws", async () => {
-    const { callModelChat } = await import("@/lib/project/model-chat");
-    vi.mocked(callModelChat).mockRejectedValueOnce(new Error("upstream"));
+    const { streamModelChat } = await import("@/lib/project/model-chat");
+    vi.mocked(streamModelChat).mockImplementationOnce(
+      async function* (): AsyncGenerator<ModelStreamPart> {
+        throw new Error("upstream");
+      },
+    );
     const res = await POST(baseRequest(), { params: Promise.resolve({ projectId: "test-project" }) });
     expect(res.status).toBe(502);
+  });
+});
+
+describe("GET /api/projects/[projectId]/exports", () => {
+  it("lists existing export files", async () => {
+    await writeFile(
+      path.join(tmpDir, "projects", "test-project", "exports", "PROJECT_DESIGN.md"),
+      "# 设计",
+      "utf8",
+    );
+    const res = await GET(new Request("http://localhost/api/projects/test-project/exports"), {
+      params: Promise.resolve({ projectId: "test-project" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.files.map((f: { filename: string }) => f.filename)).toEqual(["PROJECT_DESIGN.md"]);
+    expect(body.files[0].size).toBe(Buffer.byteLength("# 设计", "utf8"));
+  });
+
+  it("returns an empty files array when nothing is exported yet", async () => {
+    const res = await GET(new Request("http://localhost/api/projects/test-project/exports"), {
+      params: Promise.resolve({ projectId: "test-project" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.files).toEqual([]);
+  });
+
+  it("returns 404 for a missing project", async () => {
+    const res = await GET(new Request("http://localhost/api/projects/nope/exports"), {
+      params: Promise.resolve({ projectId: "nope" }),
+    });
+    expect(res.status).toBe(404);
   });
 });

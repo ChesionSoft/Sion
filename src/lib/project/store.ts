@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createDefaultProject, createDefaultProjectNodes } from "./defaults";
 import { mergeLegacyNodeListsIntoMarkdown } from "./node-markdown-content";
 import { WORKFLOW_NODES, isWorkflowNodeId } from "./nodes";
 import { assertSafeProjectId, ProjectIdError } from "./paths";
+import { EXPORT_FILENAMES, type ExportFileInfo } from "./export-files";
 import type { ChatMessage, ChatSession, Project, ProjectNode, WorkflowNodeId } from "./types";
 
 export type StoreFs = Pick<
@@ -273,6 +274,19 @@ export class ProjectStore {
 
   exportPath(projectId: string, filename: string): string {
     return path.join(this.projectDir(projectId), "exports", filename);
+  }
+
+  async listExports(projectId: string): Promise<ExportFileInfo[]> {
+    const results: ExportFileInfo[] = [];
+    for (const filename of EXPORT_FILENAMES) {
+      try {
+        const stats = await stat(this.exportPath(projectId, filename));
+        results.push({ filename, size: stats.size, mtime: stats.mtimeMs });
+      } catch {
+        // File not generated yet - skip it.
+      }
+    }
+    return results;
   }
 
   private nodePath(projectId: string, nodeId: WorkflowNodeId): string {
