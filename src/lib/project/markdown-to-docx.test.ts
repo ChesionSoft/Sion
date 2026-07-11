@@ -181,3 +181,18 @@ describe("renderBlock misc + renderMdastBody", () => {
     expect(serialized).toContain("项");
   });
 });
+
+describe("renderMdastBody headingOffset", () => {
+  it("shifts heading levels down by headingOffset", () => {
+    const els = renderMdastBody("## a\n\n### b", { headingOffset: 1 });
+    const serialized = xml(els);
+    // ## -> Heading1, ### -> Heading2
+    expect(serialized).toContain("Heading1");
+    expect(serialized).toContain("Heading2");
+  });
+
+  it("defaults to no offset (## -> Heading2)", () => {
+    const els = renderMdastBody("## a");
+    expect(xml(els)).toContain("Heading2");
+  });
+});
