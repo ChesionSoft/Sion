@@ -108,6 +108,7 @@ In the main menu, open **Model Configuration** and add:
 - **API Base URL / Full API URL**: Fill in the address that matches the selected URL mode.
 - **API Key**: The key from your provider.
 - **Model List**: Callable model names, e.g. `gpt-4.1`, `deepseek-chat`.
+- **Tools**: Enable this for models with native function-tool calling. Sion uses a planner fallback when it is off; this setting does not decide whether web search can be enabled.
 - **Default Model**: The preferred model.
 - **Context Length**: Optional; helps you judge how much reference material the model can read.
 
@@ -117,7 +118,11 @@ Example: when using the base-URL mode, if provider documentation lists `https://
 https://api.example.com
 ```
 
-The landing page also contains **Browser Search** settings. Searches go through Sion's local safe proxy; choose a system Chrome/Edge browser or managed Chromium without configuring a third-party search API key.
+In base-URL mode, Chat Completions uses `/v1/chat/completions` and OpenAI Responses uses `/v1/responses`. Full-URL mode does not alter the URL you provide.
+
+The landing page also contains **Browser Search** settings. Searches go through Sion's local safe proxy; choose Google or Baidu and a system Chrome/Edge browser or managed Chromium without configuring a third-party search API key. Managed Chromium is not downloaded automatically; install it explicitly from Settings.
+
+Browser Search settings do not automatically enable web search in chats. Use the globe button in a chat input to enable **Web Search** for that session; the switch is saved per session. HTTP(S) URLs in a user message are also fetched automatically when possible.
 
 ## Export Artifacts
 
