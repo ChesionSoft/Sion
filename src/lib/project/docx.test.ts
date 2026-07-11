@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectDesignDocument, createProjectDesignDocx } from "./docx";
+import { buildFormalPrdDocument, buildProjectDesignDocument, createProjectDesignDocx } from "./docx";
 import type { Project, ProjectNode, WorkflowNodeId } from "./types";
 
 const project: Project = {
@@ -98,5 +98,60 @@ describe("createProjectDesignDocx", () => {
     // docx 是 zip，以 PK 开头
     expect(buf[0]).toBe(0x50); // 'P'
     expect(buf[1]).toBe(0x4b); // 'K'
+  });
+});
+
+describe("buildFormalPrdDocument", () => {
+  it("uses the formal PRD title and explicit Chinese styles", () => {
+    const doc = buildFormalPrdDocument(project, "## 执行摘要\n\n已确认结论。");
+    const serialized = xml(doc);
+    expect(serialized).toContain("正式产品需求文档（PRD）");
+    expect(serialized).toContain("PingFang SC");
+    expect(serialized).toContain("eastAsia");
+  });
+
+  it("renders a constrained flow block as a diagram image, not literal ASCII text", () => {
+    const doc = buildFormalPrdDocument(project, "## 核心流程\n\n```flow\n报告解读 -> 健康评估 -> 调理方案\n```");
+    const serialized = xml(doc);
+    expect(serialized).toContain("data:image/svg+xml");
+    expect(serialized).not.toContain("报告解读 -> 健康评估");
+  });
+
+  it("rejects an invalid flow block (too few or too many labels)", () => {
+    expect(() => buildFormalPrdDocument(project, "## 流程\n\n```flow\n只有一项\n```")).toThrow();
+    expect(() =>
+      buildFormalPrdDocument(project, "## 流程\n\n```flow\nA -> B -> C -> D -> E -> F -> G\n```"),
+    ).toThrow();
+  });
+
+  it("rejects a multi-line flow block", () => {
+    expect(() => buildFormalPrdDocument(project, "## 流程\n\n```flow\nA -> B\nC -> D\n```")).toThrow();
+  });
+
+  it("omits non-flow code blocks from the formal body", () => {
+    const doc = buildFormalPrdDocument(project, "## 概述\n\n正文。\n\n```js\nconst x = 1;\n```");
+    const serialized = xml(doc);
+    expect(serialized).toContain("正文");
+    expect(serialized).not.toContain("const x = 1");
+  });
+
+  it("rejects a prose-stuffed table in the formal body", () => {
+    const longCell = "x".repeat(130);
+    expect(() =>
+      buildFormalPrdDocument(
+        project,
+        `## 表\n\n| A | B |\n| --- | --- |\n| ${longCell} | ${longCell} |\n| ${longCell} | ${longCell} |`,
+      ),
+    ).toThrow();
+  });
+
+  it("packs a valid formal docx buffer", async () => {
+    const { Packer } = await import("docx");
+    const buf = Buffer.from(
+      await Packer.toBuffer(buildFormalPrdDocument(project, "## 执行摘要\n\n已确认结论。")),
+    );
+    expect(buf.byteLength).toBeGreaterThan(1000);
+    expect(buf[0]).toBe(0x50);
+    expect(buf[1]).toBe(0x4b);
   });
 });

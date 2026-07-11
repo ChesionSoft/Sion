@@ -21,6 +21,7 @@ import {
 } from "docx";
 import { WORKFLOW_NODES } from "./nodes";
 import {
+  CJK_FONT,
   ORDERED_LIST_REFERENCE,
   parseMarkdownToMdast,
   renderBlock,
@@ -76,6 +77,155 @@ export async function createProjectDesignDocx(
   masterMarkdown?: string,
 ): Promise<Buffer> {
   return Buffer.from(await Packer.toBuffer(buildProjectDesignDocument(project, nodes, masterMarkdown)));
+}
+
+/**
+ * Build the formal PRD Word document from the **approved formal draft Markdown
+ * only** — never raw workflow nodes. Uses explicit CJK-aware styles (PingFang SC
+ * via the `eastAsia` slot), a formal cover, a table of contents, and a body
+ * rendered in formal mode (```flow -> SVG diagram, non-flow code omitted, table
+ * geometry + prose lint). Pure (no disk, no packing).
+ */
+export function buildFormalPrdDocument(project: Project, draftMarkdown: string): Document {
+  return new Document({
+    creator: project.authorName || "Sion",
+    title: `${project.name} 正式产品需求文档（PRD）`,
+    description: "正式产品需求文档（PRD）",
+    styles: {
+      default: {
+        document: {
+          run: { font: { ...CJK_FONT }, size: 21 },
+        },
+      },
+      paragraphStyles: [
+        {
+          id: "PrdTitle",
+          name: "PrdTitle",
+          basedOn: "Normal",
+          next: "Normal",
+          run: { font: { ...CJK_FONT }, size: 44, bold: true, color: "17324D" },
+        },
+        {
+          id: "PrdBody",
+          name: "PrdBody",
+          basedOn: "Normal",
+          next: "Normal",
+          run: { font: { ...CJK_FONT }, size: 21, color: "1F2937" },
+          paragraph: { spacing: { after: 140, line: 330 } },
+        },
+      ],
+    },
+    numbering: {
+      config: [
+        {
+          reference: ORDERED_LIST_REFERENCE,
+          levels: [0, 1, 2, 3].map((lvl) => ({
+            level: lvl,
+            format: LevelFormat.DECIMAL,
+            text: `%${lvl + 1}.`,
+            alignment: AlignmentType.START,
+            style: {
+              paragraph: {
+                indent: {
+                  left: convertInchesToTwip(0.5 + lvl * 0.3),
+                  hanging: convertInchesToTwip(0.25),
+                },
+              },
+            },
+          })),
+        },
+      ],
+    },
+    sections: [formalCoverSection(project), formalTocSection(), formalBodySection(project, draftMarkdown)],
+  });
+}
+
+function formalCoverSection(project: Project) {
+  const meta = (text: string) =>
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { before: 120, after: 120 },
+      children: [new TextRun({ text, font: { ...CJK_FONT }, size: 24 })],
+    });
+  return {
+    properties: { type: SectionType.NEXT_PAGE },
+    children: [
+      new Paragraph({ children: [], spacing: { before: 2400 } }),
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 120, after: 240 },
+        children: [
+          new TextRun({
+            text: "正式产品需求文档（PRD）",
+            bold: true,
+            size: 44,
+            color: "17324D",
+            font: { ...CJK_FONT },
+          }),
+        ],
+      }),
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 120, after: 360 },
+        children: [new TextRun({ text: project.name, bold: true, size: 32, font: { ...CJK_FONT } })],
+      }),
+      meta(`客户名称：${project.customerName || "未填写"}`),
+      meta(`编制方：${project.authorName || "未填写"}`),
+      meta(`版本号：${project.version}`),
+      meta(`生成日期：${today()}`),
+    ],
+  };
+}
+
+function formalTocSection() {
+  return {
+    properties: { type: SectionType.NEXT_PAGE },
+    children: [
+      new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        children: [new TextRun({ text: "目录", bold: true, font: { ...CJK_FONT } })],
+      }),
+      new TableOfContents("目录", { hyperlink: true, headingStyleRange: "1-3" }),
+    ],
+  };
+}
+
+function formalBodySection(project: Project, draftMarkdown: string) {
+  const header = new Header({
+    children: [
+      new Paragraph({
+        alignment: AlignmentType.RIGHT,
+        children: [
+          new TextRun({ text: `${project.name} · ${project.version}`, size: 18, color: "999999", font: { ...CJK_FONT } }),
+        ],
+      }),
+    ],
+  });
+  const footer = new Footer({
+    children: [
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new TextRun({ children: ["第 ", PageNumber.CURRENT, " 页"], font: { ...CJK_FONT } })],
+      }),
+    ],
+  });
+
+  const children: DocxBlockElement[] = [];
+  const body = stripFirstHeading(draftMarkdown);
+  const root = parseMarkdownToMdast(body) as { children: MdastBlock[] };
+  for (const block of root.children) {
+    if (block.type === "heading" && block.depth === 2) {
+      children.push(new Paragraph({ children: [new PageBreak()] }));
+    }
+    children.push(...renderBlock(block, { headingOffset: 1, font: { ...CJK_FONT }, formal: true }));
+  }
+
+  return {
+    properties: { type: SectionType.NEXT_PAGE },
+    headers: { default: header },
+    footers: { default: footer },
+    children,
+  };
 }
 
 function coverSection(project: Project) {
