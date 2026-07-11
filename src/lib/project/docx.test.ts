@@ -71,6 +71,24 @@ describe("buildProjectDesignDocument", () => {
   it("does not throw on an empty node body", () => {
     expect(() => buildProjectDesignDocument(project, [node("basic-info", "")])).not.toThrow();
   });
+
+  it("renders a master markdown (preface + chapters, H1 per chapter, page breaks)", () => {
+    const master = "## 项目概述\n\n前言正文。\n\n## 1. 项目基本信息\n\n章节正文。";
+    const doc = buildProjectDesignDocument(
+      project,
+      [node("basic-info", "# 项目基本信息\n\n原始")],
+      master,
+    );
+    const serialized = xml(doc);
+    expect(serialized).toContain("项目概述");
+    expect(serialized).toContain("前言正文");
+    expect(serialized).toContain("1. 项目基本信息");
+    // master 的 ## -> Heading1(offset=1)
+    expect(serialized).toContain("Heading1");
+    // 章节前分页
+    expect(serialized).toContain("w:br");
+    expect(serialized).toContain('"page"');
+  });
 });
 
 describe("createProjectDesignDocx", () => {
