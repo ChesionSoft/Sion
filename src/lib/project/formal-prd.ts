@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { WorkflowNodeId } from "./types";
 
 /**
  * Formal PRD export contracts.
@@ -43,7 +42,7 @@ const workflowNodeIdSchema = z.enum([
   "development-tasks",
   "risks-open-questions",
   "final-export",
-]) as z.ZodEnum<[WorkflowNodeId, ...WorkflowNodeId[]]>;
+]);
 
 const blueprintSectionSchema = z.object({
   id: z.string().min(1),
