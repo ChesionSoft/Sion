@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelStreamPart } from "@/lib/project/model-chat";
-import { POST } from "./route";
+import { GET, POST } from "./route";
 
 let tmpDir: string;
 const originalCwd = process.cwd;
@@ -133,5 +133,38 @@ describe("POST /api/projects/[projectId]/exports", () => {
     );
     const res = await POST(baseRequest(), { params: Promise.resolve({ projectId: "test-project" }) });
     expect(res.status).toBe(502);
+  });
+});
+
+describe("GET /api/projects/[projectId]/exports", () => {
+  it("lists existing export files", async () => {
+    await writeFile(
+      path.join(tmpDir, "projects", "test-project", "exports", "PROJECT_DESIGN.md"),
+      "# 设计",
+      "utf8",
+    );
+    const res = await GET(new Request("http://localhost/api/projects/test-project/exports"), {
+      params: Promise.resolve({ projectId: "test-project" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.files.map((f: { filename: string }) => f.filename)).toEqual(["PROJECT_DESIGN.md"]);
+    expect(body.files[0].size).toBe(Buffer.byteLength("# 设计", "utf8"));
+  });
+
+  it("returns an empty files array when nothing is exported yet", async () => {
+    const res = await GET(new Request("http://localhost/api/projects/test-project/exports"), {
+      params: Promise.resolve({ projectId: "test-project" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.files).toEqual([]);
+  });
+
+  it("returns 404 for a missing project", async () => {
+    const res = await GET(new Request("http://localhost/api/projects/nope/exports"), {
+      params: Promise.resolve({ projectId: "nope" }),
+    });
+    expect(res.status).toBe(404);
   });
 });
