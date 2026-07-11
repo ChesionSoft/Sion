@@ -34,8 +34,11 @@ describe("agent rules", () => {
     expect(prompt).toContain("## 可参考项目上下文");
   });
 
+  // final-export is a blueprint-only curator, not a delivery-skeleton writer, so
+  // it is exempt from the six-section / 交付稿骨架 invariants that the 11 content
+  // nodes follow. Its own contract is checked separately below.
   describe("six-section structure", () => {
-    for (const node of WORKFLOW_NODES) {
+    for (const node of WORKFLOW_NODES.filter((n) => n.id !== "final-export")) {
       it(`${node.id} has six sections in order`, async () => {
         const rule = await loadAgentRule(node.id);
         const content = rule.content;
@@ -52,7 +55,7 @@ describe("agent rules", () => {
   });
 
   describe("交付稿骨架 contains schema headings and table columns", () => {
-    for (const node of WORKFLOW_NODES) {
+    for (const node of WORKFLOW_NODES.filter((n) => n.id !== "final-export")) {
       it(`${node.id} 骨架 contains all schema headings and table columns`, async () => {
         const rule = await loadAgentRule(node.id);
         const schema = getDeliverySchema(node.id);
@@ -80,6 +83,26 @@ describe("agent rules", () => {
         }
       });
     }
+  });
+
+  describe("final-export blueprint-only curator", () => {
+    it("curates an export blueprint instead of writing a delivery skeleton or checklist", async () => {
+      const rule = await loadAgentRule("final-export");
+      const content = rule.content;
+
+      // produces a blueprint, not a delivery draft or quality checklist
+      expect(content).toContain("导出蓝图");
+      expect(content).not.toContain("## 交付稿骨架");
+      expect(content).not.toContain("导出检查清单");
+      expect(content).not.toContain("export_checklist");
+
+      // marks open questions / history / process noise as omit
+      expect(content).toContain("omit");
+      expect(content).toContain("待确认");
+
+      // never appends a quality checklist to project content
+      expect(content).toContain("不向项目内容追加质量检查清单");
+    });
   });
 
   describe("输入依赖 lists dependsOn titles", () => {
