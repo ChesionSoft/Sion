@@ -346,8 +346,7 @@ export function ExportCenter({
     !editing &&
     ((selected === "export-blueprint.md" && Boolean(stage?.blueprintDigest)) ||
       (selected === "formal-prd-draft.md" && Boolean(stage?.draftDigest)));
-  const showModelPicker =
-    step === "blueprint" || step === "approve-blueprint" || step === "retry-draft" || canRevise;
+  const showComposer = !editing && (onPrimary !== null || canRevise);
   const canPrimary =
     !!onPrimary &&
     !busy &&
@@ -370,26 +369,6 @@ export function ExportCenter({
           </Link>
           <h1 className="truncate text-base font-semibold leading-tight">{projectName}</h1>
           <span className="text-xs text-muted-foreground">导出中心</span>
-        </div>
-        <div className="flex items-center gap-2">
-          {showModelPicker ? (
-            <ModelPicker
-              providers={providers}
-              providerId={providerId}
-              model={model}
-              reasoningEffort={reasoningEffort}
-              onProviderIdChange={setProviderId}
-              onModelChange={setModel}
-              onReasoningEffortChange={setReasoningEffort}
-              placement="bottom"
-            />
-          ) : null}
-          {onPrimary ? (
-            <Button disabled={!canPrimary} onClick={onPrimary} size="sm" type="button" variant="outline">
-              <RefreshCwIcon data-icon="inline-start" className={busy ? "animate-spin" : ""} />
-              {busy ? "处理中…" : primaryLabel}
-            </Button>
-          ) : null}
         </div>
       </header>
 
@@ -511,25 +490,47 @@ export function ExportCenter({
               </div>
             )}
           </div>
-          {canRevise ? (
+          {showComposer ? (
             <div className="flex shrink-0 flex-col gap-2 border-t p-3">
-              <textarea
-                aria-label="Agent 修订指令"
-                className="min-h-[60px] w-full resize-none rounded-md border bg-background p-2 text-xs outline-none"
-                placeholder="描述一次聚焦的修订需求,例如：把执行摘要改名为总览"
-                value={revision}
-                onChange={(e) => setRevision(e.target.value)}
-              />
-              <Button
-                className="self-end"
-                disabled={!revision.trim() || !providerId || !model || busy || reviseBusy}
-                onClick={runRevise}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                {reviseBusy ? "修订中…" : "让 Agent 修订"}
-              </Button>
+              <div className="flex items-center justify-end gap-2">
+                <ModelPicker
+                  providers={providers}
+                  providerId={providerId}
+                  model={model}
+                  reasoningEffort={reasoningEffort}
+                  onProviderIdChange={setProviderId}
+                  onModelChange={setModel}
+                  onReasoningEffortChange={setReasoningEffort}
+                  placement="top"
+                />
+                {onPrimary ? (
+                  <Button disabled={!canPrimary} onClick={onPrimary} size="sm" type="button" variant="default">
+                    <RefreshCwIcon data-icon="inline-start" className={busy ? "animate-spin" : ""} />
+                    {busy ? "处理中…" : primaryLabel}
+                  </Button>
+                ) : null}
+              </div>
+              {canRevise ? (
+                <>
+                  <textarea
+                    aria-label="Agent 修订指令"
+                    className="min-h-[60px] w-full resize-none rounded-md border bg-background p-2 text-xs outline-none"
+                    placeholder="描述一次聚焦的修订需求,例如：把执行摘要改名为总览"
+                    value={revision}
+                    onChange={(e) => setRevision(e.target.value)}
+                  />
+                  <Button
+                    className="self-end"
+                    disabled={!revision.trim() || !providerId || !model || busy || reviseBusy}
+                    onClick={runRevise}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {reviseBusy ? "修订中…" : "让 Agent 修订"}
+                  </Button>
+                </>
+              ) : null}
             </div>
           ) : null}
         </div>
