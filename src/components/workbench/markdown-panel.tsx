@@ -602,7 +602,7 @@ export function MarkdownPanel({
           </div>
         </TabsContent>
 
-        <TabsContent className="min-h-0 flex-1 flex flex-col" value="preview">
+        <TabsContent className="min-h-0 flex-1 flex flex-col gap-2" value="preview">
           <div className="document-workspace min-h-0 flex-1 overflow-auto">
             <header className="document-toolbar">
               <div className="flex flex-col gap-0.5">
@@ -612,41 +612,40 @@ export function MarkdownPanel({
                   {new Date(node.updatedAt).toLocaleString("zh-CN")}
                 </span>
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  disabled={rewriteDisabled}
-                  onClick={startRewrite}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <RefreshCwIcon data-icon="inline-start" />
-                  按规则重写
-                </Button>
-                <Button
-                  disabled={!canSave}
-                  onClick={saveMarkdown}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <CheckIcon data-icon="inline-start" />
-                  {savingMarkdown ? "正在保存..." : "保存当前节点交付稿"}
-                </Button>
-                <Button
-                  onClick={() => void navigator.clipboard.writeText(displayMarkdown)}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <CopyIcon data-icon="inline-start" />
-                  复制文档
-                </Button>
-              </div>
             </header>
             <article className="document-paper">
               <MarkdownContent markdown={displayMarkdown} variant="document" />
             </article>
+          </div>
+          <div className="flex shrink-0 items-center justify-between">
+            {markdownSaveMsg ? (
+              <span className="text-xs text-muted-foreground">{markdownSaveMsg}</span>
+            ) : (
+              <span />
+            )}
+            <div className="flex items-center gap-2">
+              <Button
+                disabled={rewriteDisabled}
+                onClick={startRewrite}
+                type="button"
+                variant="outline"
+              >
+                <RefreshCwIcon data-icon="inline-start" />
+                按规则重写
+              </Button>
+              <Button disabled={!canSave} onClick={saveMarkdown} type="button">
+                <CheckIcon data-icon="inline-start" />
+                {savingMarkdown ? "正在保存..." : "保存当前节点交付稿"}
+              </Button>
+              <Button
+                onClick={() => void navigator.clipboard.writeText(displayMarkdown)}
+                type="button"
+                variant="outline"
+              >
+                <CopyIcon data-icon="inline-start" />
+                复制文档
+              </Button>
+            </div>
           </div>
         </TabsContent>
 

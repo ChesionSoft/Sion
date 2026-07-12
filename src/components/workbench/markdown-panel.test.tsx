@@ -76,7 +76,7 @@ describe("MarkdownPanel", () => {
     expect(toolbar).not.toBeNull();
     expect(within(toolbar).getByText("basic-info")).toBeInTheDocument();
     expect(within(toolbar).getByText(/字符/)).toBeInTheDocument();
-    expect(within(toolbar).getByRole("button", { name: "复制文档" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制文档" })).toBeInTheDocument();
     // The node markdown renders as a heading inside the paper.
     expect(within(workspace).getByRole("heading", { name: /项目基本信息/ })).toBeInTheDocument();
   });
@@ -86,10 +86,10 @@ describe("MarkdownPanel", () => {
     renderPanel();
     await user.click(screen.getByRole("tab", { name: "预览交付稿" }));
 
-    const toolbar = document.querySelector(".document-toolbar") as HTMLElement;
-    expect(within(toolbar).getByRole("button", { name: "复制文档" })).toBeInTheDocument();
-    expect(within(toolbar).getByRole("button", { name: /按规则重写/ })).toBeInTheDocument();
-    expect(within(toolbar).getByRole("button", { name: /保存当前节点交付稿/ })).toBeInTheDocument();
+    const panel = screen.getByRole("tabpanel", { name: "预览交付稿" });
+    expect(within(panel).getByRole("button", { name: "复制文档" })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /按规则重写/ })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /保存当前节点交付稿/ })).toBeInTheDocument();
   });
 
   it("preview save button PATCHes the node endpoint", async () => {
@@ -100,8 +100,8 @@ describe("MarkdownPanel", () => {
     renderPanel();
     await user.click(screen.getByRole("tab", { name: "预览交付稿" }));
 
-    const toolbar = document.querySelector(".document-toolbar") as HTMLElement;
-    await user.click(within(toolbar).getByRole("button", { name: /保存当前节点交付稿/ }));
+    const panel = screen.getByRole("tabpanel", { name: "预览交付稿" });
+    await user.click(within(panel).getByRole("button", { name: /保存当前节点交付稿/ }));
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
@@ -146,8 +146,8 @@ describe("MarkdownPanel", () => {
     const { setGenState } = renderPanel();
     await user.click(screen.getByRole("tab", { name: "预览交付稿" }));
 
-    const toolbar = document.querySelector(".document-toolbar") as HTMLElement;
-    await user.click(within(toolbar).getByRole("button", { name: /按规则重写/ }));
+    const panel = screen.getByRole("tabpanel", { name: "预览交付稿" });
+    await user.click(within(panel).getByRole("button", { name: /按规则重写/ }));
 
     await waitFor(() => {
       expect(setGenState).toHaveBeenCalledWith(
