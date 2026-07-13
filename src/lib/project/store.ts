@@ -212,9 +212,10 @@ export class ProjectStore {
       throw new Error(`Unknown workflow node: ${nodeId}`);
     }
 
-    return this.withChatLock(projectId, nodeId, () =>
-      this.updateSessionUnlocked(projectId, nodeId, sessionId, { webSearchEnabled: enabled }),
-    );
+    return this.withChatLock(projectId, nodeId, async () => {
+      await this.prepareChatUnlocked(projectId, nodeId);
+      return this.updateSessionUnlocked(projectId, nodeId, sessionId, { webSearchEnabled: enabled });
+    });
   }
 
   async getChatMessages(projectId: string, nodeId: WorkflowNodeId, sessionId?: string): Promise<ChatMessage[]> {
