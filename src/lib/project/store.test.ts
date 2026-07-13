@@ -168,6 +168,175 @@ describe("ProjectStore", () => {
     expect(reloaded.messageCount).toBe(2);
   });
 
+  it("recovers an append when the message rename fails once", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    await store.appendChatMessage(
+      project.id,
+      "feature-design",
+      {
+        id: "m-1",
+        role: "user",
+        content: "first",
+        createdAt: "2026-06-14T11:01:00.000Z",
+      },
+      session.id,
+    );
+
+    const messagesPath = path.join(
+      rootDir,
+      project.id,
+      "chat",
+      "feature-design",
+      `${session.id}.json`,
+    );
+    let failMessageRenameOnce = true;
+    const failingStore = new ProjectStore(rootDir, {
+      readFile,
+      writeFile,
+      rename: vi.fn(async (from, to) => {
+        if (to === messagesPath && failMessageRenameOnce) {
+          failMessageRenameOnce = false;
+          throw new Error("message rename failed");
+        }
+        await rename(from, to);
+      }),
+      unlink,
+    });
+
+    await failingStore.appendChatMessage(
+      project.id,
+      "feature-design",
+      { id: "m-2", role: "user", content: "second", createdAt: "2026-06-14T11:02:00.000Z" },
+      session.id,
+    );
+
+    expect(await failingStore.getChatMessages(project.id, "feature-design", session.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "m-1" }),
+        expect.objectContaining({ id: "m-2" }),
+      ]),
+    );
+    expect((await failingStore.getSession(project.id, "feature-design", session.id)).messageCount).toBe(2);
+    const chatFiles = await readdir(path.join(rootDir, project.id, "chat", "feature-design"));
+    expect(chatFiles.filter((f) => f.startsWith(".append-"))).toHaveLength(0);
+  });
+
+  it("recovers an append when the session index rename fails once", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+
+    await store.appendChatMessage(
+      project.id,
+      "feature-design",
+      {
+        id: "m-1",
+        role: "user",
+        content: "first",
+        createdAt: "2026-06-14T11:01:00.000Z",
+      },
+      session.id,
+    );
+
+    const chatNodeDir = path.join(rootDir, project.id, "chat", "feature-design");
+    const indexPath = path.join(chatNodeDir, "index.json");
+    let failIndexRenameOnce = true;
+    const failingStore = new ProjectStore(rootDir, {
+      readFile,
+      writeFile,
+      rename: vi.fn(async (from, to) => {
+        if (to === indexPath && failIndexRenameOnce) {
+          failIndexRenameOnce = false;
+          throw new Error("session index rename failed");
+        }
+        await rename(from, to);
+      }),
+      unlink,
+    });
+
+    await failingStore.appendChatMessage(
+      project.id,
+      "feature-design",
+      { id: "m-2", role: "user", content: "second", createdAt: "2026-06-14T11:02:00.000Z" },
+      session.id,
+    );
+
+    expect(await failingStore.getChatMessages(project.id, "feature-design", session.id)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "m-2" })]),
+    );
+    expect((await failingStore.getSession(project.id, "feature-design", session.id)).messageCount).toBe(2);
+    const files = await readdir(chatNodeDir);
+    expect(files.filter((file) => file === ".append-journal.json")).toHaveLength(0);
+  });
+
+  it("recovers a crash-style append journal on the next session read", async () => {
+    const store = new ProjectStore(rootDir);
+    const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });
+    const session = await store.createSession(project.id, "feature-design", "2026-06-14T11:00:00.000Z");
+    const chatNodeDir = path.join(rootDir, project.id, "chat", "feature-design");
+    const m1 = {
+      id: "m-1",
+      role: "user" as const,
+      content: "first",
+      createdAt: "2026-06-14T11:01:00.000Z",
+    };
+    const m2 = {
+      id: "m-2",
+      role: "user" as const,
+      content: "second",
+      createdAt: "2026-06-14T11:02:00.000Z",
+    };
+
+    await writeFile(
+      path.join(chatNodeDir, `${session.id}.json`),
+      `${JSON.stringify([m1, m2], null, 2)}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(chatNodeDir, "index.json"),
+      `${JSON.stringify(
+        [
+          {
+            ...session,
+            messageCount: 1,
+            updatedAt: "2026-06-14T11:01:00.000Z",
+          },
+        ],
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(chatNodeDir, ".append-journal.json"),
+      `${JSON.stringify(
+        {
+          sessionId: session.id,
+          message: m2,
+          updatedAt: "2026-06-14T11:02:00.000Z",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const recovered = new ProjectStore(rootDir);
+    const sessions = await recovered.listSessions(project.id, "feature-design");
+    expect(sessions.find((item) => item.id === session.id)?.messageCount).toBe(2);
+    expect(await recovered.getChatMessages(project.id, "feature-design", session.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "m-1" }),
+        expect.objectContaining({ id: "m-2" }),
+      ]),
+    );
+    const files = await readdir(chatNodeDir);
+    expect(files.filter((file) => file === ".append-journal.json")).toHaveLength(0);
+  });
+
   it("keeps only the latest 50 chat sessions per node", async () => {
     const store = new ProjectStore(rootDir);
     const project = await store.createProject({ name: "CRM", now: "2026-06-14T10:00:00.000Z" });

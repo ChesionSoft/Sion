@@ -256,7 +256,7 @@ export class ProjectStore {
 
         const [session] = sessions.splice(index, 1);
         await rm(this.sessionMessagesPath(projectId, node.id, session.id), { force: true });
-        await writeJson(this.sessionIndexPath(projectId, node.id), sessions);
+        await this.atomicWriteJson(this.sessionIndexPath(projectId, node.id), sessions);
         return true;
       });
       if (deleted) {
@@ -353,6 +353,10 @@ export class ProjectStore {
     return path.join(this.chatNodeDir(projectId, nodeId), `${sessionId}.json`);
   }
 
+  private chatAppendJournalPath(projectId: string, nodeId: WorkflowNodeId): string {
+    return path.join(this.chatNodeDir(projectId, nodeId), ".append-journal.json");
+  }
+
   private withChatLock<T>(projectId: string, nodeId: WorkflowNodeId, fn: () => Promise<T>): Promise<T> {
     return withNodeLock(chatLockKey(projectId, nodeId), fn);
   }
@@ -363,6 +367,49 @@ export class ProjectStore {
 
   private async prepareChatUnlocked(projectId: string, nodeId: WorkflowNodeId): Promise<void> {
     await this.migrateLegacyChatUnlocked(projectId, nodeId);
+    await this.recoverPendingChatAppendUnlocked(projectId, nodeId);
+  }
+
+  private async recoverPendingChatAppendUnlocked(projectId: string, nodeId: WorkflowNodeId): Promise<void> {
+    const journalPath = this.chatAppendJournalPath(projectId, nodeId);
+    let journal: { sessionId: string; message: ChatMessage; updatedAt: string };
+    try {
+      journal = await this.readJsonUnlocked(journalPath);
+    } catch {
+      return;
+    }
+
+    let messages: ChatMessage[];
+    try {
+      messages = await this.readChatMessagesUnlocked(projectId, nodeId, journal.sessionId);
+    } catch {
+      messages = [];
+    }
+
+    if (!messages.some((item) => item.id === journal.message.id)) {
+      messages = [...messages, journal.message];
+    }
+    await this.atomicWriteJson(this.sessionMessagesPath(projectId, nodeId, journal.sessionId), messages);
+
+    const sessions = await this.readSessionIndexUnlocked(projectId, nodeId);
+    const index = sessions.findIndex((session) => session.id === journal.sessionId);
+    if (index !== -1) {
+      const existing = sessions[index];
+      sessions[index] = {
+        ...existing,
+        messageCount: messages.length,
+        updatedAt:
+          existing.updatedAt.localeCompare(journal.updatedAt) >= 0 ? existing.updatedAt : journal.updatedAt,
+      };
+      await this.atomicWriteJson(
+        this.sessionIndexPath(projectId, nodeId),
+        sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      );
+    }
+
+    await this.fs.unlink(journalPath).catch(() => {
+      // journal already removed after a concurrent recovery
+    });
   }
 
   private async migrateLegacyChatUnlocked(projectId: string, nodeId: WorkflowNodeId): Promise<void> {
@@ -378,7 +425,7 @@ export class ProjectStore {
       legacyMessages = await this.readJsonUnlocked<ChatMessage[]>(legacyPath);
     } catch {
       await mkdir(this.chatNodeDir(projectId, nodeId), { recursive: true });
-      await writeJson(this.sessionIndexPath(projectId, nodeId), []);
+      await this.atomicWriteJson(this.sessionIndexPath(projectId, nodeId), []);
       return;
     }
 
@@ -395,8 +442,8 @@ export class ProjectStore {
     };
 
     await mkdir(this.chatNodeDir(projectId, nodeId), { recursive: true });
-    await writeJson(this.sessionMessagesPath(projectId, nodeId, session.id), legacyMessages);
-    await writeJson(this.sessionIndexPath(projectId, nodeId), [session]);
+    await this.atomicWriteJson(this.sessionMessagesPath(projectId, nodeId, session.id), legacyMessages);
+    await this.atomicWriteJson(this.sessionIndexPath(projectId, nodeId), [session]);
     await unlink(legacyPath).catch(() => {
       // legacy file already removed; migration is still complete
     });
@@ -444,11 +491,11 @@ export class ProjectStore {
     const kept = sessions.slice(0, MAX_CHAT_SESSIONS_PER_NODE);
     const pruned = sessions.slice(MAX_CHAT_SESSIONS_PER_NODE);
 
-    await writeJson(this.sessionMessagesPath(projectId, nodeId, session.id), []);
+    await this.atomicWriteJson(this.sessionMessagesPath(projectId, nodeId, session.id), []);
     for (const item of pruned) {
       await rm(this.sessionMessagesPath(projectId, nodeId, item.id), { force: true });
     }
-    await writeJson(this.sessionIndexPath(projectId, nodeId), kept);
+    await this.atomicWriteJson(this.sessionIndexPath(projectId, nodeId), kept);
 
     return session;
   }
@@ -489,7 +536,7 @@ export class ProjectStore {
       ...sessions[index],
       ...patch,
     };
-    await writeJson(
+    await this.atomicWriteJson(
       this.sessionIndexPath(projectId, nodeId),
       sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     );
@@ -513,12 +560,38 @@ export class ProjectStore {
     const session = await this.resolveSessionUnlocked(projectId, nodeId, sessionId, message.createdAt);
     const messages = await this.readChatMessagesUnlocked(projectId, nodeId, session.id);
     const next = [...messages, message];
-    await writeJson(this.sessionMessagesPath(projectId, nodeId, session.id), next);
-    await this.updateSessionUnlocked(projectId, nodeId, session.id, {
-      messageCount: next.length,
+    const journalPath = this.chatAppendJournalPath(projectId, nodeId);
+
+    await this.atomicWriteJson(journalPath, {
+      sessionId: session.id,
+      message,
       updatedAt: message.createdAt,
     });
-    return next;
+
+    try {
+      await this.atomicWriteJson(this.sessionMessagesPath(projectId, nodeId, session.id), next);
+      await this.updateSessionUnlocked(projectId, nodeId, session.id, {
+        messageCount: next.length,
+        updatedAt: message.createdAt,
+      });
+      await this.fs.unlink(journalPath);
+      return next;
+    } catch (error) {
+      await this.recoverPendingChatAppendUnlocked(projectId, nodeId);
+      try {
+        const recovered = await this.readChatMessagesUnlocked(projectId, nodeId, session.id);
+        if (recovered.some((item) => item.id === message.id)) {
+          try {
+            await this.readJsonUnlocked(journalPath);
+          } catch {
+            return recovered;
+          }
+        }
+      } catch {
+        // fall through and rethrow the original write error
+      }
+      throw error;
+    }
   }
 }
 
