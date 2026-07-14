@@ -136,7 +136,12 @@ export async function* runWebOrchestrator(
       });
       sources.push(source);
       yield { type: "source", source };
-      contextBlocks.push(formatUntrustedWebContext({ source, content: result!.content }));
+      // UI events above report the full extracted page text; only the
+      // model-facing context is bounded by the per-turn web budget.
+      const modelContent = budget.clipFetchedContent(result!.content);
+      if (modelContent) {
+        contextBlocks.push(formatUntrustedWebContext({ source, content: modelContent }));
+      }
     } else {
       const failMessage = result && !result.ok ? result.message : "抓取失败";
       yield {
@@ -273,7 +278,10 @@ async function* executeToolCall(
     });
     sources.push(source);
     yield { type: "source", source };
-    return budget.fetchResultEnvelope(url, result!.content);
+    // The tool-result envelope is model-facing: bound it by the per-turn web
+    // budget. An empty clip still returns a normal envelope (so tool-call
+    // accounting stays consistent) but with empty content.
+    return budget.fetchResultEnvelope(url, budget.clipFetchedContent(result!.content));
   }
   const code: BrowserWebErrorCode = result && !result.ok ? result.code : "blocked_address";
   const message = result && !result.ok ? result.message : "抓取失败";
@@ -331,7 +339,10 @@ async function* runFallbackPath(
       });
       sources.push(source);
       yield { type: "source", source };
-      contextBlocks.push(formatUntrustedWebContext({ source, content: result!.content }));
+      const modelContent = budget.clipFetchedContent(result!.content);
+      if (modelContent) {
+        contextBlocks.push(formatUntrustedWebContext({ source, content: modelContent }));
+      }
     } else {
       yield {
         type: "web_fetch_result",

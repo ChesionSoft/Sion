@@ -14,10 +14,21 @@ export const MAX_RESULTS_PER_SEARCH = 5;
 export const MAX_FETCHED_PAGES = 3;
 export const MAX_TOOL_ROUNDS = 2;
 
+/**
+ * Strict total cap on fetched-page text that may be returned to the model
+ * across a single turn (direct URLs, tool results, and fallback-search
+ * context all share it). Intentionally lower than the three-page x 20k
+ * UI/page cap: the UI may still show safely extracted page text, but the
+ * model-facing payload is bounded.
+ */
+export const MAX_MODEL_WEB_CONTENT_CHARS = 24_000;
+const WEB_TRUNCATION_MARKER = "\n\n…（网页内容已截断）";
+
 export class WebToolBudget {
   private searchesUsed = 0;
   private successfulFetches = 0;
   private toolRounds = 0;
+  private modelWebChars = 0;
   private readonly fetchedUrls = new Set<string>();
 
   canSearch(): boolean {
@@ -56,6 +67,25 @@ export class WebToolBudget {
 
   fetchResultEnvelope(url: string, content: string): ToolResultEnvelope {
     return { ok: true, tool: "web_fetch", url, content };
+  }
+
+  /**
+   * Clip fetched-page text to the remaining per-turn model budget, adding a
+   * truncation marker when cut. Returns "" once the budget is exhausted so
+   * callers can omit the content from model-facing context. The running total
+   * (`modelWebChars`) never exceeds MAX_MODEL_WEB_CONTENT_CHARS.
+   */
+  clipFetchedContent(content: string): string {
+    const remaining = MAX_MODEL_WEB_CONTENT_CHARS - this.modelWebChars;
+    if (remaining <= 0) return "";
+    const clipped =
+      content.length <= remaining
+        ? content
+        : remaining <= WEB_TRUNCATION_MARKER.length
+          ? WEB_TRUNCATION_MARKER.slice(0, remaining)
+          : content.slice(0, remaining - WEB_TRUNCATION_MARKER.length) + WEB_TRUNCATION_MARKER;
+    this.modelWebChars += clipped.length;
+    return clipped;
   }
 
   errorEnvelope(tool: ModelToolName | string, code: string, error: string): ToolResultEnvelope {

@@ -43,6 +43,10 @@ function withNodeLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
+function chatLockKey(projectId: string, nodeId: WorkflowNodeId): string {
+  return `${projectId}:${nodeId}:chat`;
+}
+
 export type CreateProjectInput = {
   name: string;
   customerName?: string;
@@ -172,31 +176,7 @@ export class ProjectStore {
       throw new Error(`Unknown workflow node: ${nodeId}`);
     }
 
-    await this.migrateLegacyChat(projectId, nodeId);
-    await mkdir(this.chatNodeDir(projectId, nodeId), { recursive: true });
-
-    const session: ChatSession = {
-      id: randomUUID(),
-      nodeId,
-      name: formatSessionName(now),
-      messageCount: 0,
-      webSearchEnabled: false,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const sessions = [session, ...(await this.readSessionIndex(projectId, nodeId))].sort((a, b) =>
-      b.createdAt.localeCompare(a.createdAt),
-    );
-    const kept = sessions.slice(0, MAX_CHAT_SESSIONS_PER_NODE);
-    const pruned = sessions.slice(MAX_CHAT_SESSIONS_PER_NODE);
-
-    await writeJson(this.sessionMessagesPath(projectId, nodeId, session.id), []);
-    for (const item of pruned) {
-      await rm(this.sessionMessagesPath(projectId, nodeId, item.id), { force: true });
-    }
-    await writeJson(this.sessionIndexPath(projectId, nodeId), kept);
-
-    return session;
+    return this.withChatLock(projectId, nodeId, () => this.createSessionUnlocked(projectId, nodeId, now));
   }
 
   async listSessions(projectId: string, nodeId: WorkflowNodeId): Promise<ChatSession[]> {
@@ -204,20 +184,22 @@ export class ProjectStore {
       throw new Error(`Unknown workflow node: ${nodeId}`);
     }
 
-    await this.migrateLegacyChat(projectId, nodeId);
-    return (await this.readSessionIndex(projectId, nodeId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.withChatLock(projectId, nodeId, () => this.listSessionsUnlocked(projectId, nodeId));
   }
 
   async getSession(projectId: string, nodeId: WorkflowNodeId, sessionId: string): Promise<ChatSession> {
     if (!isWorkflowNodeId(nodeId)) {
       throw new Error(`Unknown workflow node: ${nodeId}`);
     }
-    const sessions = await this.listSessions(projectId, nodeId);
-    const session = sessions.find((item) => item.id === sessionId);
-    if (!session) {
-      throw new Error("会话不存在");
-    }
-    return session;
+
+    return this.withChatLock(projectId, nodeId, async () => {
+      const sessions = await this.listSessionsUnlocked(projectId, nodeId);
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) {
+        throw new Error("会话不存在");
+      }
+      return session;
+    });
   }
 
   async updateSessionWebSearch(
@@ -226,12 +208,25 @@ export class ProjectStore {
     sessionId: string,
     enabled: boolean,
   ): Promise<ChatSession> {
-    return this.updateSession(projectId, nodeId, sessionId, { webSearchEnabled: enabled });
+    if (!isWorkflowNodeId(nodeId)) {
+      throw new Error(`Unknown workflow node: ${nodeId}`);
+    }
+
+    return this.withChatLock(projectId, nodeId, async () => {
+      await this.prepareChatUnlocked(projectId, nodeId);
+      return this.updateSessionUnlocked(projectId, nodeId, sessionId, { webSearchEnabled: enabled });
+    });
   }
 
   async getChatMessages(projectId: string, nodeId: WorkflowNodeId, sessionId?: string): Promise<ChatMessage[]> {
-    const session = await this.resolveSession(projectId, nodeId, sessionId);
-    return readJson<ChatMessage[]>(this.sessionMessagesPath(projectId, nodeId, session.id));
+    if (!isWorkflowNodeId(nodeId)) {
+      throw new Error(`Unknown workflow node: ${nodeId}`);
+    }
+
+    return this.withChatLock(projectId, nodeId, async () => {
+      const session = await this.resolveSessionUnlocked(projectId, nodeId, sessionId);
+      return this.readChatMessagesUnlocked(projectId, nodeId, session.id);
+    });
   }
 
   async appendChatMessage(
@@ -240,28 +235,33 @@ export class ProjectStore {
     message: ChatMessage,
     sessionId?: string,
   ): Promise<ChatMessage[]> {
-    const session = await this.resolveSession(projectId, nodeId, sessionId, message.createdAt);
-    const messages = await this.getChatMessages(projectId, nodeId, session.id);
-    const next = [...messages, message];
-    await writeJson(this.sessionMessagesPath(projectId, nodeId, session.id), next);
-    await this.updateSession(projectId, nodeId, session.id, {
-      messageCount: next.length,
-      updatedAt: message.createdAt,
-    });
-    return next;
+    if (!isWorkflowNodeId(nodeId)) {
+      throw new Error(`Unknown workflow node: ${nodeId}`);
+    }
+
+    return this.withChatLock(projectId, nodeId, () =>
+      this.appendChatMessageUnlocked(projectId, nodeId, message, sessionId),
+    );
   }
 
   async deleteSession(projectId: string, sessionId: string): Promise<void> {
     for (const node of WORKFLOW_NODES) {
-      await this.migrateLegacyChat(projectId, node.id);
-      const sessions = await this.readSessionIndex(projectId, node.id);
-      const index = sessions.findIndex((session) => session.id === sessionId);
-      if (index === -1) continue;
+      const deleted = await this.withChatLock(projectId, node.id, async () => {
+        await this.prepareChatUnlocked(projectId, node.id);
+        const sessions = await this.readSessionIndexUnlocked(projectId, node.id);
+        const index = sessions.findIndex((session) => session.id === sessionId);
+        if (index === -1) {
+          return false;
+        }
 
-      const [session] = sessions.splice(index, 1);
-      await rm(this.sessionMessagesPath(projectId, node.id, session.id), { force: true });
-      await writeJson(this.sessionIndexPath(projectId, node.id), sessions);
-      return;
+        const [session] = sessions.splice(index, 1);
+        await rm(this.sessionMessagesPath(projectId, node.id, session.id), { force: true });
+        await this.atomicWriteJson(this.sessionIndexPath(projectId, node.id), sessions);
+        return true;
+      });
+      if (deleted) {
+        return;
+      }
     }
 
     throw new Error("会话不存在");
@@ -353,61 +353,68 @@ export class ProjectStore {
     return path.join(this.chatNodeDir(projectId, nodeId), `${sessionId}.json`);
   }
 
-  private async readSessionIndex(projectId: string, nodeId: WorkflowNodeId): Promise<ChatSession[]> {
+  private chatAppendJournalPath(projectId: string, nodeId: WorkflowNodeId): string {
+    return path.join(this.chatNodeDir(projectId, nodeId), ".append-journal.json");
+  }
+
+  private withChatLock<T>(projectId: string, nodeId: WorkflowNodeId, fn: () => Promise<T>): Promise<T> {
+    return withNodeLock(chatLockKey(projectId, nodeId), fn);
+  }
+
+  private async readJsonUnlocked<T>(filePath: string): Promise<T> {
+    return JSON.parse(await this.fs.readFile(filePath, "utf8")) as T;
+  }
+
+  private async prepareChatUnlocked(projectId: string, nodeId: WorkflowNodeId): Promise<void> {
+    await this.migrateLegacyChatUnlocked(projectId, nodeId);
+    await this.recoverPendingChatAppendUnlocked(projectId, nodeId);
+  }
+
+  private async recoverPendingChatAppendUnlocked(projectId: string, nodeId: WorkflowNodeId): Promise<void> {
+    const journalPath = this.chatAppendJournalPath(projectId, nodeId);
+    let journal: { sessionId: string; message: ChatMessage; updatedAt: string };
     try {
-      const raw = await readJson<ChatSession[]>(this.sessionIndexPath(projectId, nodeId));
-      return raw.map((session) => ({
-        ...session,
-        webSearchEnabled: session.webSearchEnabled === true,
-      }));
+      journal = await this.readJsonUnlocked(journalPath);
     } catch {
-      return [];
-    }
-  }
-
-  private async resolveSession(
-    projectId: string,
-    nodeId: WorkflowNodeId,
-    sessionId?: string,
-    now = new Date().toISOString(),
-  ): Promise<ChatSession> {
-    const sessions = await this.listSessions(projectId, nodeId);
-
-    if (sessionId) {
-      const session = sessions.find((item) => item.id === sessionId);
-      if (!session) {
-        throw new Error("会话不存在");
-      }
-      return session;
+      return;
     }
 
-    return sessions[0] ?? this.createSession(projectId, nodeId, now);
-  }
-
-  private async updateSession(
-    projectId: string,
-    nodeId: WorkflowNodeId,
-    sessionId: string,
-    patch: Partial<Pick<ChatSession, "messageCount" | "updatedAt" | "webSearchEnabled">>,
-  ): Promise<ChatSession> {
-    const sessions = await this.readSessionIndex(projectId, nodeId);
-    const index = sessions.findIndex((session) => session.id === sessionId);
-
-    if (index === -1) {
-      throw new Error("会话不存在");
+    let messages: ChatMessage[];
+    try {
+      messages = await this.readChatMessagesUnlocked(projectId, nodeId, journal.sessionId);
+    } catch {
+      messages = [];
     }
 
-    sessions[index] = {
-      ...sessions[index],
-      ...patch,
-    };
-    await writeJson(this.sessionIndexPath(projectId, nodeId), sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
-    return sessions[index];
+    if (!messages.some((item) => item.id === journal.message.id)) {
+      messages = [...messages, journal.message];
+    }
+    await this.atomicWriteJson(this.sessionMessagesPath(projectId, nodeId, journal.sessionId), messages);
+
+    const sessions = await this.readSessionIndexUnlocked(projectId, nodeId);
+    const index = sessions.findIndex((session) => session.id === journal.sessionId);
+    if (index !== -1) {
+      const existing = sessions[index];
+      sessions[index] = {
+        ...existing,
+        messageCount: messages.length,
+        updatedAt:
+          existing.updatedAt.localeCompare(journal.updatedAt) >= 0 ? existing.updatedAt : journal.updatedAt,
+      };
+      await this.atomicWriteJson(
+        this.sessionIndexPath(projectId, nodeId),
+        sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      );
+    }
+
+    await this.fs.unlink(journalPath).catch(() => {
+      // journal already removed after a concurrent recovery
+    });
   }
 
-  private async migrateLegacyChat(projectId: string, nodeId: WorkflowNodeId): Promise<void> {
+  private async migrateLegacyChatUnlocked(projectId: string, nodeId: WorkflowNodeId): Promise<void> {
     const legacyPath = this.legacyChatPath(projectId, nodeId);
-    const existingSessions = await this.readSessionIndex(projectId, nodeId);
+    const existingSessions = await this.readSessionIndexUnlocked(projectId, nodeId);
 
     if (existingSessions.length > 0) {
       return;
@@ -415,10 +422,10 @@ export class ProjectStore {
 
     let legacyMessages: ChatMessage[];
     try {
-      legacyMessages = await readJson<ChatMessage[]>(legacyPath);
+      legacyMessages = await this.readJsonUnlocked<ChatMessage[]>(legacyPath);
     } catch {
       await mkdir(this.chatNodeDir(projectId, nodeId), { recursive: true });
-      await writeJson(this.sessionIndexPath(projectId, nodeId), []);
+      await this.atomicWriteJson(this.sessionIndexPath(projectId, nodeId), []);
       return;
     }
 
@@ -435,11 +442,156 @@ export class ProjectStore {
     };
 
     await mkdir(this.chatNodeDir(projectId, nodeId), { recursive: true });
-    await writeJson(this.sessionMessagesPath(projectId, nodeId, session.id), legacyMessages);
-    await writeJson(this.sessionIndexPath(projectId, nodeId), [session]);
+    await this.atomicWriteJson(this.sessionMessagesPath(projectId, nodeId, session.id), legacyMessages);
+    await this.atomicWriteJson(this.sessionIndexPath(projectId, nodeId), [session]);
     await unlink(legacyPath).catch(() => {
       // legacy file already removed; migration is still complete
     });
+  }
+
+  private async readSessionIndexUnlocked(projectId: string, nodeId: WorkflowNodeId): Promise<ChatSession[]> {
+    try {
+      const raw = await this.readJsonUnlocked<ChatSession[]>(this.sessionIndexPath(projectId, nodeId));
+      return raw.map((session) => ({
+        ...session,
+        webSearchEnabled: session.webSearchEnabled === true,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  private async listSessionsUnlocked(projectId: string, nodeId: WorkflowNodeId): Promise<ChatSession[]> {
+    await this.prepareChatUnlocked(projectId, nodeId);
+    return (await this.readSessionIndexUnlocked(projectId, nodeId)).sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
+  }
+
+  private async createSessionUnlocked(
+    projectId: string,
+    nodeId: WorkflowNodeId,
+    now = new Date().toISOString(),
+  ): Promise<ChatSession> {
+    await this.prepareChatUnlocked(projectId, nodeId);
+    await mkdir(this.chatNodeDir(projectId, nodeId), { recursive: true });
+
+    const session: ChatSession = {
+      id: randomUUID(),
+      nodeId,
+      name: formatSessionName(now),
+      messageCount: 0,
+      webSearchEnabled: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const sessions = [session, ...(await this.readSessionIndexUnlocked(projectId, nodeId))].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
+    const kept = sessions.slice(0, MAX_CHAT_SESSIONS_PER_NODE);
+    const pruned = sessions.slice(MAX_CHAT_SESSIONS_PER_NODE);
+
+    await this.atomicWriteJson(this.sessionMessagesPath(projectId, nodeId, session.id), []);
+    for (const item of pruned) {
+      await rm(this.sessionMessagesPath(projectId, nodeId, item.id), { force: true });
+    }
+    await this.atomicWriteJson(this.sessionIndexPath(projectId, nodeId), kept);
+
+    return session;
+  }
+
+  private async resolveSessionUnlocked(
+    projectId: string,
+    nodeId: WorkflowNodeId,
+    sessionId?: string,
+    now = new Date().toISOString(),
+  ): Promise<ChatSession> {
+    const sessions = await this.listSessionsUnlocked(projectId, nodeId);
+
+    if (sessionId) {
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) {
+        throw new Error("会话不存在");
+      }
+      return session;
+    }
+
+    return sessions[0] ?? this.createSessionUnlocked(projectId, nodeId, now);
+  }
+
+  private async updateSessionUnlocked(
+    projectId: string,
+    nodeId: WorkflowNodeId,
+    sessionId: string,
+    patch: Partial<Pick<ChatSession, "messageCount" | "updatedAt" | "webSearchEnabled">>,
+  ): Promise<ChatSession> {
+    const sessions = await this.readSessionIndexUnlocked(projectId, nodeId);
+    const index = sessions.findIndex((session) => session.id === sessionId);
+
+    if (index === -1) {
+      throw new Error("会话不存在");
+    }
+
+    sessions[index] = {
+      ...sessions[index],
+      ...patch,
+    };
+    await this.atomicWriteJson(
+      this.sessionIndexPath(projectId, nodeId),
+      sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    );
+    return sessions[index];
+  }
+
+  private async readChatMessagesUnlocked(
+    projectId: string,
+    nodeId: WorkflowNodeId,
+    sessionId: string,
+  ): Promise<ChatMessage[]> {
+    return this.readJsonUnlocked<ChatMessage[]>(this.sessionMessagesPath(projectId, nodeId, sessionId));
+  }
+
+  private async appendChatMessageUnlocked(
+    projectId: string,
+    nodeId: WorkflowNodeId,
+    message: ChatMessage,
+    sessionId?: string,
+  ): Promise<ChatMessage[]> {
+    const session = await this.resolveSessionUnlocked(projectId, nodeId, sessionId, message.createdAt);
+    const messages = await this.readChatMessagesUnlocked(projectId, nodeId, session.id);
+    const next = [...messages, message];
+    const journalPath = this.chatAppendJournalPath(projectId, nodeId);
+
+    await this.atomicWriteJson(journalPath, {
+      sessionId: session.id,
+      message,
+      updatedAt: message.createdAt,
+    });
+
+    try {
+      await this.atomicWriteJson(this.sessionMessagesPath(projectId, nodeId, session.id), next);
+      await this.updateSessionUnlocked(projectId, nodeId, session.id, {
+        messageCount: next.length,
+        updatedAt: message.createdAt,
+      });
+      await this.fs.unlink(journalPath);
+      return next;
+    } catch (error) {
+      await this.recoverPendingChatAppendUnlocked(projectId, nodeId);
+      try {
+        const recovered = await this.readChatMessagesUnlocked(projectId, nodeId, session.id);
+        if (recovered.some((item) => item.id === message.id)) {
+          try {
+            await this.readJsonUnlocked(journalPath);
+          } catch {
+            return recovered;
+          }
+        }
+      } catch {
+        // fall through and rethrow the original write error
+      }
+      throw error;
+    }
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WebToolBudget } from "./web-tool-budget";
+import { MAX_MODEL_WEB_CONTENT_CHARS, WebToolBudget } from "./web-tool-budget";
 
 describe("WebToolBudget/searches", () => {
   it("allows up to two searches and denies the third", () => {
@@ -73,5 +73,30 @@ describe("WebToolBudget/result shape", () => {
     const budget = new WebToolBudget();
     const envelope = budget.errorEnvelope("web_search", "invalid_arguments", "bad query");
     expect(envelope).toEqual({ ok: false, tool: "web_search", code: "invalid_arguments", error: "bad query" });
+  });
+});
+
+describe("WebToolBudget/model web content", () => {
+  it("bounds the total clipped content across three large fetches", () => {
+    const budget = new WebToolBudget();
+    const big = "x".repeat(MAX_MODEL_WEB_CONTENT_CHARS);
+    const a = budget.clipFetchedContent(big);
+    const b = budget.clipFetchedContent(big);
+    const c = budget.clipFetchedContent(big);
+    expect(a.length + b.length + c.length).toBeLessThanOrEqual(MAX_MODEL_WEB_CONTENT_CHARS);
+    // Once the budget is exhausted, further clips are empty.
+    expect(c).toBe("");
+  });
+
+  it("never exceeds the budget when the remaining budget is shorter than the marker", () => {
+    const budget = new WebToolBudget();
+    const markerLen = "\n\n…（网页内容已截断）".length;
+    // Consume almost the whole budget, leaving less than the marker length.
+    const first = budget.clipFetchedContent("y".repeat(MAX_MODEL_WEB_CONTENT_CHARS - (markerLen - 1)));
+    expect(first.length).toBeLessThanOrEqual(MAX_MODEL_WEB_CONTENT_CHARS);
+    // A large second page is clipped to the tiny remaining budget.
+    const second = budget.clipFetchedContent("z".repeat(1000));
+    expect(second.length).toBeLessThanOrEqual(markerLen - 1);
+    expect(first.length + second.length).toBeLessThanOrEqual(MAX_MODEL_WEB_CONTENT_CHARS);
   });
 });
