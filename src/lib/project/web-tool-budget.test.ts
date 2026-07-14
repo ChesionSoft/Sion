@@ -20,16 +20,23 @@ describe("WebToolBudget/searches", () => {
 });
 
 describe("WebToolBudget/fetch pages", () => {
-  it("counts only successful fetches toward the three-page budget", () => {
+  it("limits failed fetch attempts as well as successful pages", () => {
+    const budget = new WebToolBudget();
+    for (const url of ["https://a.com/1", "https://b.com/2", "https://c.com/3"]) {
+      expect(budget.canFetch(url)).toBe(true);
+      budget.recordFetch(url, false);
+    }
+    expect(budget.canFetch("https://d.com/4")).toBe(false);
+  });
+
+  it("permits the third total fetch attempt but denies a fourth", () => {
     const budget = new WebToolBudget();
     expect(budget.canFetch("https://a.com/1")).toBe(true);
     budget.recordFetch("https://a.com/1", true);
-    budget.recordFetch("https://b.com/2", false); // failed, does not consume page budget
+    budget.recordFetch("https://b.com/2", false);
     expect(budget.canFetch("https://c.com/3")).toBe(true);
     budget.recordFetch("https://c.com/3", true);
-    expect(budget.canFetch("https://d.com/4")).toBe(true);
-    budget.recordFetch("https://d.com/4", true);
-    expect(budget.canFetch("https://e.com/5")).toBe(false); // 3 successful reached
+    expect(budget.canFetch("https://d.com/4")).toBe(false);
   });
 
   it("does not refetch a repeated canonical URL", () => {

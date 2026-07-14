@@ -4,6 +4,7 @@ import { runWebOrchestrator, type WebOrchestratorEvent, type StreamTurnArgs } fr
 import type { BrowserWebSearchResult, BrowserWebService, WebFetchResult } from "./browser-web-service";
 import type { ModelTurnEvent } from "./model-tools";
 import type { ModelCallUsage, SearchEngineId, SearchResult } from "./types";
+import { MAX_MODEL_WEB_CONTENT_CHARS } from "./web-tool-budget";
 
 function makeBrowserService(opts: {
   search?: (query: string) => BrowserWebSearchResult;
@@ -329,6 +330,36 @@ describe("runWebOrchestrator/direct URLs", () => {
       }),
     );
     expect(fetchMock).toHaveBeenCalledTimes(3); // a, b, c; d skipped by budget
+  });
+
+  it("keeps the complete direct-URL context within the model web budget", async () => {
+    const browserService = makeBrowserService({
+      fetch: (url) => ({ ok: true, url, content: "x".repeat(MAX_MODEL_WEB_CONTENT_CHARS) }),
+    });
+    const captured: { conversation?: StreamTurnArgs["conversation"] } = {};
+    const streamTurn = vi.fn(async function* (args: StreamTurnArgs): AsyncGenerator<ModelTurnEvent> {
+      captured.conversation = args.conversation;
+      yield { type: "content", delta: "答案" };
+    });
+
+    await collect(
+      runWebOrchestrator({
+        ...baseInput,
+        userMessage: "u",
+        searchEnabled: false,
+        toolCalling: false,
+        directUrls: ["https://example.com/a", "https://example.com/b", "https://example.com/c"],
+        browserService,
+        streamTurn,
+      }),
+    );
+
+    const answerUserContent = (captured.conversation ?? []).find(
+      (item) => item.type === "message" && item.role === "user",
+    ) as { content: string } | undefined;
+    // One user character plus the complete injected web context. Headers,
+    // safety notices, and separators all count toward the web budget.
+    expect(answerUserContent?.content.length).toBeLessThanOrEqual(MAX_MODEL_WEB_CONTENT_CHARS + 1);
   });
 
   it("labels fetched direct-URL content as the page content of that link", async () => {

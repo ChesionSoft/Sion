@@ -4,7 +4,7 @@ import type { SearchResult } from "./types";
 /**
  * Per-turn budget for model-initiated browser tools. Created fresh per
  * assistant request — no global state. Limits: at most 2 searches, 5 results
- * per search, 3 successful fetched pages, and 2 model tool rounds. Repeated
+ * per search, 3 fetched-page attempts, and 2 model tool rounds. Repeated
  * canonical URLs are not refetched. Invalid tool calls return errors but
  * cannot bypass the round cap.
  */
@@ -26,7 +26,7 @@ const WEB_TRUNCATION_MARKER = "\n\n…（网页内容已截断）";
 
 export class WebToolBudget {
   private searchesUsed = 0;
-  private successfulFetches = 0;
+  private fetchAttempts = 0;
   private toolRounds = 0;
   private modelWebChars = 0;
   private readonly fetchedUrls = new Set<string>();
@@ -44,13 +44,16 @@ export class WebToolBudget {
   }
 
   canFetch(url: string): boolean {
-    if (this.successfulFetches >= MAX_FETCHED_PAGES) return false;
+    if (this.fetchAttempts >= MAX_FETCHED_PAGES) return false;
     return !this.fetchedUrls.has(canonicalizeUrl(url));
   }
 
   recordFetch(url: string, success: boolean): void {
+    // Kept for call-site compatibility; every attempted fetch now consumes the
+    // shared attempt budget regardless of its result.
+    void success;
     this.fetchedUrls.add(canonicalizeUrl(url));
-    if (success) this.successfulFetches += 1;
+    this.fetchAttempts += 1;
   }
 
   canStartToolRound(): boolean {
