@@ -3,6 +3,14 @@ import { isWorkflowNodeId } from "@/lib/project/nodes";
 import { NodeRevisionConflictError, ProjectStore } from "@/lib/project/store";
 import { AgentOverrideStore } from "@/lib/project/agent-overrides";
 import { streamNodeMarkdownRewrite, validateRewrittenNodeMarkdown } from "@/lib/project/agent-markdown";
+import {
+  buildDependencyContextMarkdown,
+  collectBudgetedConversation,
+  MAX_AGENT_RULE_CHARS,
+  MAX_CURRENT_NODE_CHARS,
+  MAX_REWRITE_HISTORY_CHARS,
+  truncateForPrompt,
+} from "@/lib/project/chat-context";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
 import type { ProjectNode, ReasoningEffort, WorkflowNodeId } from "@/lib/project/types";
 
@@ -64,17 +72,15 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     return NextResponse.json({ error: "流程节点不存在" }, { status: 404 });
   }
 
-  const contextMarkdown = nodes
-    .filter((n) => n.id !== nodeId)
-    .map((n) => n.markdown)
-    .join("\n\n");
+  const contextMarkdown = buildDependencyContextMarkdown(nodeId, nodes);
 
   const agentRuleContent = await agentStore.getActiveRuleContent(projectId, nodeId);
 
   let recentMessages: import("@/lib/project/types").ChatMessage[];
   try {
     const messages = await projectStore.getChatMessages(projectId, nodeId, body.sessionId);
-    recentMessages = messages.filter((message) => message.role === "user" || message.role === "assistant");
+    const filtered = messages.filter((message) => message.role === "user" || message.role === "assistant");
+    recentMessages = collectBudgetedConversation(filtered, MAX_REWRITE_HISTORY_CHARS);
   } catch {
     return NextResponse.json({ error: "会话不属于当前节点" }, { status: 400 });
   }
@@ -103,10 +109,10 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           protocol: provider.protocol,
           reasoningEffort,
           nodeId: nodeId as WorkflowNodeId,
-          currentMarkdown: currentNode.markdown,
+          currentMarkdown: truncateForPrompt(currentNode.markdown, MAX_CURRENT_NODE_CHARS),
           contextMarkdown,
           recentMessages,
-          agentRuleContent,
+          agentRuleContent: truncateForPrompt(agentRuleContent, MAX_AGENT_RULE_CHARS),
           signal: abortController.signal,
         })) {
           candidateMarkdown += token;

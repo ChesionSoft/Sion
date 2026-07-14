@@ -642,3 +642,61 @@ describe("chat API activity and authoritative final message", () => {
     expect(assistant?.content).toBe("部分");
   });
 });
+
+describe("chat API context budgets", () => {
+  it("rejects an oversized user message with 400 before any session or orchestrator call", async () => {
+    const { MAX_USER_MESSAGE_CHARS } = await import("@/lib/project/chat-context");
+    const response = await POST(
+      baseRequest({ message: "x".repeat(MAX_USER_MESSAGE_CHARS + 1) }),
+      { params: Promise.resolve({ projectId: "test-project" }) },
+    );
+    expect(response.status).toBe(400);
+    // The orchestrator must never have run.
+    expect(orchestratorInput).toBeNull();
+  });
+
+  it("injects only dependsOn nodes into the system prompt, not every other node", async () => {
+    // feature-design depends on basic-info/goals/roles-permissions/business-flow;
+    // data-structure is NOT a dependency and must be absent from the prompt.
+    const { readFile, writeFile } = await import("node:fs/promises");
+    const nodePath = (nid: string) => path.join(tmpDir, "projects", "test-project", "nodes", `${nid}.json`);
+    for (const nid of ["basic-info", "data-structure"]) {
+      const raw = JSON.parse(await readFile(nodePath(nid), "utf8")) as { markdown: string };
+      raw.markdown = `# ${nid}\n\nUNIQUE-MARKER-${nid}`;
+      await writeFile(nodePath(nid), JSON.stringify(raw, null, 2), "utf8");
+    }
+
+    await readSseEvents(await POST(baseRequest(), { params: Promise.resolve({ projectId: "test-project" }) }));
+    const sys = orchestratorInput?.systemPrompt as string;
+    expect(sys).toContain("UNIQUE-MARKER-basic-info");
+    expect(sys).not.toContain("UNIQUE-MARKER-data-structure");
+  });
+
+  it("reads at most MAX_SELECTED_FILES unique files into the prompt", async () => {
+    const { FileStore } = await import("@/lib/project/files");
+    const { MAX_SELECTED_FILES } = await import("@/lib/project/chat-context");
+    const fileStore = new FileStore();
+    const ids: string[] = [];
+    for (let i = 1; i <= MAX_SELECTED_FILES + 2; i += 1) {
+      const record = await fileStore.uploadFile("test-project", {
+        name: `file${i}.txt`,
+        buffer: Buffer.from(`FILE-MARKER-${i}`, "utf8"),
+      });
+      ids.push(record.id);
+    }
+    // Add a duplicate of the first id to prove de-dup happens before the count cap.
+    ids.push(ids[0]);
+
+    await readSseEvents(
+      await POST(baseRequest({ fileIds: ids }), { params: Promise.resolve({ projectId: "test-project" }) }),
+    );
+    const sys = orchestratorInput?.systemPrompt as string;
+    // Only the first MAX_SELECTED_FILES unique files are read.
+    for (let i = 1; i <= MAX_SELECTED_FILES; i += 1) {
+      expect(sys).toContain(`FILE-MARKER-${i}`);
+    }
+    for (let i = MAX_SELECTED_FILES + 1; i <= MAX_SELECTED_FILES + 2; i += 1) {
+      expect(sys).not.toContain(`FILE-MARKER-${i}`);
+    }
+  });
+});

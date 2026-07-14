@@ -11,6 +11,18 @@ import { ModelProviderStore } from "@/lib/settings/model-providers";
 import { BrowserSearchStore } from "@/lib/settings/browser-search";
 import { getSharedBrowserManager } from "@/lib/project/browser-registry";
 import { createBrowserWebService } from "@/lib/project/browser-web-service";
+import {
+  assembleBudgetedPrompt,
+  buildDependencyContextMarkdown,
+  collectBudgetedConversation,
+  collectBudgetedFileSections,
+  MAX_AGENT_RULE_CHARS,
+  MAX_CURRENT_NODE_CHARS,
+  MAX_HISTORY_CHARS,
+  MAX_SELECTED_FILES,
+  MAX_USER_MESSAGE_CHARS,
+  truncateForPrompt,
+} from "@/lib/project/chat-context";
 import { runWebOrchestrator, type WebOrchestratorEvent } from "@/lib/project/web-tool-orchestrator";
 import { extractHttpUrls } from "@/lib/project/url-content";
 import { aggregateTokenUsage } from "@/lib/project/token-usage";
@@ -57,6 +69,11 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     return NextResponse.json({ error: "消息不能为空" }, { status: 400 });
   }
 
+  const trimmedUserMessage = body.message.trim();
+  if (trimmedUserMessage.length > MAX_USER_MESSAGE_CHARS) {
+    return NextResponse.json({ error: "消息过长，请精简后重试" }, { status: 400 });
+  }
+
   if (!body.providerId) {
     return NextResponse.json({ error: "请先配置并选择大模型" }, { status: 400 });
   }
@@ -86,14 +103,9 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     return NextResponse.json({ error: "流程节点不存在" }, { status: 404 });
   }
 
-  const contextMarkdown = nodes
-    .filter((node) => node.id !== nodeId)
-    .map((node) => node.markdown)
-    .join("\n\n");
+  const contextMarkdown = buildDependencyContextMarkdown(nodeId, nodes);
 
   const agentRuleContent = await agentStore.getActiveRuleContent(projectId, nodeId);
-
-  const trimmedUserMessage = body.message.trim();
 
   // Direct URLs in the user message are always fetched through the browser
   // service, regardless of the search toggle. Extracted here so the system
@@ -102,28 +114,23 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   // and ignore the fetched text.
   const directUrls = extractHttpUrls(trimmedUserMessage);
 
-  const baseSystemPromptParts: string[] = [
+  // Variable context sections. Each is pre-truncated to its own cap; the
+  // joined context is bounded again by assembleBudgetedPrompt so the delivery
+  // instructions (requiredTail) can never be pushed out. Order matters:
+  // later sections (files) are the first to be clipped by the total budget.
+  const contextParts: string[] = [
     `当前项目：${project.name}`,
-    "",
-    agentRuleContent.trim(),
-    "",
-    "## 当前节点 Markdown",
-    "",
-    currentNode.markdown.trim(),
-    "",
-    "## 可参考项目上下文",
-    "",
-    contextMarkdown.trim() || "暂无已确认上下文。",
+    truncateForPrompt(agentRuleContent.trim(), MAX_AGENT_RULE_CHARS),
+    `## 当前节点 Markdown\n\n${truncateForPrompt(currentNode.markdown.trim(), MAX_CURRENT_NODE_CHARS)}`,
+    `## 可参考项目上下文\n\n${contextMarkdown.trim() || "暂无已确认上下文。"}`,
   ];
 
   if (directUrls.length > 0) {
-    baseSystemPromptParts.push(
-      "",
-      "## 链接读取说明",
-      "",
-      "- 用户消息中若包含链接，系统会自动抓取该链接的网页内容，并附在用户消息末尾、标注为「链接网页内容」。",
-      "- 请直接基于已抓取的内容回答用户问题，不要回答「我无法访问链接」「我没有联网功能」或同类说辞。",
-      "- 若消息中出现「链接读取失败」说明，请如实告知用户该链接暂无法读取，并基于已有信息继续，不要声称自己没有联网功能。",
+    contextParts.push(
+      "## 链接读取说明\n\n" +
+        "- 用户消息中若包含链接，系统会自动抓取该链接的网页内容，并附在用户消息末尾、标注为「链接网页内容」。\n" +
+        "- 请直接基于已抓取的内容回答用户问题，不要回答「我无法访问链接」「我没有联网功能」或同类说辞。\n" +
+        "- 若消息中出现「链接读取失败」说明，请如实告知用户该链接暂无法读取，并基于已有信息继续，不要声称自己没有联网功能。",
     );
   }
 
@@ -152,16 +159,19 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   // Load prior turns BEFORE appending the current message so the current
   // message is delivered via `userMessage` and not duplicated in history.
   const priorMessages = await projectStore.getChatMessages(projectId, nodeId, sessionId);
-  const history: ModelConversationItem[] = priorMessages
-    .filter((m) => m.role === "user" || (m.role === "assistant" && m.content.trim().length > 0))
-    .slice(-MAX_HISTORY_MESSAGES)
-    .map((m) => ({
-      type: "message" as const,
-      role: m.role,
-      // Keep the structured delivery block out of the model's replayed
-      // history; it stays in the persisted message for the chat card.
-      content: m.role === "assistant" ? stripDeliveryBlock(m.content) : m.content,
-    }));
+  const history: ModelConversationItem[] = collectBudgetedConversation(
+    priorMessages
+      .filter((m) => m.role === "user" || (m.role === "assistant" && m.content.trim().length > 0))
+      .slice(-MAX_HISTORY_MESSAGES)
+      .map((m) => ({
+        type: "message" as const,
+        role: m.role,
+        // Keep the structured delivery block out of the model's replayed
+        // history; it stays in the persisted message for the chat card.
+        content: m.role === "assistant" ? stripDeliveryBlock(m.content) : m.content,
+      })),
+    MAX_HISTORY_CHARS,
+  );
 
   await projectStore.appendChatMessage(projectId, nodeId, {
     id: randomUUID(),
@@ -197,8 +207,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         sendEvent({ type: "activity", stage, summary, at: new Date().toISOString() });
       };
 
-      // Whole-turn identity and usage collection shared by the orchestrator
-      // and the fact judge.
+      // Whole-turn identity and usage collection for orchestrator model calls.
       const turnId = randomUUID();
       const assistantMessageId = randomUUID();
       const turnStartedAt = Date.now();
@@ -244,26 +253,32 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         sendActivity("thinking", "正在分析需求");
 
         // Read selected project files inside the stream so the reading_files
-        // activity is emitted before the reads actually occur.
+        // activity is emitted before the reads actually occur. De-duplicate
+        // and bound the file set BEFORE reading so an oversized or repeated
+        // fileIds list cannot force unbounded reads.
         if (body.fileIds?.length) {
           sendActivity("reading_files", "正在读取所选项目文件");
-          const fileContents: string[] = [];
-          for (const fileId of body.fileIds) {
+          const loaded: { name: string; content: string }[] = [];
+          const uniqueFileIds = [...new Set(body.fileIds)].slice(0, MAX_SELECTED_FILES);
+          for (const fileId of uniqueFileIds) {
             const record = await fileStore.getFile(projectId, fileId);
             if (!record || record.status !== "available") continue;
             const content = await fileStore.readFileContent(projectId, fileId);
             if (content) {
-              fileContents.push(`## 引用文件：${record.originalName}\n\n${content}`);
+              loaded.push({ name: record.originalName, content });
             }
           }
-          if (fileContents.length) {
-            baseSystemPromptParts.push("");
-            baseSystemPromptParts.push(...fileContents);
+          const fileSections = collectBudgetedFileSections(loaded);
+          if (fileSections.length) {
+            contextParts.push(...fileSections);
           }
         }
 
-        baseSystemPromptParts.push(
-          "",
+        // The delivery instructions are the required tail: assembleBudgetedPrompt
+        // reserves their budget first, so a strict total cap can never remove
+        // the output contract. Variable context in contextParts is clipped to
+        // the remaining budget (files first, since they were pushed last).
+        const requiredTail = [
           "## 回复要求",
           "",
           "- 先回答用户问题，再给出建议写入 Markdown 的内容。",
@@ -281,8 +296,8 @@ export async function POST(request: Request, context: { params: Promise<{ projec
           "- markdown 内容会原样进入交付稿，质量要与你会在正文里给的建议一致；不要包含标题行（# 开头）。",
           "- 可用 sections：",
           buildDeliverySectionsList(nodeId),
-        );
-        const systemPrompt = baseSystemPromptParts.join("\n");
+        ].join("\n");
+        const systemPrompt = assembleBudgetedPrompt(contextParts, requiredTail);
 
         if (webSearchEnabled || directUrls.length > 0) {
           sendActivity("searching_web", "正在检索外部资料");
@@ -329,8 +344,8 @@ export async function POST(request: Request, context: { params: Promise<{ projec
         // Some MiniMax models leak proprietary tool-call wrappers into the
         // content channel over the OpenAI-compatible endpoint (the system
         // prompt tells the model not to emit them; this is the safety net).
-        // Strip before persisting and before the judge sees the turn, so the
-        // saved message and the draft-update decision are based on clean text.
+        // Strip before persisting and before the delivery block is parsed, so the
+        // saved message and the parsed patches are based on clean text.
         assistantContent = stripToolCallLeakage(assistantContent);
         if (assistantReasoningContent) {
           assistantReasoningContent = stripToolCallLeakage(assistantReasoningContent);
