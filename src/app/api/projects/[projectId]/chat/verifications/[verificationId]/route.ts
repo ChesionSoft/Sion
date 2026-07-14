@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { BrowserManager } from "@/lib/project/browser-manager";
-import { loadPlaywright } from "@/lib/project/playwright-loader";
+import { getSharedBrowserManager } from "@/lib/project/browser-registry";
 import { browserVerificationStore, VerificationError } from "@/lib/project/browser-verification";
 
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -27,7 +26,7 @@ export async function POST(
     return NextResponse.json({ error: "sessionId 必填" }, { status: 400, headers: NO_STORE });
   }
 
-  const manager = new BrowserManager({ playwright: await loadPlaywright() });
+  const manager = await getSharedBrowserManager();
   try {
     await manager.openVisibleVerification({
       resolveUrl: () =>

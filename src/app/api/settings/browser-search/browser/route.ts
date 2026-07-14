@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { BrowserManager } from "@/lib/project/browser-manager";
-import { loadPlaywright } from "@/lib/project/playwright-loader";
+import { getSharedBrowserManager } from "@/lib/project/browser-registry";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
@@ -25,7 +24,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "不支持的操作" }, { status: 400, headers: NO_STORE });
   }
 
-  const manager = new BrowserManager({ playwright: await loadPlaywright() });
+  const manager = await getSharedBrowserManager();
 
   if (MUTATION_ACTIONS.has(action)) {
     if (mutationInFlight) {

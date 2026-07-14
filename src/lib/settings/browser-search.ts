@@ -113,9 +113,8 @@ function preferencesErrorMessage(error: z.ZodError): string {
  */
 async function defaultStatusProvider(): Promise<BrowserSearchStatus> {
   try {
-    const { BrowserManager } = await import("@/lib/project/browser-manager");
-    const { loadPlaywright } = await import("@/lib/project/playwright-loader");
-    const manager = new BrowserManager({ playwright: await loadPlaywright() });
+    const { getSharedBrowserManager } = await import("@/lib/project/browser-registry");
+    const manager = await getSharedBrowserManager();
     return await manager.getStatus();
   } catch {
     return {

@@ -9,8 +9,7 @@ import { ProjectStore } from "@/lib/project/store";
 import { stripToolCallLeakage } from "@/lib/project/tool-call-strip";
 import { ModelProviderStore } from "@/lib/settings/model-providers";
 import { BrowserSearchStore } from "@/lib/settings/browser-search";
-import { BrowserManager } from "@/lib/project/browser-manager";
-import { loadPlaywright } from "@/lib/project/playwright-loader";
+import { getSharedBrowserManager } from "@/lib/project/browser-registry";
 import { createBrowserWebService } from "@/lib/project/browser-web-service";
 import { runWebOrchestrator, type WebOrchestratorEvent } from "@/lib/project/web-tool-orchestrator";
 import { extractHttpUrls } from "@/lib/project/url-content";
@@ -180,7 +179,7 @@ export async function POST(request: Request, context: { params: Promise<{ projec
   const preferences = await browserSearchStore.getPreferences();
 
   const browserService = createBrowserWebService({
-    browserManager: new BrowserManager({ playwright: await loadPlaywright() }),
+    browserManager: await getSharedBrowserManager(),
   });
 
   const abortController = new AbortController();

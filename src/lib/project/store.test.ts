@@ -117,7 +117,7 @@ describe("ProjectStore", () => {
     let activeMessageReads = 0;
     let maxConcurrentMessageReads = 0;
     const store = new ProjectStore(rootDir, {
-      readFile: async (filePath, encoding) => {
+      readFile: (async (filePath: string, encoding: BufferEncoding) => {
         if (filePath !== messagesPath) return readFile(filePath, encoding);
         activeMessageReads += 1;
         maxConcurrentMessageReads = Math.max(maxConcurrentMessageReads, activeMessageReads);
@@ -128,7 +128,7 @@ describe("ProjectStore", () => {
         } finally {
           activeMessageReads -= 1;
         }
-      },
+      }) as typeof readFile,
       writeFile,
       rename,
       unlink,
