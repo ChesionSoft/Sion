@@ -29,6 +29,12 @@ export async function loadAgentRule(nodeId: WorkflowNodeId): Promise<AgentRule> 
   return { nodeId, filePath, content };
 }
 
+/**
+ * Legacy/simple system prompt (rules + node markdown + dependency context).
+ * Production chat uses the richer assembly in
+ * `src/app/api/projects/[projectId]/chat/route.ts` (delivery-block instructions,
+ * link-fetch notes, budgeted files). Prefer that path for new call sites.
+ */
 export async function renderAgentSystemPrompt(input: RenderAgentSystemPromptInput): Promise<string> {
   const rule = await loadAgentRule(input.nodeId);
 
