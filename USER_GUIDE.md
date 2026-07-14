@@ -141,8 +141,8 @@ http://localhost:3000
 1. 选择模型，点击“生成导出蓝图”。蓝图决定哪些已确认内容适合对外，不会把待确认事项、过程讨论或 Agent 建议带进正式 PRD。
 2. 审阅 `export-blueprint.md`，确认后点击“确认蓝图并生成正文”。
 3. 审阅 `formal-prd-draft.md`，确认后点击“确认正文并生成正式 Word”。
-4. Sion 在服务端生成 DOCX，并通过 LibreOffice/Poppler 渲染为 PDF/图片进行页面级质检。
-5. 质检通过后，下载 `项目开发设计文档.docx`；质检失败时查看 `formal-prd-qa-report.md`，然后点击“重新生成正式正文”。
+4. Sion 在服务端生成 DOCX，并做 DOCX 包结构与内容校验（纯 Node，无需 LibreOffice/Poppler）。真实排版（字体、分页、目录页码）请在 Word / WPS 中复核。
+5. 校验通过后，下载 `项目开发设计文档.docx`；校验失败时查看 `formal-prd-qa-report.md`，然后点击“重新生成正式正文”。
 
 导出中心按需生成下列文件：
 

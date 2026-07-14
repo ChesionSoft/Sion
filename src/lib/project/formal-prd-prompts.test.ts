@@ -73,6 +73,13 @@ describe("buildDraftSystemPrompt", () => {
     expect(p).toContain("表格");
     expect(p).toContain("flow");
   });
+
+  it("requires ## chapters for Word TOC and forbids layout-only sections", () => {
+    const p = buildDraftSystemPrompt();
+    expect(p).toContain("##");
+    expect(p).toContain("目录");
+    expect(p).toContain("修订记录");
+  });
 });
 
 describe("buildDraftUserPrompt", () => {

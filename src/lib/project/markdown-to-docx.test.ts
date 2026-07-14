@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ExternalHyperlink, Paragraph, Table, TextRun } from "docx";
-import { parseMarkdownToMdast, renderBlock, renderInline, renderMdastBody } from "./markdown-to-docx";
+import {
+  collectTocHeadings,
+  parseMarkdownToMdast,
+  renderBlock,
+  renderInline,
+  renderMdastBody,
+} from "./markdown-to-docx";
 import type { MdastBlock, MdastInline } from "./markdown-to-docx";
 
 /** 取一段 markdown 第一个段落（或块）的行内子节点。 */
@@ -75,6 +81,15 @@ describe("renderBlock (paragraph + heading)", () => {
     expect(els[0]).toBeInstanceOf(Paragraph);
     expect(xml(els)).toContain("子小节");
     expect(xml(els)).toContain("Heading2");
+  });
+
+  it("wraps a heading in a bookmark when headingBookmarkId is provided", () => {
+    const els = renderBlock(firstBlockOf("## 章节"), {
+      headingOffset: 1,
+      headingBookmarkId: () => "toc-1",
+    });
+    expect(xml(els)).toContain("toc-1");
+    expect(xml(els)).toContain("Heading1");
   });
 
   it("maps heading depth 3 to Heading3", () => {
@@ -194,5 +209,20 @@ describe("renderMdastBody headingOffset", () => {
   it("defaults to no offset (## -> Heading2)", () => {
     const els = renderMdastBody("## a");
     expect(xml(els)).toContain("Heading2");
+  });
+});
+
+describe("collectTocHeadings", () => {
+  it("collects H1–H3 after headingOffset with stable bookmark ids", () => {
+    // With headingOffset=1: ##→1, ###→2, ####→3, #####→4 (excluded by maxLevel 3)
+    const root = parseMarkdownToMdast(
+      "## 章一\n\n正文\n\n### 节 A\n\n## 章二\n\n##### 更深不收录",
+    ) as { children: MdastBlock[] };
+    const entries = collectTocHeadings(root.children, 1, 3);
+    expect(entries).toEqual([
+      { title: "章一", level: 1, bookmarkId: "toc-1" },
+      { title: "节 A", level: 2, bookmarkId: "toc-2" },
+      { title: "章二", level: 1, bookmarkId: "toc-3" },
+    ]);
   });
 });

@@ -10,8 +10,8 @@ import { ModelPicker } from "./model-picker";
 import { EXPORT_FILENAMES, type ExportFileInfo } from "@/lib/project/export-files";
 import type { ModelProvider, ReasoningEffort } from "@/lib/project/types";
 
-type QaIssue = { code: string; message: string; page?: number };
-type QaReport = { passed: boolean; pageCount: number; issues: QaIssue[]; renderedAt: string };
+type QaIssue = { code: string; message: string };
+type QaReport = { passed: boolean; structuralUnitCount: number; issues: QaIssue[]; checkedAt: string };
 
 type StageState = {
   blueprintDigest?: string;
@@ -48,8 +48,23 @@ const PRIMARY_LABEL: Record<Step, string> = {
   "approve-blueprint": "确认蓝图并生成正文",
   "approve-draft": "确认正文并生成正式 Word",
   "retry-draft": "重新生成正式正文",
-  done: "",
+  done: "重新生成正式 Word",
 };
+
+/** Visible pipeline steps for the export center header. */
+const PIPELINE_STEPS: Array<{ id: Step | "done"; label: string }> = [
+  { id: "blueprint", label: "1. 导出蓝图" },
+  { id: "approve-blueprint", label: "2. 正式正文" },
+  { id: "approve-draft", label: "3. 正式 Word" },
+  { id: "done", label: "4. 完成" },
+];
+
+function pipelineIndex(step: Step): number {
+  if (step === "blueprint") return 0;
+  if (step === "approve-blueprint") return 1;
+  if (step === "approve-draft" || step === "retry-draft") return 2;
+  return 3;
+}
 
 export function ExportCenter({
   projectId,
@@ -220,14 +235,14 @@ export function ExportCenter({
       if (!finalize.ok) {
         const qa = finalize.data.qaReport as QaReport | undefined;
         if (qa && qa.issues.length > 0) {
-          setMessage(`渲染质检未通过：${qa.issues[0].message}`);
+          setMessage(`DOCX 结构与内容校验未通过：${qa.issues[0].message}`);
         } else {
           setMessage((finalize.data.error as string) || "正式 Word 生成失败,请重试");
         }
         await refresh();
         return;
       }
-      setMessage("正式 Word 已生成并通过渲染质检。");
+      setMessage("正式 Word 已生成并通过结构与内容校验。");
       await refresh();
     } finally {
       setBusy(false);
@@ -245,6 +260,42 @@ export function ExportCenter({
         return;
       }
       setMessage("正式正文已重新生成。请审阅后确认。");
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Re-run finalize from an already-approved draft (e.g. after a renderer fix). */
+  async function regenerateWord() {
+    if (!stage?.draftDigest || busy) return;
+    setBusy(true);
+    setMessage("正在重新生成正式 Word…");
+    try {
+      // Re-approve current draft digest so finalize stays valid even if the
+      // previous approval was cleared by a side path; no-op when already matched.
+      if (stage.draftApprovedDigest !== stage.draftDigest) {
+        const approve = await postJson({
+          operation: "approve_draft",
+          artifactDigest: stage.draftDigest,
+        });
+        if (!approve.ok) {
+          setMessage((approve.data.error as string) || "正文确认失败,请重新生成正文");
+          return;
+        }
+      }
+      const finalize = await postJson({ operation: "finalize" });
+      if (!finalize.ok) {
+        const qa = finalize.data.qaReport as QaReport | undefined;
+        if (qa && qa.issues.length > 0) {
+          setMessage(`DOCX 结构与内容校验未通过：${qa.issues[0].message}`);
+        } else {
+          setMessage((finalize.data.error as string) || "正式 Word 生成失败,请重试");
+        }
+        await refresh();
+        return;
+      }
+      setMessage("正式 Word 已重新生成并通过结构与内容校验。");
       await refresh();
     } finally {
       setBusy(false);
@@ -336,7 +387,9 @@ export function ExportCenter({
           ? approveDraftAndFinalize
           : step === "retry-draft"
             ? regenerateDraft
-          : null;
+            : step === "done"
+              ? regenerateWord
+              : null;
 
   const primaryLabel = PRIMARY_LABEL[step];
   const isEditableFile = selected === "export-blueprint.md" || selected === "formal-prd-draft.md";
@@ -347,11 +400,12 @@ export function ExportCenter({
     ((selected === "export-blueprint.md" && Boolean(stage?.blueprintDigest)) ||
       (selected === "formal-prd-draft.md" && Boolean(stage?.draftDigest)));
   const showComposer = !editing && (onPrimary !== null || canRevise);
+  // finalize / re-finalize do not need a model; draft/blueprint steps do.
   const canPrimary =
     !!onPrimary &&
     !busy &&
     !reviseBusy &&
-    (step === "approve-draft" || Boolean(providerId && model));
+    (step === "approve-draft" || step === "done" || Boolean(providerId && model));
 
   const qaFailed = stage?.qaStatus === "failed";
   const qaDone = stage?.qaStatus === "passed";
@@ -372,6 +426,34 @@ export function ExportCenter({
         </div>
       </header>
 
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2">
+        {PIPELINE_STEPS.map((s, i) => {
+          const current = pipelineIndex(step);
+          const done = i < current || (step === "done" && i <= current);
+          const active = i === current && step !== "done";
+          return (
+            <div key={s.id} className="flex items-center gap-2">
+              {i > 0 ? <span className="text-muted-foreground/40">→</span> : null}
+              <span
+                className={cn(
+                  "rounded-full px-2.5 py-0.5 text-xs",
+                  done && !active
+                    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                    : active
+                      ? "bg-primary/15 font-medium text-foreground"
+                      : "bg-muted text-muted-foreground",
+                )}
+              >
+                {s.label}
+              </span>
+            </div>
+          );
+        })}
+        <span className="ml-auto hidden text-[11px] text-muted-foreground sm:inline">
+          正式 Word 含封面、可点击目录、修订记录与分页正文
+        </span>
+      </div>
+
       {message ? (
         <div className="border-b bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground">{message}</div>
       ) : null}
@@ -382,18 +464,25 @@ export function ExportCenter({
         </div>
       ) : null}
 
+      {step === "approve-draft" ? (
+        <div className="border-b bg-blue-500/10 px-4 py-1.5 text-xs text-blue-700 dark:text-blue-300">
+          请核对正式正文的章节标题（## / ###）—它们会进入 Word 目录。确认后生成含封面、目录与修订记录的正式 Word。
+        </div>
+      ) : null}
+
       {qaFailed && stage?.qaReport ? (
         <div className="border-b bg-red-500/10 px-4 py-2 text-xs text-red-700 dark:text-red-300">
-          <p className="font-medium">渲染质检未通过，正式 Word 暂不可下载。请调整正文后重新生成。</p>
+          <p className="font-medium">DOCX 结构与内容校验未通过，正式 Word 暂不可下载。请调整正文后重新生成。</p>
           {stage.qaReport.issues.map((issue, i) => (
-            <p key={i}>· [{issue.code}]{issue.page ? `（第 ${issue.page} 页）` : ""} {issue.message}</p>
+            <p key={i}>· [{issue.code}] {issue.message}</p>
           ))}
         </div>
       ) : null}
 
       {qaDone ? (
         <div className="border-b bg-emerald-500/10 px-4 py-2 text-xs text-emerald-700 dark:text-emerald-300">
-          正式 Word 已通过渲染质检，可下载。质检报告见侧栏“formal-prd-qa-report.md”。
+          正式 Word 已通过结构与内容校验，可下载。文档含封面、目录（可点击跳转）、修订记录与分页正文。若排版逻辑已更新，可点
+          「重新生成正式 Word」覆盖当前文件。校验报告见侧栏“formal-prd-qa-report.md”。
         </div>
       ) : null}
 
@@ -477,7 +566,8 @@ export function ExportCenter({
             ) : preview.kind === "docx" ? (
               <div className="p-4">
                 <div className="mb-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-700 dark:text-yellow-400">
-                  内容预览(mammoth HTML)。Word 排版(封面/目录/页眉页脚/分页)请下载 .docx 查看。
+                  内容预览（mammoth HTML）不完整：封面、可点击目录、页眉页脚与分页需下载 .docx，在 Word / WPS
+                  中查看。打开后页码会自动更新。
                 </div>
                 <div
                   className="markdown-content markdown-document"

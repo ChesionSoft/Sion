@@ -212,12 +212,12 @@ describe("finalizeFormalPrdExport", () => {
   }
 
   const fakeDocx = Buffer.from([0x50, 0x4b, 0x05, 0x06, 0x00, 0x00]);
-  const passedReport: DocxQaReport = { passed: true, pageCount: 1, issues: [], renderedAt: "2026-07-11T00:00:00.000Z" };
+  const passedReport: DocxQaReport = { passed: true, structuralUnitCount: 1, issues: [], checkedAt: "2026-07-11T00:00:00.000Z" };
   const failedReport: DocxQaReport = {
     passed: false,
-    pageCount: 1,
+    structuralUnitCount: 1,
     issues: [{ code: "missing_cjk_text", message: "未检出中文字符" }],
-    renderedAt: "2026-07-11T00:00:00.000Z",
+    checkedAt: "2026-07-11T00:00:00.000Z",
   };
 
   it("throws when the flow is not fully approved", async () => {

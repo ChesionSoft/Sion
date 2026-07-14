@@ -37,7 +37,7 @@ export async function GET(
   if (filename === DOCX_FILENAME) {
     const stage = await readStageState(store, projectId);
     if (stage.qaStatus !== "passed") {
-      return NextResponse.json({ error: "正式 Word 尚未通过当前渲染质检" }, { status: 404 });
+      return NextResponse.json({ error: "正式 Word 尚未通过当前 DOCX 结构与内容校验" }, { status: 404 });
     }
   }
 

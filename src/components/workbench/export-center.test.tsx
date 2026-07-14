@@ -20,9 +20,9 @@ type StageLike = {
   qaStatus?: "passed" | "failed";
   qaReport?: {
     passed: boolean;
-    pageCount: number;
-    issues: { code: string; message: string; page?: number }[];
-    renderedAt: string;
+    structuralUnitCount: number;
+    issues: { code: string; message: string }[];
+    checkedAt: string;
   };
   updatedAt: string;
 };
@@ -74,7 +74,7 @@ beforeEach(() => {
           if (op === "draft") currentStage = { ...currentStage, draftDigest: "dr-d", draftApprovedDigest: undefined, qaStatus: undefined, qaReport: undefined };
           if (op === "approve_draft") currentStage = { ...currentStage, draftApprovedDigest: currentStage.draftDigest };
           if (op === "finalize") {
-            currentStage = { ...currentStage, qaStatus: "passed", qaReport: { passed: true, pageCount: 1, issues: [], renderedAt: "" } };
+            currentStage = { ...currentStage, qaStatus: "passed", qaReport: { passed: true, structuralUnitCount: 1, issues: [], checkedAt: "" } };
             currentFiles = [
               { filename: "项目开发设计文档.docx", size: 1000, mtime: 1000 },
               { filename: "formal-prd-qa-report.md", size: 50, mtime: 1000 },
@@ -185,14 +185,14 @@ describe("ExportCenter review gates", () => {
       qaStatus: "failed",
       qaReport: {
         passed: false,
-        pageCount: 2,
-        issues: [{ code: "missing_cjk_text", message: "第 2 页中文缺失", page: 2 }],
-        renderedAt: "",
+        structuralUnitCount: 1,
+        issues: [{ code: "missing_cjk_text", message: "正式 PRD 正文未检出中文字符" }],
+        checkedAt: "",
       },
       updatedAt: "",
     };
     render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={[]} />);
-    expect(await screen.findByText(/第 2 页中文缺失/)).toBeInTheDocument();
+    expect(await screen.findByText(/未检出中文字符/)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /下载/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /重新生成正式正文/ })).toBeInTheDocument();
   });
@@ -204,7 +204,7 @@ describe("ExportCenter review gates", () => {
       draftDigest: "dr-d",
       draftApprovedDigest: "dr-d",
       qaStatus: "failed",
-      qaReport: { passed: false, pageCount: 1, issues: [{ code: "empty_page", message: "空白页" }], renderedAt: "" },
+      qaReport: { passed: false, structuralUnitCount: 0, issues: [{ code: "empty_document", message: "未提取到正文文本" }], checkedAt: "" },
       updatedAt: "",
     };
     render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={[]} />);
@@ -222,7 +222,7 @@ describe("ExportCenter review gates", () => {
       draftDigest: "dr-d",
       draftApprovedDigest: "dr-d",
       qaStatus: "passed",
-      qaReport: { passed: true, pageCount: 1, issues: [], renderedAt: "" },
+      qaReport: { passed: true, structuralUnitCount: 1, issues: [], checkedAt: "" },
       updatedAt: "",
     };
     currentFiles = [
@@ -237,14 +237,14 @@ describe("ExportCenter review gates", () => {
     );
   });
 
-  it("hides the composer once QA passes (no model picker, no revision box at done)", async () => {
+  it("offers re-generate Word after QA passes without requiring a model picker for revision", async () => {
     currentStage = {
       blueprintDigest: "bp-d",
       blueprintApprovedDigest: "bp-d",
       draftDigest: "dr-d",
       draftApprovedDigest: "dr-d",
       qaStatus: "passed",
-      qaReport: { passed: true, pageCount: 1, issues: [], renderedAt: "" },
+      qaReport: { passed: true, structuralUnitCount: 1, issues: [], checkedAt: "" },
       updatedAt: "",
     };
     currentFiles = [
@@ -253,8 +253,30 @@ describe("ExportCenter review gates", () => {
     ];
     render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
     await screen.findByRole("link", { name: /下载/ });
-    expect(screen.queryByRole("button", { name: /模型/ })).not.toBeInTheDocument();
+    // Done still allows re-finalize; model picker is optional (not required for finalize).
+    expect(screen.getByRole("button", { name: /重新生成正式 Word/ })).toBeInTheDocument();
+    // Revision box only appears when an editable md is selected; default selection is docx.
     expect(screen.queryByRole("textbox", { name: "Agent 修订指令" })).not.toBeInTheDocument();
+  });
+
+  it("re-finalizes without re-approving when draft is already approved", async () => {
+    currentStage = {
+      blueprintDigest: "bp-d",
+      blueprintApprovedDigest: "bp-d",
+      draftDigest: "dr-d",
+      draftApprovedDigest: "dr-d",
+      qaStatus: "passed",
+      qaReport: { passed: true, structuralUnitCount: 1, issues: [], checkedAt: "" },
+      updatedAt: "",
+    };
+    currentFiles = [
+      { filename: "项目开发设计文档.docx", size: 1000, mtime: 1000 },
+      { filename: "formal-prd-qa-report.md", size: 50, mtime: 1000 },
+    ];
+    render(<ExportCenter projectId="p" projectName="测试项目" initialFiles={currentFiles} />);
+    await userEvent.click(await screen.findByRole("button", { name: /重新生成正式 Word/ }));
+    await waitFor(() => expect(posts.some((p) => p.operation === "finalize")).toBe(true));
+    expect(posts.some((p) => p.operation === "approve_draft")).toBe(false);
   });
 
   it("lists all export filenames in the sidebar", async () => {

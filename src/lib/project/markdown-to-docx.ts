@@ -3,6 +3,7 @@ import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import {
   AlignmentType,
+  Bookmark,
   BorderStyle,
   ExternalHyperlink,
   HeadingLevel,
@@ -137,8 +138,8 @@ export function renderInline(
   return out;
 }
 
-/** 收集行内节点数组的纯文本（用于链接显示文本等）。 */
-function collectText(inlines: MdastInline[]): string {
+/** 收集行内节点数组的纯文本（用于链接显示文本、目录条目等）。 */
+export function collectText(inlines: MdastInline[]): string {
   let s = "";
   for (const n of inlines) {
     switch (n.type) {
@@ -162,6 +163,39 @@ function collectText(inlines: MdastInline[]): string {
   return s;
 }
 
+/** One auto-generated table-of-contents entry (docx Heading level 1–3). */
+export type TocHeadingEntry = {
+  title: string;
+  /** Word TOC level: 1 = H1, 2 = H2, 3 = H3. */
+  level: number;
+  bookmarkId: string;
+};
+
+/**
+ * Walk mdast blocks and collect H1–H3 after `headingOffset` (same mapping as
+ * `renderBlock`). Used to prefill a visible TOC and attach matching bookmarks.
+ */
+export function collectTocHeadings(
+  blocks: MdastBlock[],
+  headingOffset = 0,
+  maxLevel = 3,
+): TocHeadingEntry[] {
+  const entries: TocHeadingEntry[] = [];
+  for (const block of blocks) {
+    if (block.type !== "heading") continue;
+    const level = block.depth - headingOffset;
+    if (level < 1 || level > maxLevel) continue;
+    const title = collectText(block.children).trim();
+    if (!title) continue;
+    entries.push({
+      title,
+      level,
+      bookmarkId: `toc-${entries.length + 1}`,
+    });
+  }
+  return entries;
+}
+
 // 后续 Task 实现：renderBlock / renderMdastBody / renderTable 等。
 
 // ---- 块 ----
@@ -178,6 +212,12 @@ export type RenderBlockOptions = {
    * draft), and tables get exact geometry + a prose-stuffing lint check.
    */
   formal?: boolean;
+  /**
+   * Optional bookmark id for a heading. Return a stable id so TOC hyperlinks
+   * can jump to the same paragraph. Called only for headings that map to a
+   * HeadingLevel style (depth − offset ∈ 1..6).
+   */
+  headingBookmarkId?: (depth: number, title: string) => string | undefined;
 };
 
 const HEADING_LEVELS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingLevel]> = {
@@ -199,6 +239,16 @@ export function renderBlock(node: MdastBlock, opts: RenderBlockOptions = {}): Do
       if (!level) {
         // 超界（remark 不会产生 depth>6，防御性回落）：粗体普通段落
         return [new Paragraph({ children: renderInline(node.children, { bold: true }, opts.font) })];
+      }
+      const title = collectText(node.children);
+      const bookmarkId = opts.headingBookmarkId?.(node.depth, title);
+      if (bookmarkId) {
+        return [
+          new Paragraph({
+            heading: level,
+            children: [new Bookmark({ id: bookmarkId, children })],
+          }),
+        ];
       }
       return [new Paragraph({ heading: level, children })];
     }
@@ -266,23 +316,25 @@ function renderCodeBlock(node: Extract<MdastBlock, { type: "code" }>): Paragraph
 }
 
 /**
- * Formal PRD flow diagram: exactly one line of 2–6 labels separated by `->`,
- * rendered as a horizontal SVG with rounded nodes and arrows, embedded via an
- * SVG ImageRun. The SVG carries a `data:image/svg+xml` marker comment so the
- * embedded artifact is self-identifying; arbitrary multi-line or out-of-range
- * flow blocks are rejected (they are not a diagram).
+ * Formal PRD flow diagram: exactly one line of 2–6 labels separated by `->`
+ * (ASCII) or common Unicode arrows (`→` / `⇒` / `➜` / `➞`) that Chinese drafts
+ * often emit. Rendered as a horizontal SVG with rounded nodes and arrows,
+ * embedded via an SVG ImageRun. The SVG carries a `data:image/svg+xml` marker
+ * comment so the embedded artifact is self-identifying; arbitrary multi-line
+ * or out-of-range flow blocks are rejected (they are not a diagram).
  */
 function renderFlowDiagram(value: string): Paragraph {
   const trimmed = value.trim();
   if (trimmed.includes("\n")) {
-    throw new Error("flow 代码块只能是一行 2–6 个以 -> 分隔的节点");
+    throw new Error("flow 代码块只能是一行 2–6 个以 -> 或 → 分隔的节点");
   }
+  // Prefer multi-char ASCII first so "A-->B" still splits on "->".
   const labels = trimmed
-    .split("->")
+    .split(/\s*(?:->|→|⇒|➜|➞)\s*/)
     .map((segment) => segment.trim())
     .filter((segment) => segment.length > 0);
   if (labels.length < 2 || labels.length > 6) {
-    throw new Error("flow 代码块只能是一行 2–6 个以 -> 分隔的节点");
+    throw new Error("flow 代码块只能是一行 2–6 个以 -> 或 → 分隔的节点");
   }
 
   const nodeW = 130;

@@ -110,13 +110,38 @@ describe("buildFormalPrdDocument", () => {
     expect(serialized).toContain("eastAsia");
   });
 
+  it("prefills a visible TOC with chapter titles and heading outline levels", () => {
+    const doc = buildFormalPrdDocument(
+      project,
+      "## 执行摘要\n\n已确认。\n\n## 用户与场景\n\n### 角色\n\n终端用户。",
+    );
+    const serialized = xml(doc);
+    // Prefetched TOC entries (not an empty TOC field placeholder)
+    expect(serialized).toContain("执行摘要");
+    expect(serialized).toContain("用户与场景");
+    expect(serialized).toContain("角色");
+    // Word will refresh page numbers on open
+    expect(serialized).toContain("updateFields");
+    // Heading styles carry outline level (docx serializes as outlineLvl)
+    expect(serialized).toContain("outlineLvl");
+    // Bookmarks for hyperlink navigation
+    expect(serialized).toContain("toc-");
+    // 修订记录 sits before body chapters
+    expect(serialized).toContain("修订记录");
+    // TOC title is present
+    expect(serialized).toContain("目录");
+  });
+
   it("omits optional cover metadata instead of rendering unresolved placeholders", () => {
     const doc = buildFormalPrdDocument(
       { ...project, customerName: "", authorName: "" },
       "## 执行摘要\n\n已确认结论。",
     );
+    const serialized = xml(doc);
 
-    expect(xml(doc)).not.toContain("未填写");
+    // Cover no longer prints “未填写” for empty customer/author
+    expect(serialized).not.toContain("客户名称：未填写");
+    expect(serialized).not.toContain("编制方：未填写");
   });
 
   it("renders a constrained flow block as a diagram image, not literal ASCII text", () => {
@@ -124,6 +149,16 @@ describe("buildFormalPrdDocument", () => {
     const serialized = xml(doc);
     expect(serialized).toContain("data:image/svg+xml");
     expect(serialized).not.toContain("报告解读 -> 健康评估");
+  });
+
+  it("accepts Chinese fullwidth arrows as flow separators", () => {
+    // Models frequently emit "→" in Chinese drafts; must not throw, and must
+    // still embed as an SVG diagram (labels live inside the SVG buffer).
+    const doc = buildFormalPrdDocument(
+      project,
+      "## 核心流程\n\n```flow\n首页 AI 医生对话页 → 医生选择 → 健康咨询 → 健康评估 → 调理方案\n```",
+    );
+    expect(xml(doc)).toContain("data:image/svg+xml");
   });
 
   it("rejects an invalid flow block (too few or too many labels)", () => {

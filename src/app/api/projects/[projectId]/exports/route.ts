@@ -392,13 +392,17 @@ export async function POST(request: Request, context: { params: Promise<{ projec
     const result = await finalizeFormalPrdExport(store, projectId);
     if (result.status === 422) {
       return NextResponse.json(
-        { error: "渲染质检未通过，请查看质检报告后调整正文再重新生成", stage: result.stage, qaReport: result.qaReport },
+        { error: "DOCX 结构与内容校验未通过，请查看校验报告后调整正文再重新生成", stage: result.stage, qaReport: result.qaReport },
         { status: 422 },
       );
     }
     return NextResponse.json({ stage: result.stage, qaReport: result.qaReport });
   } catch (err) {
     console.error("[exports] finalize failed:", err);
-    return NextResponse.json({ error: "正式 Word 生成失败,请重试" }, { status: 500 });
+    // Surface content-validation messages (flow / table lint, digest mismatch)
+    // so the export center can show a fixable reason instead of a bare retry.
+    const message =
+      err instanceof Error && err.message.trim() ? err.message : "正式 Word 生成失败,请重试";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

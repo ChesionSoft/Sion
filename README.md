@@ -47,7 +47,7 @@
 | **浏览器搜索** | 通过本地安全代理配置并使用浏览器搜索能力，不需要第三方搜索 API Key。 |
 | **Markdown 交付稿** | 每个节点都可编辑、预览和保存 Markdown 内容。 |
 | **Agent 规则覆盖** | 默认规则只读；项目内可复制并保存自定义规则。 |
-| **分阶段导出中心** | 审阅导出蓝图与正式正文，经过服务端渲染质检后才提供正式 Word。 |
+| **分阶段导出中心** | 审阅导出蓝图与正式正文，经过服务端 DOCX 结构与内容校验后才提供正式 Word。 |
 
 ## 快速开始
 
@@ -129,8 +129,8 @@ https://api.example.com
 
 1. 选择模型，生成并审阅 `export-blueprint.md`（对外内容选材）。
 2. 确认蓝图后，生成并审阅 `formal-prd-draft.md`（正式正文）。
-3. 确认正文后，生成 Word；服务端用 LibreOffice/Poppler 做渲染质检。
-4. 仅当质检通过，`项目开发设计文档.docx` 才可下载；失败时查看 `formal-prd-qa-report.md` 并重新生成正文。
+3. 确认正文后，生成 Word；服务端做 DOCX 结构与内容校验（纯 Node，无需 LibreOffice/Poppler）。
+4. 仅当校验通过，`项目开发设计文档.docx` 才可下载；失败时查看 `formal-prd-qa-report.md` 并重新生成正文。
 
 项目导出目录可能包含：
 
@@ -138,9 +138,9 @@ https://api.example.com
 |------|------|
 | `export-blueprint.md` | 正式 PRD 的章节、来源和纳入策略，供用户审阅。 |
 | `formal-prd-draft.md` | 已按蓝图整理的对外正式正文，供用户审阅。 |
-| `formal-prd-qa-report.md` | DOCX 渲染质检报告；未通过时 Word 不可下载。 |
+| `formal-prd-qa-report.md` | DOCX 结构与内容校验报告；未通过时 Word 不可下载。 |
 | `PROJECT_DESIGN.md` | 汇总后的项目设计 Markdown。 |
-| `项目开发设计文档.docx` | 通过当前渲染质检后的正式 Word 交付文档。 |
+| `项目开发设计文档.docx` | 通过当前结构与内容校验后的正式 Word 交付文档。 |
 | `SPEC.md` | 适合 AI 开发工具读取的需求与设计上下文。 |
 | `TASKS.md` | 开发任务拆分。 |
 | `AGENTS.md` | 面向 AI coding agent 的项目规则上下文。 |

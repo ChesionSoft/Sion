@@ -36,7 +36,7 @@ export type ExportStageState = {
   draftDigest?: string;
   draftApprovedDigest?: string;
   qaStatus?: "passed" | "failed";
-  /** Last render-QA report, so the UI can show why finalization blocked. */
+  /** Last DOCX structural-QA report, so the UI can show why finalization blocked. */
   qaReport?: DocxQaReport;
   updatedAt: string;
 };
@@ -249,8 +249,9 @@ export async function approveDraftArtifact(
 
 /**
  * Finalization dependencies. Both are injectable so the staged approval flow
- * can be unit-tested without invoking LibreOffice. Defaults build the formal
- * DOCX from the approved draft and run the real server-side render QA.
+ * can be unit-tested without invoking the real server-side DOCX structural QA.
+ * Defaults build the formal DOCX from the approved draft and run the real
+ * pure-Node structural QA (no LibreOffice / Poppler).
  */
 export type FinalizeDeps = {
   buildDocx?: (project: Project, draftMarkdown: string) => Promise<Buffer>;
@@ -265,10 +266,10 @@ export type FinalizeResult = {
 
 /**
  * Finalize the formal PRD: build the formal Word document from the approved
- * draft, render it through LibreOffice QA, and only retain the DOCX when QA
- * passes. On failure the DOCX is removed and a 422 result (with the persisted
- * QA report) is returned. Requires `canFinalize(state)`; the route enforces
- * the 409 gate, this function guards again defensively.
+ * draft, validate it through server-side DOCX structural QA, and only retain
+ * the DOCX when QA passes. On failure the DOCX is removed and a 422 result
+ * (with the persisted QA report) is returned. Requires `canFinalize(state)`;
+ * the route enforces the 409 gate, this function guards again defensively.
  */
 export async function finalizeFormalPrdExport(
   store: ProjectStore,
@@ -327,11 +328,11 @@ async function defaultBuildDocx(project: Project, draftMarkdown: string): Promis
 
 function renderQaReportMarkdown(report: DocxQaReport): string {
   const lines = [
-    "# 正式 PRD 渲染质检报告",
+    "# 正式 PRD DOCX 结构与内容校验报告",
     "",
     `- 通过：${report.passed ? "是" : "否"}`,
-    `- 渲染时间：${report.renderedAt}`,
-    `- 页数：${report.pageCount}`,
+    `- 校验时间：${report.checkedAt}`,
+    `- 结构单元数（标题数）：${report.structuralUnitCount}`,
     "",
   ];
   if (report.issues.length === 0) {
@@ -339,8 +340,7 @@ function renderQaReportMarkdown(report: DocxQaReport): string {
   } else {
     lines.push("## 问题");
     for (const issue of report.issues) {
-      const page = issue.page ? `（第 ${issue.page} 页）` : "";
-      lines.push(`- [${issue.code}]${page} ${issue.message}`);
+      lines.push(`- [${issue.code}] ${issue.message}`);
     }
   }
   return `${lines.join("\n")}\n`;
