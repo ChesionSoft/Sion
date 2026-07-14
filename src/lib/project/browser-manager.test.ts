@@ -314,6 +314,49 @@ describe("BrowserManager/withPersistentContext", () => {
     );
     await mgr.withPersistentContext(async () => "ok");
   });
+
+  it("queues profile maintenance behind an active persistent context", async () => {
+    let releaseWork!: () => void;
+    let markWorkStarted!: () => void;
+    const workStarted = new Promise<void>((resolve) => {
+      markWorkStarted = resolve;
+    });
+    const workGate = new Promise<void>((resolve) => {
+      releaseWork = resolve;
+    });
+    const removed: string[] = [];
+    const ctx = fakeContext();
+    const mgr = new BrowserManager(
+      makeDeps({
+        fs: {
+          exists: vi.fn(async () => false),
+          remove: vi.fn(async (target: string) => {
+            removed.push(target);
+          }),
+        },
+        playwright: {
+          chromium: {
+            launchPersistentContext: vi.fn(async () => ctx),
+            executablePath: () => "x",
+          },
+        },
+      }),
+    );
+
+    const activeContext = mgr.withPersistentContext(async () => {
+      markWorkStarted();
+      await workGate;
+    });
+    await workStarted;
+    const clear = mgr.clearProfile();
+    const remove = mgr.removeManagedChromium();
+    await Promise.resolve();
+    expect(removed).toEqual([]);
+
+    releaseWork();
+    await Promise.all([activeContext, clear, remove]);
+    expect(removed).toEqual([mgr.profileDir(), mgr.managedChromiumDir()]);
+  });
 });
 
 describe("BrowserManager/managed mutations", () => {

@@ -337,19 +337,25 @@ export class BrowserManager {
    * Raw child output is never surfaced to callers.
    */
   async installManagedChromium(): Promise<void> {
-    await this.deps.runInstall({
-      env: { ...this.deps.env, PLAYWRIGHT_BROWSERS_PATH: this.managedChromiumDir() },
+    await this.enqueueExclusive(async () => {
+      await this.deps.runInstall({
+        env: { ...this.deps.env, PLAYWRIGHT_BROWSERS_PATH: this.managedChromiumDir() },
+      });
     });
   }
 
   /** Remove only Sion's managed Chromium directory, never a personal browser. */
   async removeManagedChromium(): Promise<void> {
-    await this.deps.fs.remove(this.managedChromiumDir());
+    await this.enqueueExclusive(async () => {
+      await this.deps.fs.remove(this.managedChromiumDir());
+    });
   }
 
   /** Clear only Sion's own profile directory. */
   async clearProfile(): Promise<void> {
-    await this.deps.fs.remove(this.profileDir());
+    await this.enqueueExclusive(async () => {
+      await this.deps.fs.remove(this.profileDir());
+    });
   }
 
   /**
@@ -395,7 +401,7 @@ export class BrowserManager {
     if (!this.deps.playwright) {
       throw new BrowserLaunchError("browser_launch_failed", "浏览器运行时不可用");
     }
-    const run = this.mutex.then(async () => {
+    return this.enqueueExclusive(async () => {
       // Start the safe egress proxy first; a startup failure prevents launch.
       const proxy = this.deps.proxyFactory();
       let proxyHandle: EgressProxyHandle;
@@ -430,8 +436,22 @@ export class BrowserManager {
         await proxyHandle.close().catch(() => {});
       }
     });
+  }
+
+  /**
+   * Serialize work against the shared browser/profile state. Every caller that
+   * touches the persistent profile - launches, installs, removals, clears - goes
+   * through this FIFO queue so a destructive maintenance op can never race an
+   * active context. `getStatus` intentionally stays off the queue.
+   *
+   * NOTE: this mutex is process-local only. It cannot coordinate separate Node
+   * processes that share the same on-disk profile directory; that is acceptable
+   * for this local-first single-server deployment.
+   */
+  private enqueueExclusive<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.mutex.then(work, work);
     this.mutex = run.catch(() => {});
-    return run as Promise<T>;
+    return run;
   }
 }
 
