@@ -7,8 +7,9 @@ mod streaming;
 
 use serde::{Deserialize, Serialize};
 use sion_core::{NodeStatus, ProjectManifest, WorkflowNode, WorkflowNodeId};
-use sion_storage::{CreateProjectInput, ProjectStore, SaveNodeResult};
+use sion_storage::{CreateProjectInput, ProjectRegistry, ProjectStore, SaveNodeResult};
 use std::path::Path;
+use tauri::Manager;
 
 const API_VERSION: u16 = 1;
 
@@ -99,7 +100,7 @@ struct ProjectCreateRequest {
 struct ProjectNodeRequest {
     #[serde(flatten)]
     version: VersionedRequest,
-    project_root: String,
+    project_id: String,
     node_id: WorkflowNodeId,
 }
 
@@ -108,7 +109,7 @@ struct ProjectNodeRequest {
 struct ProjectSaveNodeRequest {
     #[serde(flatten)]
     version: VersionedRequest,
-    project_root: String,
+    project_id: String,
     node_id: WorkflowNodeId,
     expected_revision: u64,
     markdown: String,
@@ -249,9 +250,11 @@ fn provider_migration_run(
 #[tauri::command]
 fn project_create(
     request: ProjectCreateRequest,
+    app: tauri::AppHandle,
 ) -> Result<VersionedResponse<ProjectManifest>, ApiError> {
     assert_api_version(&request.version)?;
-    let manifest = ProjectStore::at(request.project_root)
+    let project_root = Path::new(&request.project_root).to_path_buf();
+    let manifest = ProjectStore::at(&project_root)
         .create(CreateProjectInput {
             id: request.id,
             name: request.name,
@@ -259,6 +262,13 @@ fn project_create(
             author_name: request.author_name,
             now: request.now,
         })
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let app_data_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| ApiError::CheckFailed(format!("cannot determine app data directory: {error}")))?;
+    ProjectRegistry::at(app_data_root)
+        .register(&manifest, project_root, manifest.updated_at.clone())
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
@@ -269,9 +279,11 @@ fn project_create(
 #[tauri::command]
 fn project_get_node(
     request: ProjectNodeRequest,
+    app: tauri::AppHandle,
 ) -> Result<VersionedResponse<WorkflowNode>, ApiError> {
     assert_api_version(&request.version)?;
-    let node = ProjectStore::at(request.project_root)
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let node = ProjectStore::at(project_root)
         .node(request.node_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     Ok(VersionedResponse {
@@ -283,9 +295,11 @@ fn project_get_node(
 #[tauri::command]
 fn project_save_node(
     request: ProjectSaveNodeRequest,
+    app: tauri::AppHandle,
 ) -> Result<VersionedResponse<SaveNodeResult>, ApiError> {
     assert_api_version(&request.version)?;
-    let result = ProjectStore::at(request.project_root)
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let result = ProjectStore::at(project_root)
         .save_node_if_revision(
             request.node_id,
             request.expected_revision,
@@ -298,6 +312,19 @@ fn project_save_node(
         api_version: API_VERSION,
         payload: result,
     })
+}
+
+fn resolve_registered_project_root(
+    app: &tauri::AppHandle,
+    project_id: &str,
+) -> Result<std::path::PathBuf, ApiError> {
+    let app_data_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| ApiError::CheckFailed(format!("cannot determine app data directory: {error}")))?;
+    ProjectRegistry::at(app_data_root)
+        .resolve(project_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))
 }
 
 pub fn run() {

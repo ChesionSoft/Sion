@@ -20,6 +20,8 @@ pub enum StorageError {
     AlreadyInitialized,
     #[error("project does not contain .sion")]
     NotInitialized,
+    #[error("project {0} is not registered")]
+    NotRegistered(String),
     #[error("project uses schema {found}, but this app supports up to {supported}")]
     UnsupportedSchema { found: u32, supported: u32 },
     #[error("project JSON is invalid at {path}: {source}")]
@@ -55,6 +57,67 @@ pub enum SaveNodeResult {
 #[derive(Debug, Clone)]
 pub struct ProjectStore {
     project_root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentProject {
+    pub id: String,
+    pub name: String,
+    pub root_path: PathBuf,
+    pub opened_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectRegistry {
+    app_data_root: PathBuf,
+}
+
+impl ProjectRegistry {
+    pub fn at(app_data_root: impl Into<PathBuf>) -> Self {
+        Self {
+            app_data_root: app_data_root.into(),
+        }
+    }
+
+    pub fn list(&self) -> Result<Vec<RecentProject>> {
+        let path = self.file_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        read_json(&path)
+    }
+
+    pub fn register(
+        &self,
+        manifest: &ProjectManifest,
+        root_path: PathBuf,
+        opened_at: String,
+    ) -> Result<()> {
+        let mut projects = self.list()?;
+        projects.retain(|project| project.id != manifest.id);
+        projects.push(RecentProject {
+            id: manifest.id.clone(),
+            name: manifest.name.clone(),
+            root_path,
+            opened_at,
+        });
+        projects.sort_by(|left, right| right.opened_at.cmp(&left.opened_at));
+        projects.truncate(20);
+        atomic_write_json(&self.file_path(), &projects)
+    }
+
+    pub fn resolve(&self, project_id: &str) -> Result<PathBuf> {
+        self.list()?
+            .into_iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.root_path)
+            .ok_or_else(|| StorageError::NotRegistered(project_id.to_string()))
+    }
+
+    fn file_path(&self) -> PathBuf {
+        self.app_data_root.join("registry.json")
+    }
 }
 
 impl ProjectStore {
@@ -317,6 +380,36 @@ mod tests {
             store.node(WorkflowNodeId::Goals),
             Err(StorageError::UnsupportedSchema { .. })
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_persists_recent_projects_without_storing_project_contents() {
+        let root = temp_project();
+        let registry = ProjectRegistry::at(&root);
+        let manifest = ProjectManifest {
+            schema_version: PROJECT_SCHEMA_VERSION,
+            id: "project-1".to_string(),
+            name: "项目一".to_string(),
+            customer_name: "客户".to_string(),
+            author_name: "作者".to_string(),
+            version: "V1.0".to_string(),
+            created_at: "2026-07-15T00:00:00.000Z".to_string(),
+            updated_at: "2026-07-15T00:00:00.000Z".to_string(),
+        };
+        let project_root = PathBuf::from("/Users/test/Documents/Sion/项目一");
+        registry
+            .register(
+                &manifest,
+                project_root.clone(),
+                "2026-07-15T00:02:00.000Z".to_string(),
+            )
+            .unwrap();
+
+        assert_eq!(registry.resolve("project-1").unwrap(), project_root);
+        let raw = fs::read_to_string(root.join("registry.json")).unwrap();
+        assert!(!raw.contains("customerName"));
+        assert!(!raw.contains("authorName"));
         fs::remove_dir_all(root).unwrap();
     }
 }
