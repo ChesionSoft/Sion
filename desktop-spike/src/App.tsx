@@ -47,6 +47,7 @@ type AgentFinishedEvent = { run: AgentRun };
 type MigrationWorkspaceResponse = { apiVersion: number; selected: boolean; legacyRoot?: string; projectIds: string[] };
 type MigrationResult = { apiVersion: number; report: { migratedNodes: number; migratedSessions: number; migratedFiles: number; skippedFeatures: string[] }; project: ProjectManifest };
 type ProviderMigrationResult = { apiVersion: number; migratedProviders: number };
+type ProjectExportResponse = { apiVersion: number; exported: boolean; path?: string };
 
 const statusLabel: Record<NodeStatus, string> = {
   not_started: "未开始",
@@ -91,6 +92,7 @@ export function App() {
   const [legacyProjectId, setLegacyProjectId] = useState("");
   const [migrating, setMigrating] = useState(false);
   const [migratingProviders, setMigratingProviders] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
@@ -417,6 +419,20 @@ export function App() {
     }
   }
 
+  async function exportDocx() {
+    if (!project) return;
+    setExporting(true);
+    setNotice("请选择 DOCX 保存位置");
+    try {
+      const response = await invoke<ProjectExportResponse>("project_export_docx", { request: { apiVersion: API_VERSION, projectId: project.id } });
+      setNotice(response.exported ? `DOCX 已导出到 ${response.path}` : "已取消 DOCX 导出");
+    } catch (error) {
+      setNotice(`DOCX 导出失败：${String(error)}`);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function loadFiles(projectId: string) {
     try {
       const response = await invoke<FileListResponse>("file_list", {
@@ -487,7 +503,7 @@ export function App() {
 
   return (
     <main className="desk-shell workbench-shell">
-      <header className="workbench-bar"><button className="wordmark" onClick={() => setProject(null)} type="button">SION<span>DESKTOP</span></button><div className="project-heading"><span>项目 / {project.name}</span><strong>{nodeTitle}</strong></div><div className="save-state"><span className={dirty ? "dirty-dot" : "clean-dot"} />{dirty ? "有未保存修改" : "已同步本地磁盘"}<button className="save-button" disabled={!dirty || saving} onClick={() => void saveNode()} type="button">{saving ? "保存中" : "保存"} <b>⌘S</b></button></div></header>
+      <header className="workbench-bar"><button className="wordmark" onClick={() => setProject(null)} type="button">SION<span>DESKTOP</span></button><div className="project-heading"><span>项目 / {project.name}</span><strong>{nodeTitle}</strong></div><div className="save-state"><span className={dirty ? "dirty-dot" : "clean-dot"} />{dirty ? "有未保存修改" : "已同步本地磁盘"}<button className="export-button" disabled={exporting} onClick={() => void exportDocx()} type="button">{exporting ? "导出中" : "DOCX"}</button><button className="save-button" disabled={!dirty || saving} onClick={() => void saveNode()} type="button">{saving ? "保存中" : "保存"} <b>⌘S</b></button></div></header>
       <div className="workbench-grid">
         <aside className="node-rail"><div className="rail-title"><span>设计路径</span><b>12</b></div>{NODES.map(([id, title], index) => <button className={id === nodeId ? "node-item selected" : "node-item"} key={id} onClick={() => setNodeId(id)} type="button"><span>{String(index + 1).padStart(2, "0")}</span><strong>{title}</strong><i>{id === nodeId ? "●" : ""}</i></button>)}<div className="rail-foot"><div className="file-head"><span>文件池 / {files.length}</span><button disabled={importingFile} onClick={() => void importFile()} type="button">{importingFile ? "导入中" : "+ 导入"}</button></div>{files.length === 0 ? <small>尚无项目文件</small> : files.slice(-3).map((file) => <span className="file-row" key={file.id}>{file.extractionStatus === "available" ? "◼" : "◇"} {file.originalName}</span>)}</div></aside>
         <section className="editor-pane"><div className="editor-head"><div><p className="panel-kicker">NODE / {nodeId.toUpperCase()}</p><h1>{nodeTitle}</h1></div><span className={`node-status status-${node?.status ?? "not_started"}`}>{node ? statusLabel[node.status] : "读取中"}</span></div><textarea aria-label={`${nodeTitle} Markdown 编辑器`} disabled={!node} onChange={(event) => setDraft(event.target.value)} spellCheck={false} value={draft} /><div className="editor-foot"><span>Markdown · revision {node?.revision ?? "—"}</span><span>{draft.length.toLocaleString()} 字符</span></div></section>

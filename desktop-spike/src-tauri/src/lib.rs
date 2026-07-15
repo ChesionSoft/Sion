@@ -1,6 +1,7 @@
 mod docx_check;
 mod keyring_check;
 mod migration;
+mod project_export;
 mod provider_migration;
 mod provider_settings;
 #[allow(dead_code)]
@@ -284,6 +285,21 @@ struct ProjectSaveNodeRequest {
     markdown: String,
     status: NodeStatus,
     now: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectExportRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectExportResult {
+    exported: bool,
+    path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -872,6 +888,50 @@ fn project_save_node(
 }
 
 #[tauri::command]
+fn project_export_docx(
+    request: ProjectExportRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ProjectExportResult>, ApiError> {
+    assert_api_version(&request.version)?;
+    let Some(target) = app.dialog().file().blocking_save_file() else {
+        return Ok(VersionedResponse {
+            api_version: API_VERSION,
+            payload: ProjectExportResult {
+                exported: false,
+                path: None,
+            },
+        });
+    };
+    let target = target.into_path().map_err(|error| {
+        ApiError::CheckFailed(format!("selected export path is not a local path: {error}"))
+    })?;
+    let target = if target
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("docx"))
+    {
+        target
+    } else {
+        target.with_extension("docx")
+    };
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(project_root);
+    let manifest = store
+        .manifest()
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let nodes = store
+        .list_nodes()
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    project_export::write_docx(&target, &manifest, &nodes).map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: ProjectExportResult {
+            exported: true,
+            path: Some(target.to_string_lossy().into_owned()),
+        },
+    })
+}
+
+#[tauri::command]
 fn session_list(
     request: SessionListRequest,
     app: tauri::AppHandle,
@@ -1203,6 +1263,7 @@ pub fn run() {
             project_list,
             project_get_node,
             project_save_node,
+            project_export_docx,
             session_list,
             session_create,
             message_list,
