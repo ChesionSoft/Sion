@@ -36,6 +36,10 @@ type SessionListResponse = { apiVersion: number; sessions: ChatSession[] };
 type MessageListResponse = { apiVersion: number; messages: ChatMessage[] };
 type FileListResponse = { apiVersion: number; files: ProjectFile[] };
 type FileImportResponse = { apiVersion: number; imported: boolean; file?: ProjectFile };
+type ProviderModel = { name: string; isDefault: boolean; toolCalling: boolean };
+type Provider = { id: string; name: string; apiBaseUrl: string; apiUrlMode: "base" | "full"; protocol: "chat_completions" | "openai_responses"; models: ProviderModel[]; isDefault: boolean; hasApiKey: boolean };
+type ProviderListResponse = { apiVersion: number; providers: Provider[] };
+type ProviderSaveResponse = { apiVersion: number } & Provider;
 
 const statusLabel: Record<NodeStatus, string> = {
   not_started: "未开始",
@@ -67,12 +71,19 @@ export function App() {
   const [sendingMessage, setSendingMessage] = useState(false);
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [importingFile, setImportingFile] = useState(false);
+  const [providers, setProviders] = useState<Provider[]>([]);
+  const [providerName, setProviderName] = useState("");
+  const [providerUrl, setProviderUrl] = useState("https://api.openai.com/v1");
+  const [providerModel, setProviderModel] = useState("");
+  const [providerKey, setProviderKey] = useState("");
+  const [providerProtocol, setProviderProtocol] = useState<Provider["protocol"]>("chat_completions");
+  const [savingProvider, setSavingProvider] = useState(false);
 
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
 
   useEffect(() => {
-    void Promise.all([loadVersion(), loadProjects()]);
+    void Promise.all([loadVersion(), loadProjects(), loadProviders()]);
   }, []);
 
   useEffect(() => {
@@ -80,15 +91,15 @@ export function App() {
       void loadNode(project.id, nodeId);
       void loadSessions(project.id, nodeId);
     }
-  }, [project?.id, nodeId]);
+  }, [project, nodeId]);
 
   useEffect(() => {
     if (project) void loadFiles(project.id);
-  }, [project?.id]);
+  }, [project]);
 
   useEffect(() => {
     if (project && sessionId) void loadMessages(project.id, nodeId, sessionId);
-  }, [project?.id, nodeId, sessionId]);
+  }, [project, nodeId, sessionId]);
 
   async function loadVersion() {
     try {
@@ -105,6 +116,52 @@ export function App() {
       setProjects(response.projects);
     } catch (error) {
       setNotice(`读取项目注册表失败：${String(error)}`);
+    }
+  }
+
+  async function loadProviders() {
+    try {
+      const response = await invoke<ProviderListResponse>("provider_list", { request: { apiVersion: API_VERSION } });
+      setProviders(response.providers);
+    } catch (error) {
+      setNotice(`读取模型配置失败：${String(error)}`);
+    }
+  }
+
+  async function saveProvider() {
+    const name = providerName.trim();
+    const model = providerModel.trim();
+    if (!name || !model || !providerKey.trim()) {
+      setNotice("请填写提供商名称、模型名称和 API Key");
+      return;
+    }
+    setSavingProvider(true);
+    try {
+      const response = await invoke<ProviderSaveResponse>("provider_save", {
+        request: {
+          apiVersion: API_VERSION,
+          id: crypto.randomUUID(), name, apiBaseUrl: providerUrl.trim(), apiUrlMode: "base",
+          protocol: providerProtocol, models: [{ name: model, isDefault: true, toolCalling: false }],
+          isDefault: providers.length === 0, apiKey: providerKey, now: now(),
+        },
+      });
+      setProviders((current) => [...current.map((item) => ({ ...item, isDefault: false })), response]);
+      setProviderName(""); setProviderModel(""); setProviderKey("");
+      setNotice(`${response.name} 已保存；密钥仅保存在系统钥匙串`);
+    } catch (error) {
+      setNotice(`保存模型配置失败：${String(error)}`);
+    } finally {
+      setSavingProvider(false);
+    }
+  }
+
+  async function deleteProvider(provider: Provider) {
+    try {
+      await invoke("provider_delete", { request: { apiVersion: API_VERSION, providerId: provider.id } });
+      setProviders((current) => current.filter((item) => item.id !== provider.id));
+      setNotice(`${provider.name} 的配置和系统凭据已删除`);
+    } catch (error) {
+      setNotice(`删除模型配置失败：${String(error)}`);
     }
   }
 
@@ -303,6 +360,17 @@ export function App() {
           <section className="recent-projects" aria-label="最近项目"><div className="section-head"><p className="panel-kicker">最近打开</p><span>{projects.length.toString().padStart(2, "0")}</span></div>
             {projects.length === 0 ? <div className="empty-projects"><strong>还没有登记的项目</strong><span>创建项目或稍后从迁移向导导入旧项目。</span></div> : projects.map((item) => <button key={item.id} className="project-row" onClick={() => { setProject(item); setNodeId("basic-info"); }} type="button"><span className="project-dot" /><span><strong>{item.name}</strong><small>{item.rootPath}</small></span><b>↗</b></button>)}
           </section>
+        </section>
+        <section className="provider-settings">
+          <div className="provider-copy"><p className="panel-kicker">模型连接</p><h2>把密钥留给<br /><em>操作系统。</em></h2><p>配置元数据保存在应用目录；API Key 只写入 macOS Keychain 或 Windows Credential Manager，界面永不回显。</p></div>
+          <form className="provider-form" onSubmit={(event) => { event.preventDefault(); void saveProvider(); }}>
+            <label>提供商名称<input value={providerName} onChange={(event) => setProviderName(event.target.value)} placeholder="OpenAI" /></label>
+            <label>API Base URL<input value={providerUrl} onChange={(event) => setProviderUrl(event.target.value)} /></label>
+            <div className="provider-row"><label>协议<select value={providerProtocol} onChange={(event) => setProviderProtocol(event.target.value as Provider["protocol"])}><option value="chat_completions">Chat Completions</option><option value="openai_responses">Responses</option></select></label><label>默认模型<input value={providerModel} onChange={(event) => setProviderModel(event.target.value)} placeholder="gpt-5" /></label></div>
+            <label>API Key<input type="password" autoComplete="off" value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="仅写入系统凭据库" /></label>
+            <button className="provider-save" disabled={savingProvider} type="submit">{savingProvider ? "写入中…" : "保存安全配置"}<b>↗</b></button>
+          </form>
+          <div className="provider-list">{providers.length === 0 ? <p>尚未配置模型。当前工作台仍可离线编辑和保存。</p> : providers.map((provider) => <div className="provider-item" key={provider.id}><span><strong>{provider.name}</strong><small>{provider.models.map((model) => model.name).join(", ")} · {provider.protocol === "openai_responses" ? "Responses" : "Chat"}</small></span><i className={provider.hasApiKey ? "provider-ready" : "provider-missing"}>{provider.hasApiKey ? "已配置" : "缺少密钥"}</i><button onClick={() => void deleteProvider(provider)} type="button" aria-label={`删除 ${provider.name}`}>×</button></div>)}</div>
         </section>
         <footer><span>{notice}</span><span>RUST / {version?.rustTarget ?? "NEGOTIATING"}</span></footer>
       </main>

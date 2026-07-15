@@ -2,6 +2,7 @@ mod docx_check;
 mod keyring_check;
 mod migration;
 mod provider_migration;
+mod provider_settings;
 #[allow(dead_code)]
 mod streaming;
 
@@ -86,6 +87,36 @@ struct ProviderMigrationRunRequest {
     version: VersionedRequest,
     legacy_root: String,
     app_data_root: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderListRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderSaveRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    #[serde(flatten)]
+    provider: provider_settings::ProviderInput,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderDeleteRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    provider_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderList {
+    providers: Vec<provider_settings::ProviderSummary>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,6 +388,56 @@ fn provider_migration_run(
 }
 
 #[tauri::command]
+fn provider_list(
+    request: ProviderListRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ProviderList>, ApiError> {
+    assert_api_version(&request.version)?;
+    let app_data_root = app.path().app_data_dir().map_err(|error| {
+        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
+    })?;
+    let providers = provider_settings::list(&app_data_root).map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: ProviderList { providers },
+    })
+}
+
+#[tauri::command]
+fn provider_save(
+    request: ProviderSaveRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<provider_settings::ProviderSummary>, ApiError> {
+    assert_api_version(&request.version)?;
+    let app_data_root = app.path().app_data_dir().map_err(|error| {
+        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
+    })?;
+    let provider =
+        provider_settings::save(&app_data_root, request.provider).map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: provider,
+    })
+}
+
+#[tauri::command]
+fn provider_delete(
+    request: ProviderDeleteRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<()>, ApiError> {
+    assert_api_version(&request.version)?;
+    let app_data_root = app.path().app_data_dir().map_err(|error| {
+        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
+    })?;
+    provider_settings::delete(&app_data_root, &request.provider_id)
+        .map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: (),
+    })
+}
+
+#[tauri::command]
 fn project_create(
     request: ProjectCreateRequest,
     app: tauri::AppHandle,
@@ -595,6 +676,9 @@ pub fn run() {
             migration_run,
             provider_migration_inspect,
             provider_migration_run,
+            provider_list,
+            provider_save,
+            provider_delete,
             project_create,
             project_list,
             project_get_node,

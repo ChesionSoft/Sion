@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Desktop build output is checked by the desktop TypeScript/Rust commands.
+    "desktop-spike/dist/**",
+    "desktop-spike/src-tauri/target/**",
   ]),
 ]);
 

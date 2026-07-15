@@ -4166,6 +4166,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sion-agent"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sion-core",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "sion-core"
 version = "0.1.0"
 dependencies = [
@@ -4203,6 +4218,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sion-agent",
  "sion-core",
  "thiserror 2.0.18",
  "uuid",
