@@ -4,6 +4,7 @@ members = [
   "crates/sion-core",
   "crates/sion-storage",
 ]
+exclude = ["desktop-spike/src-tauri"]
 
 [workspace.package]
 edition = "2024"

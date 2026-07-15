@@ -4141,6 +4141,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sion-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sion-desktop-spike"
 version = "0.0.1"
 dependencies = [
@@ -4152,6 +4160,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sion-core",
+ "sion-storage",
  "tauri",
  "tauri-build",
  "thiserror 2.0.18",
@@ -4159,6 +4169,17 @@ dependencies = [
  "tokio-util",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "sion-storage"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sion-core",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]

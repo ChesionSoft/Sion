@@ -6,6 +6,8 @@ mod provider_migration;
 mod streaming;
 
 use serde::{Deserialize, Serialize};
+use sion_core::{NodeStatus, ProjectManifest, WorkflowNode, WorkflowNodeId};
+use sion_storage::{CreateProjectInput, ProjectStore, SaveNodeResult};
 use std::path::Path;
 
 const API_VERSION: u16 = 1;
@@ -77,6 +79,41 @@ struct ProviderMigrationRunRequest {
     version: VersionedRequest,
     legacy_root: String,
     app_data_root: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectCreateRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_root: String,
+    id: String,
+    name: String,
+    customer_name: String,
+    author_name: String,
+    now: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectNodeRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_root: String,
+    node_id: WorkflowNodeId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectSaveNodeRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_root: String,
+    node_id: WorkflowNodeId,
+    expected_revision: u64,
+    markdown: String,
+    status: NodeStatus,
+    now: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -209,6 +246,60 @@ fn provider_migration_run(
     })
 }
 
+#[tauri::command]
+fn project_create(
+    request: ProjectCreateRequest,
+) -> Result<VersionedResponse<ProjectManifest>, ApiError> {
+    assert_api_version(&request.version)?;
+    let manifest = ProjectStore::at(request.project_root)
+        .create(CreateProjectInput {
+            id: request.id,
+            name: request.name,
+            customer_name: request.customer_name,
+            author_name: request.author_name,
+            now: request.now,
+        })
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: manifest,
+    })
+}
+
+#[tauri::command]
+fn project_get_node(
+    request: ProjectNodeRequest,
+) -> Result<VersionedResponse<WorkflowNode>, ApiError> {
+    assert_api_version(&request.version)?;
+    let node = ProjectStore::at(request.project_root)
+        .node(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: node,
+    })
+}
+
+#[tauri::command]
+fn project_save_node(
+    request: ProjectSaveNodeRequest,
+) -> Result<VersionedResponse<SaveNodeResult>, ApiError> {
+    assert_api_version(&request.version)?;
+    let result = ProjectStore::at(request.project_root)
+        .save_node_if_revision(
+            request.node_id,
+            request.expected_revision,
+            request.markdown,
+            request.status,
+            request.now,
+        )
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: result,
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -218,7 +309,10 @@ pub fn run() {
             migration_inspect,
             migration_run,
             provider_migration_inspect,
-            provider_migration_run
+            provider_migration_run,
+            project_create,
+            project_get_node,
+            project_save_node
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Sion desktop spike");

@@ -45,7 +45,8 @@ pub struct CreateProjectInput {
     pub now: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SaveNodeResult {
     Saved(WorkflowNode),
     Conflict { latest: WorkflowNode },
