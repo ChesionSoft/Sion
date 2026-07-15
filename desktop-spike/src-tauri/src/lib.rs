@@ -4,8 +4,6 @@ mod migration;
 mod project_export;
 mod provider_migration;
 mod provider_settings;
-#[allow(dead_code)]
-mod streaming;
 
 use serde::{Deserialize, Serialize};
 use sion_core::{

@@ -4336,7 +4336,6 @@ name = "sion-desktop-spike"
 version = "0.0.1"
 dependencies = [
  "docx-rs",
- "futures-util",
  "image",
  "keyring",
  "reqwest 0.12.28",
@@ -4350,7 +4349,6 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "thiserror 2.0.18",
- "tokio",
  "tokio-util",
  "uuid",
  "zip 0.6.6",
