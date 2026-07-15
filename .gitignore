@@ -37,6 +37,8 @@
 # dotfiles (local config)
 .*
 !.gitignore
+!.github/
+!.github/**
 
 # debug
 npm-debug.log*
