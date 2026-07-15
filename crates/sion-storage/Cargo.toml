@@ -9,5 +9,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+calamine.workspace = true
+pdf-extract.workspace = true
+zip.workspace = true
 sion-core = { path = "../sion-core" }
 sion-agent = { path = "../sion-agent" }

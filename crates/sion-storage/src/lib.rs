@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use calamine::{Reader, open_workbook_auto};
 use serde::Serialize;
 use sion_agent::AgentRun;
 use sion_core::{
@@ -342,10 +343,8 @@ impl ProjectStore {
         read_json(&index)
     }
 
-    /// Copies an import source into the project and, where supported, stores a
-    /// UTF-8 text companion. This initial adapter handles text formats only;
-    /// binary office/PDF formats are persisted as originals and explicitly
-    /// marked unsupported until their dedicated extractors are added.
+    /// Copies an import source into the project and stores a separately
+    /// extracted UTF-8 companion when its format has a supported extractor.
     pub fn import_file(&self, source: &Path, now: String) -> Result<ProjectFile> {
         self.manifest()?;
         let original_name = source
@@ -391,20 +390,21 @@ impl ProjectStore {
                 sheet_count: None,
                 truncated: Some(false),
             };
-            if is_text_kind(&kind) {
-                match fs::read_to_string(&stored_path) {
-                    Ok(text) => {
+            if is_extractable_kind(&kind) {
+                match extract_text(&stored_path, &kind) {
+                    Ok((text, sheet_count)) => {
                         let text_name = format!("{id}.txt");
                         atomic_write_bytes(&self.files_dir().join(&text_name), text.as_bytes())?;
                         file.status = "available".to_string();
                         file.text_path = Some(text_name);
                         file.character_count = Some(text.encode_utf16().count() as u64);
+                        file.sheet_count = sheet_count;
                         file.extraction_status = Some(FileExtractionStatus::Available);
                     }
                     Err(error) => {
-                        file.status = "read_failed".to_string();
+                        file.status = "extraction_failed".to_string();
                         file.extraction_status = Some(FileExtractionStatus::Failed);
-                        file.extraction_error = Some(error.to_string());
+                        file.extraction_error = Some(error);
                     }
                 }
             }
@@ -644,14 +644,110 @@ fn classify_file(extension: &str) -> (ProjectFileKind, &'static str) {
     }
 }
 
-fn is_text_kind(kind: &ProjectFileKind) -> bool {
+fn is_extractable_kind(kind: &ProjectFileKind) -> bool {
     matches!(
         kind,
         ProjectFileKind::Markdown
             | ProjectFileKind::Text
             | ProjectFileKind::Json
             | ProjectFileKind::Csv
+            | ProjectFileKind::Pdf
+            | ProjectFileKind::Word
+            | ProjectFileKind::Excel
     )
+}
+
+fn extract_text(
+    path: &Path,
+    kind: &ProjectFileKind,
+) -> std::result::Result<(String, Option<u32>), String> {
+    match kind {
+        ProjectFileKind::Markdown
+        | ProjectFileKind::Text
+        | ProjectFileKind::Json
+        | ProjectFileKind::Csv => fs::read_to_string(path)
+            .map(|text| (text, None))
+            .map_err(|error| error.to_string()),
+        ProjectFileKind::Pdf => pdf_extract::extract_text(path)
+            .map(|text| (text, None))
+            .map_err(|error| format!("PDF text extraction failed: {error}")),
+        ProjectFileKind::Word => extract_docx_text(path).map(|text| (text, None)),
+        ProjectFileKind::Excel => extract_workbook_text(path),
+        ProjectFileKind::Unsupported => Err("this file type has no text extractor".to_string()),
+    }
+}
+
+fn extract_docx_text(path: &Path) -> std::result::Result<String, String> {
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("doc"))
+    {
+        return Err("legacy .doc files are not supported; convert to .docx first".to_string());
+    }
+    let file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|error| format!("DOCX ZIP cannot be read: {error}"))?;
+    let mut document = archive
+        .by_name("word/document.xml")
+        .map_err(|error| format!("DOCX document.xml is missing: {error}"))?;
+    let mut xml = String::new();
+    document
+        .read_to_string(&mut xml)
+        .map_err(|error| format!("DOCX document.xml cannot be read: {error}"))?;
+    Ok(extract_word_xml_text(&xml))
+}
+
+fn extract_word_xml_text(xml: &str) -> String {
+    let mut remaining = xml;
+    let mut text = String::new();
+    while let Some(start) = remaining.find("<w:t") {
+        let after_start = &remaining[start..];
+        let Some(content_start) = after_start.find('>') else {
+            break;
+        };
+        let after_tag = &after_start[content_start + 1..];
+        let Some(end) = after_tag.find("</w:t>") else {
+            break;
+        };
+        text.push_str(&unescape_xml_text(&after_tag[..end]));
+        remaining = &after_tag[end + "</w:t>".len()..];
+        if remaining.starts_with("</w:r></w:p>") || remaining.starts_with("</w:p>") {
+            text.push('\n');
+        }
+    }
+    text.trim().to_string()
+}
+
+fn unescape_xml_text(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+}
+
+fn extract_workbook_text(path: &Path) -> std::result::Result<(String, Option<u32>), String> {
+    let mut workbook =
+        open_workbook_auto(path).map_err(|error| format!("workbook cannot be opened: {error}"))?;
+    let sheets = workbook.sheet_names().to_vec();
+    let mut output = Vec::new();
+    for sheet in &sheets {
+        let range = workbook
+            .worksheet_range(sheet)
+            .map_err(|error| format!("sheet {sheet} cannot be read: {error}"))?;
+        output.push(format!("# {sheet}"));
+        for row in range.rows() {
+            output.push(
+                row.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\t"),
+            );
+        }
+    }
+    Ok((output.join("\n"), Some(sheets.len() as u32)))
 }
 
 fn create_dir_all(path: &Path) -> Result<()> {
@@ -1041,7 +1137,98 @@ mod tests {
     }
 
     #[test]
-    fn preserves_unsupported_binary_files_without_claiming_text_extraction() {
+    fn imports_docx_files_with_a_separate_text_companion() {
+        let root = temp_project();
+        let source = root.join("brief.docx");
+        fs::create_dir_all(&root).unwrap();
+        let file = fs::File::create(&source).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file("word/document.xml", zip::write::FileOptions::default())
+            .unwrap();
+        archive
+            .write_all(b"<w:document><w:body><w:p><w:r><w:t>Sion &amp; DOCX</w:t></w:r></w:p></w:body></w:document>")
+            .unwrap();
+        archive.finish().unwrap();
+        let project = root.join("project");
+        let store = ProjectStore::at(&project);
+        store.create(input()).unwrap();
+
+        let imported = store
+            .import_file(&source, "2026-07-15T00:05:00.000Z".to_string())
+            .unwrap();
+        assert_eq!(imported.kind, Some(ProjectFileKind::Word));
+        assert_eq!(
+            imported.extraction_status,
+            Some(FileExtractionStatus::Available)
+        );
+        assert_eq!(
+            store.read_file_text(&imported.id).unwrap(),
+            Some("Sion & DOCX".to_string())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_xlsx_files_with_sheet_text() {
+        let root = temp_project();
+        let source = root.join("brief.xlsx");
+        fs::create_dir_all(&root).unwrap();
+        let file = fs::File::create(&source).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::FileOptions::default();
+        for (name, xml) in [
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>"#,
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="概览" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/sharedStrings.xml",
+                r#"<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2"><si><t>字段</t></si><si><t>值</t></si></sst>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row></sheetData></worksheet>"#,
+            ),
+        ] {
+            archive.start_file(name, options).unwrap();
+            archive.write_all(xml.as_bytes()).unwrap();
+        }
+        archive.finish().unwrap();
+        let project = root.join("project");
+        let store = ProjectStore::at(&project);
+        store.create(input()).unwrap();
+
+        let imported = store
+            .import_file(&source, "2026-07-15T00:05:00.000Z".to_string())
+            .unwrap();
+        assert_eq!(imported.kind, Some(ProjectFileKind::Excel));
+        assert_eq!(
+            imported.extraction_status,
+            Some(FileExtractionStatus::Available)
+        );
+        assert_eq!(imported.sheet_count, Some(1));
+        assert_eq!(
+            store.read_file_text(&imported.id).unwrap(),
+            Some("# 概览\n字段\t值".to_string())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preserves_unreadable_pdf_files_without_claiming_text_extraction() {
         let root = temp_project();
         let source = root.join("reference.pdf");
         fs::create_dir_all(&root).unwrap();
@@ -1054,10 +1241,9 @@ mod tests {
             .import_file(&source, "2026-07-15T00:05:00.000Z".to_string())
             .unwrap();
         assert_eq!(file.kind, Some(ProjectFileKind::Pdf));
-        assert_eq!(
-            file.extraction_status,
-            Some(FileExtractionStatus::Unsupported)
-        );
+        assert_eq!(file.status, "extraction_failed");
+        assert_eq!(file.extraction_status, Some(FileExtractionStatus::Failed));
+        assert!(file.extraction_error.is_some());
         assert_eq!(store.read_file_text(&file.id).unwrap(), None);
         fs::remove_dir_all(root).unwrap();
     }
