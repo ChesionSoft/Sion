@@ -301,6 +301,29 @@ struct ProjectApplyAssistantRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ProjectPreviewAssistantRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    assistant_message_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssistantDeliveryPreview {
+    assistant_message_id: String,
+    node_id: WorkflowNodeId,
+    current_revision: u64,
+    markdown: String,
+    additions: usize,
+    deletions: usize,
+    unchanged: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProjectExportRequest {
     #[serde(flatten)]
     version: VersionedRequest,
@@ -904,6 +927,38 @@ fn project_save_node(
 }
 
 #[tauri::command]
+fn project_preview_assistant_delivery(
+    request: ProjectPreviewAssistantRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<AssistantDeliveryPreview>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(project_root);
+    let markdown = assistant_delivery_markdown(
+        &store,
+        request.node_id,
+        &request.session_id,
+        &request.assistant_message_id,
+    )?;
+    let node = store
+        .node(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let stats = line_change_stats(&node.markdown, &markdown);
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: AssistantDeliveryPreview {
+            assistant_message_id: request.assistant_message_id,
+            node_id: request.node_id,
+            current_revision: node.revision,
+            markdown,
+            additions: stats.additions,
+            deletions: stats.deletions,
+            unchanged: stats.unchanged,
+        },
+    })
+}
+
+#[tauri::command]
 fn project_apply_assistant(
     request: ProjectApplyAssistantRequest,
     app: tauri::AppHandle,
@@ -911,21 +966,12 @@ fn project_apply_assistant(
     assert_api_version(&request.version)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let store = ProjectStore::at(project_root);
-    let message = store
-        .messages(request.node_id, &request.session_id)
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?
-        .into_iter()
-        .find(|message| message.id == request.assistant_message_id)
-        .ok_or_else(|| {
-            ApiError::CheckFailed("assistant message was not found in this session".to_string())
-        })?;
-    if message.role != ChatRole::Assistant {
-        return Err(ApiError::CheckFailed(
-            "only an assistant message can produce a node delivery".to_string(),
-        ));
-    }
-    let markdown = delivery_markdown_for_node(&message.content, request.node_id)
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let markdown = assistant_delivery_markdown(
+        &store,
+        request.node_id,
+        &request.session_id,
+        &request.assistant_message_id,
+    )?;
     let result = store
         .save_node_if_revision(
             request.node_id,
@@ -939,6 +985,60 @@ fn project_apply_assistant(
         api_version: API_VERSION,
         payload: result,
     })
+}
+
+fn assistant_delivery_markdown(
+    store: &ProjectStore,
+    node_id: WorkflowNodeId,
+    session_id: &str,
+    assistant_message_id: &str,
+) -> Result<String, ApiError> {
+    let message = store
+        .messages(node_id, session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?
+        .into_iter()
+        .find(|message| message.id == assistant_message_id)
+        .ok_or_else(|| {
+            ApiError::CheckFailed("assistant message was not found in this session".to_string())
+        })?;
+    if message.role != ChatRole::Assistant {
+        return Err(ApiError::CheckFailed(
+            "only an assistant message can produce a node delivery".to_string(),
+        ));
+    }
+    delivery_markdown_for_node(&message.content, node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LineChangeStats {
+    additions: usize,
+    deletions: usize,
+    unchanged: usize,
+}
+
+fn line_change_stats(before: &str, after: &str) -> LineChangeStats {
+    let before_lines = before.lines().collect::<Vec<_>>();
+    let after_lines = after.lines().collect::<Vec<_>>();
+    let mut previous = vec![0; after_lines.len() + 1];
+    let mut current = vec![0; after_lines.len() + 1];
+    for before_line in &before_lines {
+        for (index, after_line) in after_lines.iter().enumerate() {
+            current[index + 1] = if before_line == after_line {
+                previous[index] + 1
+            } else {
+                previous[index + 1].max(current[index])
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+        current.fill(0);
+    }
+    let unchanged = previous[after_lines.len()];
+    LineChangeStats {
+        additions: after_lines.len().saturating_sub(unchanged),
+        deletions: before_lines.len().saturating_sub(unchanged),
+        unchanged,
+    }
 }
 
 #[tauri::command]
@@ -1380,6 +1480,7 @@ pub fn run() {
             project_list,
             project_get_node,
             project_save_node,
+            project_preview_assistant_delivery,
             project_apply_assistant,
             project_export_docx,
             session_list,
@@ -1420,6 +1521,19 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(completion, (true, None));
+    }
+
+    #[test]
+    fn line_change_stats_counts_kept_added_and_deleted_lines() {
+        let stats = line_change_stats("A\nB\nC", "A\nB2\nC\nD");
+        assert_eq!(
+            stats,
+            LineChangeStats {
+                additions: 2,
+                deletions: 1,
+                unchanged: 2,
+            }
+        );
     }
 
     #[test]
