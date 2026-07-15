@@ -22,7 +22,7 @@ npm run test:provider-migration  # 验证 Provider API Key 的真实安全迁移
 npm run bundle
 ```
 
-`npm run tauri dev` 会启动带有三项可点击检查的本机窗口。模型 SSE 测试使用内嵌本地 HTTP 服务器，不会请求任何真实模型；Keychain 测试使用随机账号和随机密钥，在验证后删除。
+`npm run tauri dev` 会启动本机工作台：新建项目时由 Rust 打开系统目录选择器，项目内容写入所选目录的 `.sion/`，随后可切换 12 个节点、编辑 Markdown 并以 revision/CAS 保存。模型 SSE 测试使用内嵌本地 HTTP 服务器，不会请求任何真实模型；Keychain 测试使用随机账号和随机密钥，在验证后删除。
 
 当前 A′ 在 macOS Apple Silicon 上必须全部通过。macOS Intel 与 Windows x64 的编译和真实凭据库验证由对应 CI / 真机完成后，才允许正式声称跨平台支持。
 

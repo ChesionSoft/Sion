@@ -24,6 +24,7 @@ sha2 = "0.10.9"
 sion-core = { path = "../../crates/sion-core" }
 sion-storage = { path = "../../crates/sion-storage" }
 tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2"
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-util = "0.7.18"
