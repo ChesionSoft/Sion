@@ -45,6 +45,16 @@ pub struct ProviderSummary {
     pub has_api_key: bool,
 }
 
+/// Kept inside the Rust process only. This type is never serialized across IPC.
+#[derive(Debug, Clone)]
+pub struct ResolvedModel {
+    pub provider_id: String,
+    pub endpoint: String,
+    pub api_key: String,
+    pub protocol: String,
+    pub model: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProvidersFile {
@@ -113,6 +123,10 @@ pub fn save(app_data_root: &Path, input: ProviderInput) -> Result<ProviderSummar
 
 pub fn delete(app_data_root: &Path, provider_id: &str) -> Result<(), String> {
     delete_with_store(app_data_root, provider_id, &SystemCredentialStore)
+}
+
+pub fn resolve_default_model(app_data_root: &Path) -> Result<ResolvedModel, String> {
+    resolve_default_model_with_store(app_data_root, &SystemCredentialStore)
 }
 
 fn list_with_store<S: CredentialStore>(
@@ -222,6 +236,49 @@ fn delete_with_store<S: CredentialStore>(
     }
     debug_assert_eq!(removed.id, provider_id);
     Ok(())
+}
+
+fn resolve_default_model_with_store<S: CredentialStore>(
+    app_data_root: &Path,
+    credentials: &S,
+) -> Result<ResolvedModel, String> {
+    let file = read_file(app_data_root)?;
+    let provider = file
+        .providers
+        .iter()
+        .find(|provider| provider.is_default)
+        .or_else(|| file.providers.first())
+        .ok_or_else(|| "configure a model provider before starting an Agent Run".to_string())?;
+    let model = provider
+        .models
+        .iter()
+        .find(|model| model.is_default)
+        .or_else(|| provider.models.first())
+        .ok_or_else(|| "the default provider has no model".to_string())?;
+    let api_key = credentials
+        .get(&keyring_account(&provider.id))?
+        .ok_or_else(|| {
+            "the default provider has no API key in the system credential store".to_string()
+        })?;
+    let endpoint = match provider.api_url_mode.as_str() {
+        "full" => provider.api_base_url.clone(),
+        "base" => {
+            let suffix = match provider.protocol.as_str() {
+                "chat_completions" => "chat/completions",
+                "openai_responses" => "responses",
+                _ => return Err("the default provider uses an unsupported protocol".to_string()),
+            };
+            format!("{}/{}", provider.api_base_url.trim_end_matches('/'), suffix)
+        }
+        _ => return Err("the default provider has an unsupported URL mode".to_string()),
+    };
+    Ok(ResolvedModel {
+        provider_id: provider.id.clone(),
+        endpoint,
+        api_key,
+        protocol: provider.protocol.clone(),
+        model: model.name.clone(),
+    })
 }
 
 fn restore_secret<S: CredentialStore>(credentials: &S, account: &str, previous: Option<String>) {
@@ -441,6 +498,21 @@ mod tests {
         let listed = list_with_store(&root, &credentials).unwrap();
         assert!(listed[0].is_default);
         assert!(!listed[1].is_default);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolves_only_the_default_model_for_the_agent_process() {
+        let root = root();
+        let credentials = FakeCredentials::default();
+        save_with_store(&root, input("provider-a"), &credentials).unwrap();
+        let resolved = resolve_default_model_with_store(&root, &credentials).unwrap();
+        assert_eq!(
+            resolved.endpoint,
+            "https://example.invalid/v1/chat/completions"
+        );
+        assert_eq!(resolved.model, "model-a");
+        assert_eq!(resolved.api_key, "secret-value");
         let _ = fs::remove_dir_all(root);
     }
 }

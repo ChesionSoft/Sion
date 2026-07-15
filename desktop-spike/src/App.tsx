@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState } from "react";
 
 const API_VERSION = 1;
@@ -40,6 +41,9 @@ type ProviderModel = { name: string; isDefault: boolean; toolCalling: boolean };
 type Provider = { id: string; name: string; apiBaseUrl: string; apiUrlMode: "base" | "full"; protocol: "chat_completions" | "openai_responses"; models: ProviderModel[]; isDefault: boolean; hasApiKey: boolean };
 type ProviderListResponse = { apiVersion: number; providers: Provider[] };
 type ProviderSaveResponse = { apiVersion: number } & Provider;
+type AgentRun = { id: string; projectId: string; nodeId: NodeId; status: "queued" | "running" | "completed" | "failed" | "cancelled"; summary?: string };
+type AgentTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
+type AgentFinishedEvent = { run: AgentRun };
 
 const statusLabel: Record<NodeStatus, string> = {
   not_started: "未开始",
@@ -78,6 +82,7 @@ export function App() {
   const [providerKey, setProviderKey] = useState("");
   const [providerProtocol, setProviderProtocol] = useState<Provider["protocol"]>("chat_completions");
   const [savingProvider, setSavingProvider] = useState(false);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
@@ -99,6 +104,32 @@ export function App() {
 
   useEffect(() => {
     if (project && sessionId) void loadMessages(project.id, nodeId, sessionId);
+  }, [project, nodeId, sessionId]);
+
+  useEffect(() => {
+    let disposed = false;
+    const subscriptions = Promise.all([
+      listen<AgentTokenEvent>("agent-token", (event) => {
+        const token = event.payload;
+        if (!project || token.projectId !== project.id || token.nodeId !== nodeId || token.sessionId !== sessionId) return;
+        setActiveRunId(token.runId);
+        setMessages((current) => {
+          const transientId = `stream-${token.runId}`;
+          const existing = current.find((message) => message.id === transientId);
+          if (existing) return current.map((message) => message.id === transientId ? { ...message, content: message.content + token.delta } : message);
+          return [...current, { id: transientId, role: "assistant", content: token.delta, createdAt: now() }];
+        });
+      }),
+      listen<AgentFinishedEvent>("agent-run-finished", (event) => {
+        const run = event.payload.run;
+        if (!project || run.projectId !== project.id || run.nodeId !== nodeId) return;
+        setActiveRunId((current) => current === run.id ? null : current);
+        setMessages((current) => current.filter((message) => message.id !== `stream-${run.id}`));
+        if (sessionId) void loadMessages(project.id, nodeId, sessionId);
+        setNotice(run.status === "completed" ? "Agent 回复已保存到本地会话" : run.summary ?? "Agent Run 已结束");
+      }),
+    ]);
+    return () => { disposed = true; void subscriptions.then((unlisten) => { if (disposed) unlisten.forEach((stop) => stop()); }); };
   }, [project, nodeId, sessionId]);
 
   async function loadVersion() {
@@ -302,11 +333,29 @@ export function App() {
       setMessages((current) => [...current, message]);
       setSessions((current) => current.map((session) => session.id === active.id ? { ...session, messageCount: session.messageCount + 1, updatedAt: message.createdAt } : session));
       setMessageDraft("");
-      setNotice("用户消息已持久化；Agent Run 尚未接入，因此不会生成模拟回复");
+      try {
+        const run = await invoke<AgentRun>("agent_run_start", {
+          request: { apiVersion: API_VERSION, projectId: project.id, nodeId, sessionId: active.id, now: now() },
+        });
+        setActiveRunId(run.id);
+        setNotice(run.status === "queued" ? "Agent Run 已排队；同一节点不会并发写入" : "Agent 正在本机流式生成回复");
+      } catch (error) {
+        setNotice(`用户消息已保存；暂未启动 Agent：${String(error)}`);
+      }
     } catch (error) {
       setNotice(`保存消息失败：${String(error)}`);
     } finally {
       setSendingMessage(false);
+    }
+  }
+
+  async function cancelAgent() {
+    if (!project || !activeRunId) return;
+    try {
+      await invoke<AgentRun>("agent_run_cancel", { request: { apiVersion: API_VERSION, projectId: project.id, runId: activeRunId, now: now() } });
+      setNotice("已请求取消 Agent Run；已收到的内容会保留在本地会话");
+    } catch (error) {
+      setNotice(`取消 Agent Run 失败：${String(error)}`);
     }
   }
 
@@ -383,7 +432,7 @@ export function App() {
       <div className="workbench-grid">
         <aside className="node-rail"><div className="rail-title"><span>设计路径</span><b>12</b></div>{NODES.map(([id, title], index) => <button className={id === nodeId ? "node-item selected" : "node-item"} key={id} onClick={() => setNodeId(id)} type="button"><span>{String(index + 1).padStart(2, "0")}</span><strong>{title}</strong><i>{id === nodeId ? "●" : ""}</i></button>)}<div className="rail-foot"><div className="file-head"><span>文件池 / {files.length}</span><button disabled={importingFile} onClick={() => void importFile()} type="button">{importingFile ? "导入中" : "+ 导入"}</button></div>{files.length === 0 ? <small>尚无项目文件</small> : files.slice(-3).map((file) => <span className="file-row" key={file.id}>{file.extractionStatus === "available" ? "◼" : "◇"} {file.originalName}</span>)}</div></aside>
         <section className="editor-pane"><div className="editor-head"><div><p className="panel-kicker">NODE / {nodeId.toUpperCase()}</p><h1>{nodeTitle}</h1></div><span className={`node-status status-${node?.status ?? "not_started"}`}>{node ? statusLabel[node.status] : "读取中"}</span></div><textarea aria-label={`${nodeTitle} Markdown 编辑器`} disabled={!node} onChange={(event) => setDraft(event.target.value)} spellCheck={false} value={draft} /><div className="editor-foot"><span>Markdown · revision {node?.revision ?? "—"}</span><span>{draft.length.toLocaleString()} 字符</span></div></section>
-        <aside className="run-pane"><div className="run-heading"><p className="panel-kicker">节点会话</p><button className="new-session" onClick={() => void createSession()} type="button">+ 新建</button></div><div className="session-list">{sessions.length === 0 ? <p className="session-empty">这个节点还没有会话。可直接输入消息，Sion 会先建立本地会话。</p> : sessions.map((session) => <button className={session.id === sessionId ? "session-row active" : "session-row"} key={session.id} onClick={() => setSessionId(session.id)} type="button"><strong>{session.name}</strong><span>{session.messageCount} 条消息</span></button>)}</div><div className="message-thread">{messages.length === 0 ? <div className="thread-empty"><div className="orbit-mark">↗</div><p>消息会保存在项目 `.sion/chat/`。历史来源和 token 元数据也可被保留，但新应用不会发起网页搜索。</p></div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span>{message.role === "user" ? "你" : message.role === "assistant" ? "助手" : "系统"}</span><p>{message.content}</p></article>)}</div><form className="message-form" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}><textarea aria-label="发送给此节点的消息" onChange={(event) => setMessageDraft(event.target.value)} placeholder="描述你希望在此节点完成的工作…" value={messageDraft} /><button disabled={!messageDraft.trim() || sendingMessage} type="submit">{sendingMessage ? "保存中" : "保存消息"}<b>↗</b></button></form><div className="run-notice">{notice}</div></aside>
+        <aside className="run-pane"><div className="run-heading"><p className="panel-kicker">节点会话</p><span>{activeRunId ? <button className="cancel-run" onClick={() => void cancelAgent()} type="button">取消运行</button> : <button className="new-session" onClick={() => void createSession()} type="button">+ 新建</button>}</span></div><div className="session-list">{sessions.length === 0 ? <p className="session-empty">这个节点还没有会话。可直接输入消息，Sion 会先建立本地会话。</p> : sessions.map((session) => <button className={session.id === sessionId ? "session-row active" : "session-row"} key={session.id} onClick={() => setSessionId(session.id)} type="button"><strong>{session.name}</strong><span>{session.messageCount} 条消息</span></button>)}</div><div className="message-thread">{messages.length === 0 ? <div className="thread-empty"><div className="orbit-mark">↗</div><p>消息会保存在项目 `.sion/chat/`。历史来源和 token 元数据也可被保留，但新应用不会发起网页搜索。</p></div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span>{message.role === "user" ? "你" : message.role === "assistant" ? "助手" : "系统"}</span><p>{message.content}</p></article>)}</div><form className="message-form" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}><textarea aria-label="发送给此节点的消息" onChange={(event) => setMessageDraft(event.target.value)} placeholder="描述你希望在此节点完成的工作…" value={messageDraft} /><button disabled={!messageDraft.trim() || sendingMessage || Boolean(activeRunId)} type="submit">{sendingMessage ? "发送中" : activeRunId ? "Agent 运行中" : "发送并运行"}<b>↗</b></button></form><div className="run-notice">{notice}</div></aside>
       </div>
     </main>
   );

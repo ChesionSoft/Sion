@@ -33,6 +33,18 @@ pub async fn stream_text(
     request: &StreamRequest,
     cancellation: CancellationToken,
 ) -> Result<StreamOutcome, String> {
+    stream_text_with(client, request, cancellation, |_| {}).await
+}
+
+pub async fn stream_text_with<F>(
+    client: &Client,
+    request: &StreamRequest,
+    cancellation: CancellationToken,
+    mut on_token: F,
+) -> Result<StreamOutcome, String>
+where
+    F: FnMut(&str),
+{
     let body = match request.protocol {
         ProviderProtocol::ChatCompletions => json!({
             "model": request.model,
@@ -75,6 +87,7 @@ pub async fn stream_text(
                 return Ok(StreamOutcome::Completed(tokens));
             }
             if let Some(token) = token_from_frame(request.protocol, &frame)? {
+                on_token(&token);
                 tokens.push(token);
             }
         }

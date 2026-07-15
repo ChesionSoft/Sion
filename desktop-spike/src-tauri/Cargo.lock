@@ -4200,6 +4200,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sion-agent",
  "sion-core",
  "sion-storage",
  "tauri",

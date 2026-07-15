@@ -8,17 +8,63 @@ mod streaming;
 
 use serde::{Deserialize, Serialize};
 use sion_core::{
-    ChatMessage, ChatSession, NodeStatus, ProjectFile, ProjectManifest, WorkflowNode,
+    ChatMessage, ChatRole, ChatSession, NodeStatus, ProjectFile, ProjectManifest, WorkflowNode,
     WorkflowNodeId,
 };
 use sion_storage::{
     CreateProjectInput, ProjectRegistry, ProjectStore, RecentProject, SaveNodeResult,
 };
-use std::path::Path;
-use tauri::Manager;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
+use tokio_util::sync::CancellationToken;
 
 const API_VERSION: u16 = 1;
+
+struct AgentState {
+    scheduler: Mutex<sion_agent::RunScheduler>,
+    jobs: Mutex<HashMap<String, AgentJob>>,
+    client: reqwest::Client,
+}
+
+impl Default for AgentState {
+    fn default() -> Self {
+        Self {
+            scheduler: Mutex::new(sion_agent::RunScheduler::default()),
+            jobs: Mutex::new(HashMap::new()),
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AgentJob {
+    project_root: PathBuf,
+    session_id: String,
+    prompt: String,
+    model: provider_settings::ResolvedModel,
+    cancellation: CancellationToken,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AgentTokenEvent {
+    run_id: String,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    delta: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AgentFinishedEvent {
+    run: sion_agent::AgentRun,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +163,41 @@ struct ProviderDeleteRequest {
 #[serde(rename_all = "camelCase")]
 struct ProviderList {
     providers: Vec<provider_settings::ProviderSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRunStartRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    now: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRunListRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRunCancelRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    run_id: String,
+    now: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRunList {
+    runs: Vec<sion_agent::AgentRun>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -438,6 +519,137 @@ fn provider_delete(
 }
 
 #[tauri::command]
+fn agent_run_start(
+    request: AgentRunStartRequest,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AgentState>>,
+) -> Result<VersionedResponse<sion_agent::AgentRun>, ApiError> {
+    assert_api_version(&request.version)?;
+    let app_data_root = app.path().app_data_dir().map_err(|error| {
+        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
+    })?;
+    let model =
+        provider_settings::resolve_default_model(&app_data_root).map_err(ApiError::CheckFailed)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(&project_root);
+    let node = store
+        .node(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let messages = store
+        .messages(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let prompt = agent_prompt(&node, &messages);
+    let run = state
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
+        .enqueue(request.project_id.clone(), request.node_id, request.now)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    store
+        .save_run(&run)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let job = AgentJob {
+        project_root,
+        session_id: request.session_id,
+        prompt,
+        model,
+        cancellation: CancellationToken::new(),
+    };
+    state
+        .jobs
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent job lock is poisoned".to_string()))?
+        .insert(run.id.clone(), job.clone());
+    if run.status == sion_agent::AgentRunStatus::Running {
+        spawn_agent_run(app, state.inner().clone(), run.clone(), job);
+    }
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: run,
+    })
+}
+
+#[tauri::command]
+fn agent_run_list(
+    request: AgentRunListRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<AgentRunList>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let runs = ProjectStore::at(project_root)
+        .list_runs()
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: AgentRunList { runs },
+    })
+}
+
+#[tauri::command]
+fn agent_run_cancel(
+    request: AgentRunCancelRequest,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AgentState>>,
+) -> Result<VersionedResponse<sion_agent::AgentRun>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let job = state
+        .jobs
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent job lock is poisoned".to_string()))?
+        .get(&request.run_id)
+        .cloned()
+        .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
+    let status = state
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
+        .get(&request.run_id)
+        .map(|run| run.status.clone())
+        .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
+    if status == sion_agent::AgentRunStatus::Queued {
+        let promoted = state
+            .scheduler
+            .lock()
+            .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
+            .cancel(&request.run_id, request.now, Some("用户取消".to_string()))
+            .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+        let cancelled = state
+            .scheduler
+            .lock()
+            .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
+            .get(&request.run_id)
+            .cloned()
+            .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
+        ProjectStore::at(&project_root)
+            .save_run(&cancelled)
+            .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+        state
+            .jobs
+            .lock()
+            .map_err(|_| ApiError::CheckFailed("agent job lock is poisoned".to_string()))?
+            .remove(&request.run_id);
+        spawn_promoted_runs(app, state.inner().clone(), promoted);
+        return Ok(VersionedResponse {
+            api_version: API_VERSION,
+            payload: cancelled,
+        });
+    }
+    job.cancellation.cancel();
+    let run = state
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
+        .get(&request.run_id)
+        .cloned()
+        .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: run,
+    })
+}
+
+#[tauri::command]
 fn project_create(
     request: ProjectCreateRequest,
     app: tauri::AppHandle,
@@ -653,6 +865,185 @@ fn file_import(
     })
 }
 
+fn agent_prompt(node: &WorkflowNode, messages: &[ChatMessage]) -> String {
+    let transcript = messages
+        .iter()
+        .rev()
+        .take(16)
+        .rev()
+        .map(|message| {
+            format!(
+                "{}: {}",
+                match message.role {
+                    ChatRole::User => "用户",
+                    ChatRole::Assistant => "助手",
+                    ChatRole::System => "系统",
+                },
+                message.content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!(
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点和会话，给出可直接用于设计文档的中文建议。\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        node.id.as_str(),
+        node.markdown,
+        transcript
+    )
+}
+
+fn spawn_agent_run(
+    app: tauri::AppHandle,
+    state: Arc<AgentState>,
+    run: sion_agent::AgentRun,
+    job: AgentJob,
+) {
+    tauri::async_runtime::spawn(async move {
+        let protocol = match job.model.protocol.as_str() {
+            "chat_completions" => sion_agent::model_stream::ProviderProtocol::ChatCompletions,
+            "openai_responses" => sion_agent::model_stream::ProviderProtocol::OpenaiResponses,
+            _ => {
+                complete_agent_run(
+                    &app,
+                    &state,
+                    &run,
+                    &job,
+                    Err("unsupported provider protocol".to_string()),
+                );
+                return;
+            }
+        };
+        let event_app = app.clone();
+        let event_run = run.clone();
+        let event_session = job.session_id.clone();
+        let stream = sion_agent::model_stream::stream_text_with(
+            &state.client,
+            &sion_agent::model_stream::StreamRequest {
+                endpoint: job.model.endpoint.clone(),
+                api_key: job.model.api_key.clone(),
+                protocol,
+                model: job.model.model.clone(),
+                prompt: job.prompt.clone(),
+            },
+            job.cancellation.clone(),
+            move |delta| {
+                let _ = event_app.emit(
+                    "agent-token",
+                    AgentTokenEvent {
+                        run_id: event_run.id.clone(),
+                        project_id: event_run.project_id.clone(),
+                        node_id: event_run.node_id,
+                        session_id: event_session.clone(),
+                        delta: delta.to_string(),
+                    },
+                );
+            },
+        )
+        .await;
+        complete_agent_run(&app, &state, &run, &job, stream);
+    });
+}
+
+fn complete_agent_run(
+    app: &tauri::AppHandle,
+    state: &Arc<AgentState>,
+    run: &sion_agent::AgentRun,
+    job: &AgentJob,
+    outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
+) {
+    let finished_at = run.created_at.clone();
+    let completion: Result<(bool, String), String> = match outcome {
+        Ok(sion_agent::model_stream::StreamOutcome::Completed(tokens)) => {
+            Ok((false, tokens.join("")))
+        }
+        Ok(sion_agent::model_stream::StreamOutcome::Cancelled(tokens)) => {
+            Ok((true, tokens.join("")))
+        }
+        Err(error) => Err(error),
+    };
+    let (final_run, promoted) = {
+        let Ok(mut scheduler) = state.scheduler.lock() else {
+            return;
+        };
+        let transition = match completion {
+            Ok((cancelled, text)) if cancelled => scheduler
+                .cancel(
+                    &run.id,
+                    finished_at.clone(),
+                    Some("已取消；部分输出不会自动写入节点".to_string()),
+                )
+                .map(|promoted| (promoted, Some(text))),
+            Ok((_cancelled, text)) => scheduler
+                .complete(
+                    &run.id,
+                    finished_at.clone(),
+                    Some(format!(
+                        "已使用 {} 的模型回复并保存到本地会话",
+                        job.model.provider_id
+                    )),
+                )
+                .map(|promoted| (promoted, Some(text))),
+            Err(error) => scheduler
+                .fail(
+                    &run.id,
+                    finished_at.clone(),
+                    format!("模型调用失败：{error}"),
+                )
+                .map(|promoted| (promoted, None)),
+        };
+        let Ok((promoted, content)) = transition else {
+            return;
+        };
+        let Some(final_run) = scheduler.get(&run.id).cloned() else {
+            return;
+        };
+        (final_run, (promoted, content))
+    };
+    let (promoted, content) = promoted;
+    let store = ProjectStore::at(&job.project_root);
+    if let Some(content) = content.filter(|content| !content.is_empty()) {
+        let _ = store.append_message(
+            run.node_id,
+            &job.session_id,
+            ChatMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: ChatRole::Assistant,
+                content,
+                reasoning_content: None,
+                sources: None,
+                created_at: finished_at.clone(),
+                turn_id: Some(run.id.clone()),
+                reasoning_duration_ms: None,
+                usage: None,
+            },
+            finished_at.clone(),
+        );
+    }
+    let _ = store.save_run(&final_run);
+    if let Ok(mut jobs) = state.jobs.lock() {
+        jobs.remove(&run.id);
+    }
+    let _ = app.emit("agent-run-finished", AgentFinishedEvent { run: final_run });
+    spawn_promoted_runs(app.clone(), state.clone(), promoted);
+}
+
+fn spawn_promoted_runs(
+    app: tauri::AppHandle,
+    state: Arc<AgentState>,
+    promoted: Vec<sion_agent::AgentRun>,
+) {
+    for run in promoted {
+        let job = state
+            .jobs
+            .lock()
+            .ok()
+            .and_then(|jobs| jobs.get(&run.id).cloned());
+        if let Some(job) = job {
+            spawn_agent_run(app.clone(), state.clone(), run, job);
+        }
+    }
+}
+
 fn resolve_registered_project_root(
     app: &tauri::AppHandle,
     project_id: &str,
@@ -668,6 +1059,7 @@ fn resolve_registered_project_root(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(Arc::new(AgentState::default()))
         .invoke_handler(tauri::generate_handler![
             app_get_version,
             spike_docx_check,
@@ -679,6 +1071,9 @@ pub fn run() {
             provider_list,
             provider_save,
             provider_delete,
+            agent_run_start,
+            agent_run_list,
+            agent_run_cancel,
             project_create,
             project_list,
             project_get_node,
