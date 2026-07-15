@@ -676,7 +676,10 @@ fn agent_run_start(
     let messages = store
         .messages(request.node_id, &request.session_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let prompt = agent_prompt(&node, &messages);
+    let project_override = store
+        .agent_override(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let prompt = agent_prompt(&node, &messages, project_override.as_deref());
     let run = state
         .scheduler
         .lock()
@@ -1047,7 +1050,11 @@ fn file_import(
     })
 }
 
-fn agent_prompt(node: &WorkflowNode, messages: &[ChatMessage]) -> String {
+fn agent_prompt(
+    node: &WorkflowNode,
+    messages: &[ChatMessage],
+    project_override: Option<&str>,
+) -> String {
     let transcript = messages
         .iter()
         .rev()
@@ -1066,9 +1073,14 @@ fn agent_prompt(node: &WorkflowNode, messages: &[ChatMessage]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n");
+    let override_block = project_override
+        .filter(|rule| !rule.trim().is_empty())
+        .map(|rule| format!("\n\n# 项目覆盖规则\n{rule}"))
+        .unwrap_or_default();
     format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点和会话，给出可直接用于设计文档的中文建议。\n\n# 本节点规则\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点和会话，给出可直接用于设计文档的中文建议。\n\n# 本节点规则\n{}{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
         sion_core::agent_rule(node.id),
+        override_block,
         node.id.as_str(),
         node.markdown,
         transcript
@@ -1321,8 +1333,9 @@ mod tests {
             revision: 0,
             updated_at: "now".to_string(),
         };
-        let prompt = agent_prompt(&node, &[]);
+        let prompt = agent_prompt(&node, &[], Some("只写确认事实"));
         assert!(prompt.contains("你只负责项目基本信息"));
+        assert!(prompt.contains("只写确认事实"));
         assert!(prompt.contains("不要浏览网页"));
     }
 }

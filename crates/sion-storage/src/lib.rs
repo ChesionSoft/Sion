@@ -442,6 +442,23 @@ impl ProjectStore {
             })
     }
 
+    /// Returns a project-specific Agent rule only when one exists. The caller
+    /// still supplies the bundled rule as the base policy; an override is an
+    /// additive project instruction, never an arbitrary path from IPC.
+    pub fn agent_override(&self, node_id: WorkflowNodeId) -> Result<Option<String>> {
+        self.manifest()?;
+        let path = self
+            .sion_dir()
+            .join("agent-overrides")
+            .join(format!("{}.md", node_id.as_str()));
+        if !path.exists() {
+            return Ok(None);
+        }
+        fs::read_to_string(&path)
+            .map(Some)
+            .map_err(|source| StorageError::Io { path, source })
+    }
+
     /// Persists diagnostic-only run state. Model output tokens are intentionally
     /// not represented here; a cancelled run cannot leave a partial assistant
     /// message on disk by way of this record.
@@ -1065,5 +1082,20 @@ mod tests {
         assert_eq!(store.run("run-1").unwrap(), run);
         assert_eq!(store.list_runs().unwrap(), vec![run]);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reads_only_the_current_nodes_project_override() {
+        let root = temp_project();
+        let store = ProjectStore::at(&root);
+        store.create(input()).unwrap();
+        let overrides = store.sion_dir().join("agent-overrides");
+        fs::write(overrides.join("basic-info.md"), "仅写确认信息").unwrap();
+        assert_eq!(
+            store.agent_override(WorkflowNodeId::BasicInfo).unwrap(),
+            Some("仅写确认信息".to_string())
+        );
+        assert_eq!(store.agent_override(WorkflowNodeId::Goals).unwrap(), None);
+        let _ = fs::remove_dir_all(root);
     }
 }
