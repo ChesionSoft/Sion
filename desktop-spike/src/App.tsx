@@ -44,6 +44,9 @@ type ProviderSaveResponse = { apiVersion: number } & Provider;
 type AgentRun = { id: string; projectId: string; nodeId: NodeId; status: "queued" | "running" | "completed" | "failed" | "cancelled"; summary?: string };
 type AgentTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
 type AgentFinishedEvent = { run: AgentRun };
+type MigrationWorkspaceResponse = { apiVersion: number; selected: boolean; legacyRoot?: string; projectIds: string[] };
+type MigrationResult = { apiVersion: number; report: { migratedNodes: number; migratedSessions: number; migratedFiles: number; skippedFeatures: string[] }; project: ProjectManifest };
+type ProviderMigrationResult = { apiVersion: number; migratedProviders: number };
 
 const statusLabel: Record<NodeStatus, string> = {
   not_started: "未开始",
@@ -83,6 +86,11 @@ export function App() {
   const [providerProtocol, setProviderProtocol] = useState<Provider["protocol"]>("chat_completions");
   const [savingProvider, setSavingProvider] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [legacyRoot, setLegacyRoot] = useState<string | null>(null);
+  const [legacyProjects, setLegacyProjects] = useState<string[]>([]);
+  const [legacyProjectId, setLegacyProjectId] = useState("");
+  const [migrating, setMigrating] = useState(false);
+  const [migratingProviders, setMigratingProviders] = useState(false);
 
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
@@ -193,6 +201,56 @@ export function App() {
       setNotice(`${provider.name} 的配置和系统凭据已删除`);
     } catch (error) {
       setNotice(`删除模型配置失败：${String(error)}`);
+    }
+  }
+
+  async function pickLegacyWorkspace() {
+    try {
+      const response = await invoke<MigrationWorkspaceResponse>("migration_pick_workspace", { request: { apiVersion: API_VERSION } });
+      if (!response.selected || !response.legacyRoot) {
+        setNotice("已取消旧工作区选择");
+        return;
+      }
+      setLegacyRoot(response.legacyRoot);
+      setLegacyProjects(response.projectIds);
+      setLegacyProjectId(response.projectIds[0] ?? "");
+      setNotice(response.projectIds.length ? `发现 ${response.projectIds.length} 个可迁移旧项目` : "所选目录中没有可迁移的旧项目");
+    } catch (error) {
+      setNotice(`检查旧工作区失败：${String(error)}`);
+    }
+  }
+
+  async function migrateLegacyProject() {
+    if (!legacyRoot || !legacyProjectId) return;
+    setMigrating(true);
+    setNotice("请选择新项目的目标目录；迁移将写入其中的 .sion/");
+    try {
+      const response = await invoke<MigrationResult>("migration_run_native", {
+        request: { apiVersion: API_VERSION, legacyRoot, projectId: legacyProjectId },
+      });
+      await loadProjects();
+      setNotice(`已迁移 ${response.project.name}：${response.report.migratedNodes} 个节点、${response.report.migratedSessions} 个会话、${response.report.migratedFiles} 个文件。浏览器搜索未迁移。`);
+      setLegacyRoot(null); setLegacyProjects([]); setLegacyProjectId("");
+    } catch (error) {
+      setNotice(`迁移失败：${String(error)}`);
+    } finally {
+      setMigrating(false);
+    }
+  }
+
+  async function migrateLegacyProviders() {
+    if (!legacyRoot) return;
+    setMigratingProviders(true);
+    try {
+      const response = await invoke<ProviderMigrationResult>("provider_migration_run_native", {
+        request: { apiVersion: API_VERSION, legacyRoot },
+      });
+      await loadProviders();
+      setNotice(`已将 ${response.migratedProviders} 组旧模型凭据迁移到系统钥匙串`);
+    } catch (error) {
+      setNotice(`迁移模型凭据失败：${String(error)}`);
+    } finally {
+      setMigratingProviders(false);
     }
   }
 
@@ -410,6 +468,7 @@ export function App() {
             {projects.length === 0 ? <div className="empty-projects"><strong>还没有登记的项目</strong><span>创建项目或稍后从迁移向导导入旧项目。</span></div> : projects.map((item) => <button key={item.id} className="project-row" onClick={() => { setProject(item); setNodeId("basic-info"); }} type="button"><span className="project-dot" /><span><strong>{item.name}</strong><small>{item.rootPath}</small></span><b>↗</b></button>)}
           </section>
         </section>
+        <section className="migration-panel"><div><p className="panel-kicker">旧数据迁移</p><h2>把历史带来，<em>不带浏览器。</em></h2><p>选择旧 Sion 工作区后，逐个迁移到新目录的 <code>.sion/</code>。历史消息、文件和导出会保留；浏览器搜索设置、缓存和网页抓取不会进入新应用。</p></div><div className="migration-actions"><button className="migration-pick" onClick={() => void pickLegacyWorkspace()} type="button">{legacyRoot ? "重新选择旧工作区" : "选择旧工作区"}<b>↗</b></button>{legacyRoot ? <><small>{legacyRoot}</small><button disabled={migratingProviders} onClick={() => void migrateLegacyProviders()} type="button">{migratingProviders ? "凭据迁移中…" : "迁移模型凭据"}<b>↗</b></button><select value={legacyProjectId} onChange={(event) => setLegacyProjectId(event.target.value)}>{legacyProjects.map((id) => <option key={id} value={id}>{id}</option>)}</select><button className="migration-run" disabled={!legacyProjectId || migrating} onClick={() => void migrateLegacyProject()} type="button">{migrating ? "迁移中…" : "选择目标并迁移"}<b>↗</b></button></> : <span>迁移始终先在临时目录验证，再原子写入。</span>}</div></section>
         <section className="provider-settings">
           <div className="provider-copy"><p className="panel-kicker">模型连接</p><h2>把密钥留给<br /><em>操作系统。</em></h2><p>配置元数据保存在应用目录；API Key 只写入 macOS Keychain 或 Windows Credential Manager，界面永不回显。</p></div>
           <form className="provider-form" onSubmit={(event) => { event.preventDefault(); void saveProvider(); }}>

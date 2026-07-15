@@ -218,19 +218,21 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_preserves_seen_tokens_only_in_memory() {
-        let first_sent = Arc::new(Notify::new());
-        let url = serve(ProviderProtocol::ChatCompletions, first_sent.clone()).await;
+        let url = serve(ProviderProtocol::ChatCompletions, Arc::new(Notify::new())).await;
         let cancellation = CancellationToken::new();
         let task_token = cancellation.clone();
+        let token_received = Arc::new(Notify::new());
+        let token_received_in_task = token_received.clone();
         let task = tokio::spawn(async move {
-            stream_text(
+            stream_text_with(
                 &Client::new(),
                 &request(url, ProviderProtocol::ChatCompletions),
                 task_token,
+                move |_| token_received_in_task.notify_one(),
             )
             .await
         });
-        first_sent.notified().await;
+        token_received.notified().await;
         cancellation.cancel();
         assert_eq!(
             task.await.unwrap().unwrap(),
