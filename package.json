@@ -15,6 +15,7 @@
     "build:desktop": "tauri build --no-bundle",
     "bundle": "npm run bundle:mac",
     "bundle:mac": "tauri build --bundles app,dmg",
+    "bundle:mac-universal": "tauri build --target universal-apple-darwin --bundles app,dmg",
     "bundle:windows": "tauri build --bundles nsis,msi",
     "tauri": "tauri"
   },

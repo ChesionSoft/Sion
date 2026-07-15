@@ -83,8 +83,11 @@ jobs:
         run: npm run test:keyring && npm run test:provider-migration
       - name: Build desktop integration
         run: npm run build:desktop
-      - name: Bundle macOS application
-        if: runner.os == 'macOS'
+      - name: Bundle universal macOS application
+        if: matrix.label == 'macOS Apple Silicon'
+        run: npm run bundle:mac-universal
+      - name: Bundle Intel macOS application
+        if: matrix.label == 'macOS Intel'
         run: npm run bundle:mac
       - name: Bundle Windows installers
         if: runner.os == 'Windows'
