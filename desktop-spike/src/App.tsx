@@ -115,7 +115,9 @@ export function App() {
   }, [project, nodeId]);
 
   useEffect(() => {
-    if (project) void loadFiles(project.id);
+    if (project) {
+      void loadFiles(project.id);
+    }
   }, [project]);
 
   useEffect(() => {
@@ -352,7 +354,7 @@ export function App() {
   async function previewAssistant(messageId: string) {
     if (!project || !node || !sessionId) return;
     if (dirty) {
-      setNotice("请先保存或处理当前编辑器里的未保存修改，再预览交付稿");
+      setNotice("请先保存或处理当前编辑器里的未保存修改，再预览 Assistant 修改");
       return;
     }
     setPreviewingMessageId(messageId);
@@ -361,9 +363,9 @@ export function App() {
         request: { apiVersion: API_VERSION, projectId: project.id, nodeId, sessionId, assistantMessageId: messageId },
       });
       setDeliveryPreview(response);
-      setNotice(`已解析交付稿：+${response.additions} / -${response.deletions} / ${response.unchanged} 行保留`);
+      setNotice(`已生成修改预览：+${response.additions} / -${response.deletions} / ${response.unchanged} 行保留`);
     } catch (error) {
-      setNotice(`预览 Assistant 交付稿失败：${String(error)}`);
+      setNotice(`预览 Assistant 修改失败：${String(error)}`);
     } finally {
       setPreviewingMessageId(null);
     }
@@ -372,7 +374,7 @@ export function App() {
   async function applyAssistant(messageId: string) {
     if (!project || !node || !sessionId) return;
     if (dirty) {
-      setNotice("请先保存或处理当前编辑器里的未保存修改，再应用交付稿");
+      setNotice("请先保存或处理当前编辑器里的未保存修改，再应用 Assistant 修改");
       return;
     }
     try {
@@ -386,10 +388,10 @@ export function App() {
       } else if (response.saved) {
         setNode(response.saved); setDraft(response.saved.markdown);
         setDeliveryPreview(null);
-        setNotice(`已应用 Assistant 交付稿到节点 revision ${response.saved.revision}`);
+        setNotice(`已应用 Assistant 修改到节点 revision ${response.saved.revision}`);
       }
     } catch (error) {
-      setNotice(`应用 Assistant 交付稿失败：${String(error)}`);
+      setNotice(`应用 Assistant 修改失败：${String(error)}`);
     }
   }
 
@@ -548,7 +550,7 @@ export function App() {
             <button className="primary-action" disabled={creating} type="submit">{creating ? "正在打开目录选择…" : "选择目录并创建"}<b>↗</b></button>
           </form>
           <section className="recent-projects" aria-label="最近项目"><div className="section-head"><p className="panel-kicker">最近打开</p><span>{projects.length.toString().padStart(2, "0")}</span></div>
-            {projects.length === 0 ? <div className="empty-projects"><strong>还没有登记的项目</strong><span>创建项目或稍后从迁移向导导入旧项目。</span></div> : projects.map((item) => <button key={item.id} className="project-row" onClick={() => { setDeliveryPreview(null); setProject(item); setNodeId("basic-info"); }} type="button"><span className="project-dot" /><span><strong>{item.name}</strong><small>{item.rootPath}</small></span><b>↗</b></button>)}
+            {projects.length === 0 ? <div className="empty-projects"><strong>还没有登记的项目</strong><span>创建项目或稍后从迁移向导导入旧项目。</span></div> : projects.map((item) => <button key={item.id} className="project-row" onClick={() => { setDeliveryPreview(null); setSelectedFileIds([]); setProject(item); setNodeId("basic-info"); }} type="button"><span className="project-dot" /><span><strong>{item.name}</strong><small>{item.rootPath}</small></span><b>↗</b></button>)}
           </section>
         </section>
         <section className="migration-panel"><div><p className="panel-kicker">旧数据迁移</p><h2>把历史带来，<em>不带浏览器。</em></h2><p>选择旧 Sion 工作区后，逐个迁移到新目录的 <code>.sion/</code>。历史消息、文件和导出会保留；浏览器搜索设置、缓存和网页抓取不会进入新应用。</p></div><div className="migration-actions"><button className="migration-pick" onClick={() => void pickLegacyWorkspace()} type="button">{legacyRoot ? "重新选择旧工作区" : "选择旧工作区"}<b>↗</b></button>{legacyRoot ? <><small>{legacyRoot}</small><button disabled={migratingProviders} onClick={() => void migrateLegacyProviders()} type="button">{migratingProviders ? "凭据迁移中…" : "迁移模型凭据"}<b>↗</b></button><select value={legacyProjectId} onChange={(event) => setLegacyProjectId(event.target.value)}>{legacyProjects.map((id) => <option key={id} value={id}>{id}</option>)}</select><button className="migration-run" disabled={!legacyProjectId || migrating} onClick={() => void migrateLegacyProject()} type="button">{migrating ? "迁移中…" : "选择目标并迁移"}<b>↗</b></button></> : <span>迁移始终先在临时目录验证，再原子写入。</span>}</div></section>
@@ -574,9 +576,9 @@ export function App() {
       <div className="workbench-grid">
         <aside className="node-rail"><div className="rail-title"><span>设计路径</span><b>12</b></div>{NODES.map(([id, title], index) => <button className={id === nodeId ? "node-item selected" : "node-item"} key={id} onClick={() => { setDeliveryPreview(null); setNodeId(id); }} type="button"><span>{String(index + 1).padStart(2, "0")}</span><strong>{title}</strong><i>{id === nodeId ? "●" : ""}</i></button>)}<div className="rail-foot"><div className="file-head"><span>文件池 / {files.length}</span><button disabled={importingFile} onClick={() => void importFile()} type="button">{importingFile ? "导入中" : "+ 导入"}</button></div>{files.length === 0 ? <small>尚无项目文件</small> : files.slice(-3).map((file) => <label className="file-row" key={file.id}><input checked={selectedFileIds.includes(file.id)} disabled={file.extractionStatus !== "available"} onChange={() => setSelectedFileIds((current) => current.includes(file.id) ? current.filter((id) => id !== file.id) : [...current, file.id])} type="checkbox" /> {file.extractionStatus === "available" ? "◼" : "◇"} {file.originalName}</label>)}</div></aside>
         <section className="editor-pane"><div className="editor-head"><div><p className="panel-kicker">NODE / {nodeId.toUpperCase()}</p><h1>{nodeTitle}</h1></div><span className={`node-status status-${node?.status ?? "not_started"}`}>{node ? statusLabel[node.status] : "读取中"}</span></div><textarea aria-label={`${nodeTitle} Markdown 编辑器`} disabled={!node} onChange={(event) => setDraft(event.target.value)} spellCheck={false} value={draft} /><div className="editor-foot"><span>Markdown · revision {node?.revision ?? "—"}</span><span>{draft.length.toLocaleString()} 字符</span></div></section>
-      <aside className="run-pane"><div className="run-heading"><p className="panel-kicker">节点会话</p><span>{activeRunId ? <button className="cancel-run" onClick={() => void cancelAgent()} type="button">取消运行</button> : <button className="new-session" onClick={() => void createSession()} type="button">+ 新建</button>}</span></div><div className="session-list">{sessions.length === 0 ? <p className="session-empty">这个节点还没有会话。可直接输入消息，Sion 会先建立本地会话。</p> : sessions.map((session) => <button className={session.id === sessionId ? "session-row active" : "session-row"} key={session.id} onClick={() => { setDeliveryPreview(null); setSessionId(session.id); }} type="button"><strong>{session.name}</strong><span>{session.messageCount} 条消息</span></button>)}</div><div className="task-center"><p>任务中心 / {runs.length}</p>{runs.length === 0 ? <span>暂无运行记录</span> : runs.slice(0, 3).map((run) => <div key={run.id}><i className={`run-${run.status}`} /> <strong>{run.nodeId === nodeId ? "当前节点" : run.nodeId}</strong><small>{run.status === "running" ? "运行中" : run.status === "queued" ? "排队中" : run.status === "completed" ? "已完成" : run.status === "cancelled" ? "已取消" : "失败"}</small></div>)}</div><div className="message-thread">{messages.length === 0 ? <div className="thread-empty"><div className="orbit-mark">↗</div><p>消息会保存在项目 `.sion/chat/`。历史来源和 token 元数据也可被保留，但新应用不会发起网页搜索。</p></div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span>{message.role === "user" ? "你" : message.role === "assistant" ? "助手" : "系统"}</span><p>{message.content}</p>{message.role === "assistant" && !message.id.startsWith("stream-") ? <button className="apply-reply" disabled={previewingMessageId === message.id} onClick={() => void previewAssistant(message.id)} type="button">{previewingMessageId === message.id ? "解析中" : "预览交付稿"}</button> : null}</article>)}</div><form className="message-form" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}><textarea aria-label="发送给此节点的消息" onChange={(event) => setMessageDraft(event.target.value)} placeholder="描述你希望在此节点完成的工作…" value={messageDraft} /><button disabled={!messageDraft.trim() || sendingMessage || Boolean(activeRunId)} type="submit">{sendingMessage ? "发送中" : activeRunId ? "Agent 运行中" : "发送并运行"}<b>↗</b></button></form><div className="run-notice">{notice}</div></aside>
+      <aside className="run-pane"><div className="run-heading"><p className="panel-kicker">节点会话</p><span>{activeRunId ? <button className="cancel-run" onClick={() => void cancelAgent()} type="button">取消运行</button> : <button className="new-session" onClick={() => void createSession()} type="button">+ 新建</button>}</span></div><div className="session-list">{sessions.length === 0 ? <p className="session-empty">这个节点还没有会话。可直接输入消息，Sion 会先建立本地会话。</p> : sessions.map((session) => <button className={session.id === sessionId ? "session-row active" : "session-row"} key={session.id} onClick={() => { setDeliveryPreview(null); setSessionId(session.id); }} type="button"><strong>{session.name}</strong><span>{session.messageCount} 条消息</span></button>)}</div><div className="task-center"><p>任务中心 / {runs.length}</p>{runs.length === 0 ? <span>暂无运行记录</span> : runs.slice(0, 3).map((run) => <div key={run.id}><i className={`run-${run.status}`} /> <strong>{run.nodeId === nodeId ? "当前节点" : run.nodeId}</strong><small>{run.status === "running" ? "运行中" : run.status === "queued" ? "排队中" : run.status === "completed" ? "已完成" : run.status === "cancelled" ? "已取消" : "失败"}</small></div>)}</div><div className="message-thread">{messages.length === 0 ? <div className="thread-empty"><div className="orbit-mark">↗</div><p>消息会保存在项目 `.sion/chat/`。历史来源和 token 元数据也可被保留，但新应用不会发起网页搜索。</p></div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span>{message.role === "user" ? "你" : message.role === "assistant" ? "助手" : "系统"}</span><p>{message.content}</p>{message.role === "assistant" && !message.id.startsWith("stream-") ? <button className="apply-reply" disabled={previewingMessageId === message.id} onClick={() => void previewAssistant(message.id)} type="button">{previewingMessageId === message.id ? "解析中" : "预览修改"}</button> : null}</article>)}</div><form className="message-form" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}><textarea aria-label="发送给此节点的消息" onChange={(event) => setMessageDraft(event.target.value)} placeholder="描述你希望在此节点完成的工作…" value={messageDraft} /><button disabled={!messageDraft.trim() || sendingMessage || Boolean(activeRunId)} type="submit">{sendingMessage ? "发送中" : activeRunId ? "Agent 运行中" : "发送并运行"}<b>↗</b></button></form><div className="run-notice">{notice}</div></aside>
       </div>
-      {deliveryPreview ? <section className="delivery-preview" role="dialog" aria-modal="true" aria-label="Assistant 交付稿预览"><div className="delivery-preview-card"><div className="delivery-preview-head"><p className="panel-kicker">交付稿预览</p><button onClick={() => setDeliveryPreview(null)} type="button" aria-label="关闭交付稿预览">×</button></div><div className="delivery-stats"><span><strong>+{deliveryPreview.additions}</strong> 新增</span><span><strong>-{deliveryPreview.deletions}</strong> 删除</span><span><strong>{deliveryPreview.unchanged}</strong> 保留</span><span><strong>r{deliveryPreview.currentRevision}</strong> 基线</span></div><pre>{deliveryPreview.markdown}</pre><div className="delivery-actions"><button onClick={() => setDeliveryPreview(null)} type="button">取消</button><button onClick={() => void applyAssistant(deliveryPreview.assistantMessageId)} type="button">应用到当前节点</button></div></div></section> : null}
+      {deliveryPreview ? <section className="delivery-preview" role="dialog" aria-modal="true" aria-label="Assistant 修改预览"><div className="delivery-preview-card"><div className="delivery-preview-head"><div><p className="panel-kicker">修改预览</p><span>以下为应用分节交付后的完整节点</span></div><button onClick={() => setDeliveryPreview(null)} type="button" aria-label="关闭修改预览">×</button></div><div className="delivery-stats"><span><strong>+{deliveryPreview.additions}</strong> 新增</span><span><strong>-{deliveryPreview.deletions}</strong> 删除</span><span><strong>{deliveryPreview.unchanged}</strong> 保留</span><span><strong>r{deliveryPreview.currentRevision}</strong> 基线</span></div><pre>{deliveryPreview.markdown}</pre><div className="delivery-actions"><button onClick={() => setDeliveryPreview(null)} type="button">取消</button><button onClick={() => void applyAssistant(deliveryPreview.assistantMessageId)} type="button">确认应用修改</button></div></div></section> : null}
     </main>
   );
 }

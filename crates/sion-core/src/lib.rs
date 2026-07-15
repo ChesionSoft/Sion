@@ -514,14 +514,13 @@ pub fn default_nodes(now: impl Into<String>) -> Vec<WorkflowNode> {
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum AgentDelivery {
     Rewrite { markdown: String },
+    Patch { sections: Vec<AgentDeliverySection> },
 }
 
-impl AgentDelivery {
-    pub fn markdown(&self) -> &str {
-        match self {
-            Self::Rewrite { markdown } => markdown,
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentDeliverySection {
+    pub title: String,
+    pub content: String,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -541,6 +540,21 @@ pub enum DeliveryError {
         node: WorkflowNodeId,
         sections: Vec<&'static str>,
     },
+    #[error("delivery patch does not include any sections")]
+    EmptyPatch,
+    #[error("delivery patch targets an unsupported section for {node:?}: {section}")]
+    UnsupportedPatchSection {
+        node: WorkflowNodeId,
+        section: String,
+    },
+    #[error("delivery patch targets the same section more than once: {section}")]
+    DuplicatePatchSection { section: String },
+    #[error("delivery patch content is empty for section: {section}")]
+    EmptyPatchContent { section: String },
+    #[error("delivery patch content cannot contain level-one or level-two headings: {section}")]
+    PatchContentChangesStructure { section: String },
+    #[error("current markdown is missing the target section: {section}")]
+    MissingTargetSection { section: String },
 }
 
 pub fn parse_agent_delivery(response: &str) -> Result<AgentDelivery, DeliveryError> {
@@ -549,20 +563,34 @@ pub fn parse_agent_delivery(response: &str) -> Result<AgentDelivery, DeliveryErr
         .map_err(|error| DeliveryError::InvalidJson(error.to_string()))
 }
 
-pub fn delivery_markdown_for_node(
+pub fn apply_agent_delivery(
     response: &str,
     node: WorkflowNodeId,
+    current_markdown: &str,
 ) -> Result<String, DeliveryError> {
     let delivery = parse_agent_delivery(response)?;
-    let markdown = delivery.markdown().trim();
+    match delivery {
+        AgentDelivery::Rewrite { markdown } => validate_delivery_rewrite(markdown, node),
+        AgentDelivery::Patch { sections } => {
+            apply_delivery_patch(current_markdown, node, &sections)
+        }
+    }
+}
+
+fn validate_delivery_rewrite(
+    markdown: String,
+    node: WorkflowNodeId,
+) -> Result<String, DeliveryError> {
+    let markdown = markdown.trim();
     if markdown.is_empty() {
         return Err(DeliveryError::EmptyMarkdown);
     }
+    let headings = markdown_h2_sections(markdown);
     let missing_sections = workflow_definition(node)
         .required_sections
         .iter()
         .copied()
-        .filter(|section| !markdown.contains(&format!("## {section}")))
+        .filter(|section| !headings.iter().any(|heading| heading.title == *section))
         .collect::<Vec<_>>();
     if !missing_sections.is_empty() {
         return Err(DeliveryError::MissingRequiredSections {
@@ -571,6 +599,110 @@ pub fn delivery_markdown_for_node(
         });
     }
     Ok(markdown.to_string())
+}
+
+fn apply_delivery_patch(
+    current_markdown: &str,
+    node: WorkflowNodeId,
+    sections: &[AgentDeliverySection],
+) -> Result<String, DeliveryError> {
+    if sections.is_empty() {
+        return Err(DeliveryError::EmptyPatch);
+    }
+    let definition = workflow_definition(node);
+    let mut seen = std::collections::HashSet::new();
+    let mut replacements = Vec::with_capacity(sections.len());
+    let current_sections = markdown_h2_sections(current_markdown);
+    for section in sections {
+        let title = section.title.trim();
+        if !definition.required_sections.contains(&title) {
+            return Err(DeliveryError::UnsupportedPatchSection {
+                node,
+                section: title.to_string(),
+            });
+        }
+        if !seen.insert(title) {
+            return Err(DeliveryError::DuplicatePatchSection {
+                section: title.to_string(),
+            });
+        }
+        let content = section.content.trim();
+        if content.is_empty() {
+            return Err(DeliveryError::EmptyPatchContent {
+                section: title.to_string(),
+            });
+        }
+        if contains_structural_heading(content) {
+            return Err(DeliveryError::PatchContentChangesStructure {
+                section: title.to_string(),
+            });
+        }
+        let target = current_sections
+            .iter()
+            .find(|candidate| candidate.title == title)
+            .ok_or_else(|| DeliveryError::MissingTargetSection {
+                section: title.to_string(),
+            })?;
+        replacements.push((target.content_start, target.end, content.to_string()));
+    }
+    replacements.sort_by_key(|replacement| std::cmp::Reverse(replacement.0));
+    let mut result = current_markdown.to_string();
+    for (start, end, content) in replacements {
+        result.replace_range(start..end, &format!("\n\n{content}\n\n"));
+    }
+    validate_delivery_rewrite(result, node)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MarkdownH2Section<'a> {
+    title: &'a str,
+    content_start: usize,
+    end: usize,
+}
+
+fn markdown_h2_sections(markdown: &str) -> Vec<MarkdownH2Section<'_>> {
+    let mut sections: Vec<MarkdownH2Section<'_>> = Vec::new();
+    let mut offset = 0;
+    let mut in_fence = false;
+    for line in markdown.split_inclusive('\n') {
+        let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
+        let line_without_newline = line_without_newline
+            .strip_suffix('\r')
+            .unwrap_or(line_without_newline);
+        let trimmed = line_without_newline.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+        } else if !in_fence && let Some(title) = trimmed.strip_prefix("## ") {
+            let title = title.trim_end();
+            if !title.is_empty() {
+                if let Some(previous) = sections.last_mut() {
+                    previous.end = offset;
+                }
+                sections.push(MarkdownH2Section {
+                    title,
+                    content_start: offset + line.len(),
+                    end: markdown.len(),
+                });
+            }
+        }
+        offset += line.len();
+    }
+    sections
+}
+
+fn contains_structural_heading(markdown: &str) -> bool {
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence && (trimmed.starts_with("# ") || trimmed.starts_with("## ")) {
+            return true;
+        }
+    }
+    false
 }
 
 fn extract_delivery_block(response: &str) -> Result<&str, DeliveryError> {
@@ -674,7 +806,7 @@ mod tests {
 
     #[test]
     fn parses_a_delivery_rewrite_block_from_an_assistant_reply() {
-        let markdown = delivery_markdown_for_node(
+        let markdown = apply_agent_delivery(
             r##"可以，下面是交付稿。
 
 ```delivery
@@ -685,6 +817,7 @@ mod tests {
 ```
 "##,
             WorkflowNodeId::BasicInfo,
+            "# 项目基本信息\n\n## 基础信息表\n\n## 项目边界\n",
         )
         .unwrap();
         assert!(markdown.contains("## 基础信息表"));
@@ -693,7 +826,12 @@ mod tests {
 
     #[test]
     fn rejects_assistant_replies_without_a_delivery_block() {
-        let error = delivery_markdown_for_node("普通回复", WorkflowNodeId::BasicInfo).unwrap_err();
+        let error = apply_agent_delivery(
+            "普通回复",
+            WorkflowNodeId::BasicInfo,
+            "# 项目基本信息\n\n## 基础信息表\n\n## 项目边界\n",
+        )
+        .unwrap_err();
         assert_eq!(error, DeliveryError::MissingBlock);
     }
 
@@ -713,11 +851,12 @@ mod tests {
 
     #[test]
     fn rejects_delivery_missing_required_node_sections() {
-        let error = delivery_markdown_for_node(
+        let error = apply_agent_delivery(
             r##"```delivery
 {"mode":"rewrite","markdown":"# 项目基本信息\n\n## 基础信息表\n\n- A"}
 ```"##,
             WorkflowNodeId::BasicInfo,
+            "# 项目基本信息\n\n## 基础信息表\n\n## 项目边界\n",
         )
         .unwrap_err();
         assert_eq!(
@@ -731,14 +870,96 @@ mod tests {
 
     #[test]
     fn allows_markdown_code_fences_inside_delivery_json_strings() {
-        let markdown = delivery_markdown_for_node(
+        let markdown = apply_agent_delivery(
             r##"```delivery
 {"mode":"rewrite","markdown":"# 接口设计\n\n## 接口清单\n\n```ts\nconst route = '/v1/projects';\n```"}
 ```
 "##,
             WorkflowNodeId::ApiDesign,
+            "# 接口设计\n\n## 接口清单\n",
         )
         .unwrap();
         assert!(markdown.contains("```ts"));
+    }
+
+    #[test]
+    fn applies_a_patch_to_only_the_named_required_sections() {
+        let current = "# 项目基本信息\n\n## 基础信息表\n\n| 字段 | 内容 |\n| --- | --- |\n\n## 项目边界\n\n- 原始边界\n";
+        let markdown = apply_agent_delivery(
+            r##"```delivery
+{"mode":"patch","sections":[{"title":"项目边界","content":"- 仅支持 Windows 和 macOS。\n- 不包含浏览器搜索。"}]}
+```"##,
+            WorkflowNodeId::BasicInfo,
+            current,
+        )
+        .unwrap();
+        assert!(markdown.contains("| 字段 | 内容 |"));
+        assert!(markdown.contains("- 仅支持 Windows 和 macOS。"));
+        assert!(!markdown.contains("- 原始边界"));
+    }
+
+    #[test]
+    fn rejects_a_patch_that_rewrites_document_structure() {
+        let error = apply_agent_delivery(
+            r###"```delivery
+{"mode":"patch","sections":[{"title":"项目边界","content":"## 隐藏章节\n\n- 内容"}]}
+```"###,
+            WorkflowNodeId::BasicInfo,
+            "# 项目基本信息\n\n## 基础信息表\n\n## 项目边界\n",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            DeliveryError::PatchContentChangesStructure {
+                section: "项目边界".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_or_unknown_patch_sections() {
+        let current = "# 项目基本信息\n\n## 基础信息表\n\n## 项目边界\n";
+        let duplicate = apply_agent_delivery(
+            r##"```delivery
+{"mode":"patch","sections":[{"title":"项目边界","content":"- A"},{"title":"项目边界","content":"- B"}]}
+```"##,
+            WorkflowNodeId::BasicInfo,
+            current,
+        )
+        .unwrap_err();
+        assert_eq!(
+            duplicate,
+            DeliveryError::DuplicatePatchSection {
+                section: "项目边界".to_string(),
+            }
+        );
+        let unknown = apply_agent_delivery(
+            r##"```delivery
+{"mode":"patch","sections":[{"title":"任意章节","content":"- A"}]}
+```"##,
+            WorkflowNodeId::BasicInfo,
+            current,
+        )
+        .unwrap_err();
+        assert_eq!(
+            unknown,
+            DeliveryError::UnsupportedPatchSection {
+                node: WorkflowNodeId::BasicInfo,
+                section: "任意章节".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn allows_code_fence_headings_inside_patch_content() {
+        let markdown = apply_agent_delivery(
+            r###"```delivery
+{"mode":"patch","sections":[{"title":"接口清单","content":"```md\n## 这不是文档章节\n```\n\n- GET /projects"}]}
+```"###,
+            WorkflowNodeId::ApiDesign,
+            "# 接口设计\n\n## 接口清单\n",
+        )
+        .unwrap();
+        assert!(markdown.contains("## 这不是文档章节"));
     }
 }

@@ -8,7 +8,7 @@ mod provider_settings;
 use serde::{Deserialize, Serialize};
 use sion_core::{
     ChatMessage, ChatRole, ChatSession, NodeStatus, ProjectFile, ProjectManifest, WorkflowNode,
-    WorkflowNodeId, delivery_markdown_for_node,
+    WorkflowNodeId, apply_agent_delivery,
 };
 use sion_storage::{
     CreateProjectInput, ProjectRegistry, ProjectStore, RecentProject, SaveNodeResult,
@@ -934,15 +934,16 @@ fn project_preview_assistant_delivery(
     assert_api_version(&request.version)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let store = ProjectStore::at(project_root);
+    let node = store
+        .node(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     let markdown = assistant_delivery_markdown(
         &store,
         request.node_id,
         &request.session_id,
         &request.assistant_message_id,
+        &node.markdown,
     )?;
-    let node = store
-        .node(request.node_id)
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     let stats = line_change_stats(&node.markdown, &markdown);
     Ok(VersionedResponse {
         api_version: API_VERSION,
@@ -966,11 +967,15 @@ fn project_apply_assistant(
     assert_api_version(&request.version)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let store = ProjectStore::at(project_root);
+    let node = store
+        .node(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     let markdown = assistant_delivery_markdown(
         &store,
         request.node_id,
         &request.session_id,
         &request.assistant_message_id,
+        &node.markdown,
     )?;
     let result = store
         .save_node_if_revision(
@@ -992,6 +997,7 @@ fn assistant_delivery_markdown(
     node_id: WorkflowNodeId,
     session_id: &str,
     assistant_message_id: &str,
+    current_markdown: &str,
 ) -> Result<String, ApiError> {
     let message = store
         .messages(node_id, session_id)
@@ -1006,7 +1012,7 @@ fn assistant_delivery_markdown(
             "only an assistant message can produce a node delivery".to_string(),
         ));
     }
-    delivery_markdown_for_node(&message.content, node_id)
+    apply_agent_delivery(&message.content, node_id, current_markdown)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))
 }
 
@@ -1235,7 +1241,7 @@ fn agent_prompt(
         .collect::<Vec<_>>()
         .join("\n\n");
     format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。\n\n必须在回复末尾提供且只提供一个 fenced delivery JSON 交付块，格式为：```delivery\n{{\"mode\":\"rewrite\",\"markdown\":\"完整节点 Markdown\"}}\n```。`markdown` 必须是当前节点的完整替换稿，并包含本节点要求的二级标题。\n\n# 本节点规则\n{}{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。\n\n必须在回复末尾提供且只提供一个 fenced delivery JSON 交付块。默认使用分节补丁，格式为：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}}]}}\n```。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。\n\n兼容例外：只有当用户明确要求整篇重写时，才可用 `{{\"mode\":\"rewrite\",\"markdown\":\"完整节点 Markdown\"}}`，且必须保留本节点所有必填二级标题。\n\n# 本节点规则\n{}{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
         sion_core::agent_rule(node.id),
         override_block,
         attachment_block,
