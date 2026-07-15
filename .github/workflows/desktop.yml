@@ -4,7 +4,13 @@ on:
   push:
     branches: [codex/desktop-rust]
     paths:
-      - "desktop/**"
+      - "src/**"
+      - "src-tauri/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -12,7 +18,13 @@ on:
       - ".github/workflows/desktop.yml"
   pull_request:
     paths:
-      - "desktop/**"
+      - "src/**"
+      - "src-tauri/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -39,14 +51,14 @@ jobs:
             runner: windows-2022
     defaults:
       run:
-        working-directory: desktop
+        working-directory: .
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: package-lock.json
       - name: Set up Rust
         shell: bash
         run: rustup toolchain install stable --profile minimal && rustup default stable
@@ -59,9 +71,9 @@ jobs:
         run: npm run lint && npm run build
       - name: Check Rust
         run: |
-          cargo fmt --all --check --manifest-path ../Cargo.toml
-          cargo clippy --workspace --manifest-path ../Cargo.toml -- -D warnings
-          cargo test --workspace --manifest-path ../Cargo.toml
+          cargo fmt --all --check --manifest-path Cargo.toml
+          cargo clippy --workspace --manifest-path Cargo.toml -- -D warnings
+          cargo test --workspace --manifest-path Cargo.toml
           cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
           cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
           npm run test:rust

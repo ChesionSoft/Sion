@@ -1,0 +1,31 @@
+[package]
+name = "sion-desktop"
+version = "0.1.0"
+description = "Sion local-first desktop application"
+authors = ["Sion"]
+edition = "2024"
+
+[lib]
+name = "sion_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+image = "0.25.10"
+tauri-build = { version = "2.5.3", features = [] }
+
+[dependencies]
+docx-rs = "0.4.20"
+keyring = "4.1.5"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+sion-core = { path = "../crates/sion-core" }
+sion-agent = { path = "../crates/sion-agent" }
+sion-storage = { path = "../crates/sion-storage" }
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2"
+thiserror = "2.0.18"
+tokio-util = "0.7.18"
+uuid = { version = "1.21.0", features = ["v4"] }
+zip = "0.6.6"
