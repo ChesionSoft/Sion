@@ -510,6 +510,121 @@ pub fn default_nodes(now: impl Into<String>) -> Vec<WorkflowNode> {
         .collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum AgentDelivery {
+    Rewrite { markdown: String },
+}
+
+impl AgentDelivery {
+    pub fn markdown(&self) -> &str {
+        match self {
+            Self::Rewrite { markdown } => markdown,
+        }
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum DeliveryError {
+    #[error("assistant response did not include a fenced ```delivery JSON block")]
+    MissingBlock,
+    #[error("assistant response included more than one fenced ```delivery block")]
+    MultipleBlocks,
+    #[error("assistant response included an unterminated fenced ```delivery block")]
+    UnterminatedBlock,
+    #[error("delivery block JSON is invalid: {0}")]
+    InvalidJson(String),
+    #[error("delivery markdown is empty")]
+    EmptyMarkdown,
+    #[error("delivery markdown is missing required sections for {node:?}: {sections:?}")]
+    MissingRequiredSections {
+        node: WorkflowNodeId,
+        sections: Vec<&'static str>,
+    },
+}
+
+pub fn parse_agent_delivery(response: &str) -> Result<AgentDelivery, DeliveryError> {
+    let block = extract_delivery_block(response)?;
+    serde_json::from_str(block.trim())
+        .map_err(|error| DeliveryError::InvalidJson(error.to_string()))
+}
+
+pub fn delivery_markdown_for_node(
+    response: &str,
+    node: WorkflowNodeId,
+) -> Result<String, DeliveryError> {
+    let delivery = parse_agent_delivery(response)?;
+    let markdown = delivery.markdown().trim();
+    if markdown.is_empty() {
+        return Err(DeliveryError::EmptyMarkdown);
+    }
+    let missing_sections = workflow_definition(node)
+        .required_sections
+        .iter()
+        .copied()
+        .filter(|section| !markdown.contains(&format!("## {section}")))
+        .collect::<Vec<_>>();
+    if !missing_sections.is_empty() {
+        return Err(DeliveryError::MissingRequiredSections {
+            node,
+            sections: missing_sections,
+        });
+    }
+    Ok(markdown.to_string())
+}
+
+fn extract_delivery_block(response: &str) -> Result<&str, DeliveryError> {
+    let mut found = None;
+    let mut search_start = 0;
+    while let Some(relative_start) = response[search_start..].find("```") {
+        let fence_start = search_start + relative_start;
+        let language_start = fence_start + 3;
+        let line_end = response[language_start..]
+            .find('\n')
+            .map(|offset| language_start + offset)
+            .unwrap_or(response.len());
+        let language = response[language_start..line_end].trim();
+        if language.eq_ignore_ascii_case("delivery") {
+            let body_start = if line_end == response.len() {
+                response.len()
+            } else {
+                line_end + 1
+            };
+            let Some(body_end) = find_closing_fence(response, body_start) else {
+                return Err(DeliveryError::UnterminatedBlock);
+            };
+            if found
+                .replace(response[body_start..body_end].trim())
+                .is_some()
+            {
+                return Err(DeliveryError::MultipleBlocks);
+            }
+            search_start = body_end + 3;
+        } else {
+            if line_end == response.len() {
+                break;
+            }
+            search_start = line_end + 1;
+        }
+    }
+    found.ok_or(DeliveryError::MissingBlock)
+}
+
+fn find_closing_fence(response: &str, body_start: usize) -> Option<usize> {
+    let mut offset = body_start;
+    for line in response[body_start..].split_inclusive('\n') {
+        let line_without_newline = line.strip_suffix('\n').unwrap_or(line);
+        let line_without_newline = line_without_newline
+            .strip_suffix('\r')
+            .unwrap_or(line_without_newline);
+        if line_without_newline.trim() == "```" {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,5 +670,75 @@ mod tests {
         );
         assert_eq!(assistant.usage.as_ref().unwrap().total_tokens, 160);
         assert_eq!(assistant.reasoning_duration_ms, Some(1200));
+    }
+
+    #[test]
+    fn parses_a_delivery_rewrite_block_from_an_assistant_reply() {
+        let markdown = delivery_markdown_for_node(
+            r##"可以，下面是交付稿。
+
+```delivery
+{
+  "mode": "rewrite",
+  "markdown": "# 项目基本信息\n\n## 基础信息表\n\n| 字段 | 内容 |\n| --- | --- |\n\n## 项目边界\n\n- 仅本地桌面应用。"
+}
+```
+"##,
+            WorkflowNodeId::BasicInfo,
+        )
+        .unwrap();
+        assert!(markdown.contains("## 基础信息表"));
+        assert!(markdown.contains("## 项目边界"));
+    }
+
+    #[test]
+    fn rejects_assistant_replies_without_a_delivery_block() {
+        let error = delivery_markdown_for_node("普通回复", WorkflowNodeId::BasicInfo).unwrap_err();
+        assert_eq!(error, DeliveryError::MissingBlock);
+    }
+
+    #[test]
+    fn rejects_multiple_delivery_blocks() {
+        let error = parse_agent_delivery(
+            r##"```delivery
+{"mode":"rewrite","markdown":"# A"}
+```
+```delivery
+{"mode":"rewrite","markdown":"# B"}
+```"##,
+        )
+        .unwrap_err();
+        assert_eq!(error, DeliveryError::MultipleBlocks);
+    }
+
+    #[test]
+    fn rejects_delivery_missing_required_node_sections() {
+        let error = delivery_markdown_for_node(
+            r##"```delivery
+{"mode":"rewrite","markdown":"# 项目基本信息\n\n## 基础信息表\n\n- A"}
+```"##,
+            WorkflowNodeId::BasicInfo,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            DeliveryError::MissingRequiredSections {
+                node: WorkflowNodeId::BasicInfo,
+                sections: vec!["项目边界"],
+            }
+        );
+    }
+
+    #[test]
+    fn allows_markdown_code_fences_inside_delivery_json_strings() {
+        let markdown = delivery_markdown_for_node(
+            r##"```delivery
+{"mode":"rewrite","markdown":"# 接口设计\n\n## 接口清单\n\n```ts\nconst route = '/v1/projects';\n```"}
+```
+"##,
+            WorkflowNodeId::ApiDesign,
+        )
+        .unwrap();
+        assert!(markdown.contains("```ts"));
     }
 }
