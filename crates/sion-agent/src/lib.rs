@@ -10,6 +10,8 @@ use sion_core::WorkflowNodeId;
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod model_stream;
+
 pub const DEFAULT_MAX_CONCURRENCY: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
