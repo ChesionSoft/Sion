@@ -1,9 +1,11 @@
 mod docx_check;
 mod keyring_check;
+mod migration;
 #[allow(dead_code)]
 mod streaming;
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 const API_VERSION: u16 = 1;
 
@@ -33,6 +35,30 @@ struct AppVersion {
 struct SpikeCheck {
     label: String,
     detail: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationInspectRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    legacy_root: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationInspection {
+    project_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationRunRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    legacy_root: String,
+    project_id: String,
+    target_project_root: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -106,12 +132,44 @@ fn spike_keyring_check(
     })
 }
 
+#[tauri::command]
+fn migration_inspect(
+    request: MigrationInspectRequest,
+) -> Result<VersionedResponse<MigrationInspection>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_ids = migration::inspect_legacy_workspace(Path::new(&request.legacy_root))
+        .map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: MigrationInspection { project_ids },
+    })
+}
+
+#[tauri::command]
+fn migration_run(
+    request: MigrationRunRequest,
+) -> Result<VersionedResponse<migration::MigrationReport>, ApiError> {
+    assert_api_version(&request.version)?;
+    let report = migration::migrate_legacy_project(
+        Path::new(&request.legacy_root),
+        &request.project_id,
+        Path::new(&request.target_project_root),
+    )
+    .map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: report,
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             app_get_version,
             spike_docx_check,
-            spike_keyring_check
+            spike_keyring_check,
+            migration_inspect,
+            migration_run
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Sion desktop spike");
