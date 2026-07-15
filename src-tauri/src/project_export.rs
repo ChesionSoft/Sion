@@ -5,7 +5,9 @@ use std::{io::Cursor, path::Path};
 use docx_rs::{
     AbstractNumbering, AlignmentType, Docx, IndentLevel, Level, LevelJc, LevelText, LineSpacing,
     LineSpacingType, NumberFormat, Numbering, NumberingId, PageMargin, Paragraph, Run, RunFonts,
-    SpecialIndentType, Start, Style, StyleType, TableOfContents,
+    Shading, SpecialIndentType, Start, Style, StyleType, Table, TableAlignmentType, TableBorder,
+    TableBorderPosition, TableBorders, TableCell, TableCellMargins, TableLayoutType,
+    TableOfContents, TableRow, WidthType,
 };
 use sion_core::{ProjectManifest, WorkflowNode};
 
@@ -117,6 +119,18 @@ pub fn write_docx(
                 ),
         )
         .add_style(
+            Style::new("SionTableCell", StyleType::Paragraph)
+                .name("Sion Table Cell")
+                .size(20)
+                .fonts(document_fonts())
+                .line_spacing(
+                    LineSpacing::new()
+                        .after(80)
+                        .line_rule(LineSpacingType::Auto)
+                        .line(240),
+                ),
+        )
+        .add_style(
             Style::new("Heading1", StyleType::Paragraph)
                 .name("Heading 1")
                 .size(32)
@@ -201,9 +215,34 @@ pub fn write_docx(
 }
 
 fn add_markdown(mut document: Docx, markdown: &str) -> Docx {
-    for line in markdown.lines() {
-        let line = line.trim_end();
+    let lines: Vec<_> = markdown.lines().collect();
+    let mut index = 0;
+    while let Some(raw_line) = lines.get(index) {
+        let line = raw_line.trim_end();
+        if index + 1 < lines.len()
+            && let (Some(header), Some(separator)) = (
+                markdown_table_row(line),
+                markdown_table_row(lines[index + 1].trim_end()),
+            )
+            && is_markdown_table_separator(&separator, header.len())
+        {
+            let mut rows = vec![header];
+            index += 2;
+            while let Some(row) = lines
+                .get(index)
+                .and_then(|row| markdown_table_row(row.trim_end()))
+            {
+                if row.len() != rows[0].len() {
+                    break;
+                }
+                rows.push(row);
+                index += 1;
+            }
+            document = document.add_table(markdown_table(&rows));
+            continue;
+        }
         if line.trim().is_empty() {
+            index += 1;
             continue;
         }
         let paragraph = if let Some(text) = line.strip_prefix("### ") {
@@ -242,8 +281,94 @@ fn add_markdown(mut document: Docx, markdown: &str) -> Docx {
             Paragraph::new().add_run(text_run(line)).style("Normal")
         };
         document = document.add_paragraph(paragraph);
+        index += 1;
     }
     document
+}
+
+fn markdown_table(rows: &[Vec<String>]) -> Table {
+    let column_count = rows.first().map_or(0, Vec::len);
+    let column_widths = equal_column_widths(column_count);
+    let table_rows = rows
+        .iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            TableRow::new(
+                row.iter()
+                    .zip(&column_widths)
+                    .map(|(cell, width)| {
+                        let run = if row_index == 0 {
+                            text_run(cell).bold()
+                        } else {
+                            text_run(cell)
+                        };
+                        let cell = TableCell::new()
+                            .width(*width, WidthType::Dxa)
+                            .add_paragraph(Paragraph::new().add_run(run).style("SionTableCell"));
+                        if row_index == 0 {
+                            cell.shading(Shading::new().fill("F2F4F7"))
+                        } else {
+                            cell
+                        }
+                    })
+                    .collect(),
+            )
+            .cant_split()
+        })
+        .collect();
+    Table::new(table_rows)
+        .width(9_360, WidthType::Dxa)
+        .indent(120)
+        .align(TableAlignmentType::Left)
+        .layout(TableLayoutType::Fixed)
+        .set_grid(column_widths)
+        .margins(TableCellMargins::new().margin(80, 120, 80, 120))
+        .set_borders(table_borders())
+}
+
+fn equal_column_widths(column_count: usize) -> Vec<usize> {
+    if column_count == 0 {
+        return Vec::new();
+    }
+    let base = 9_360 / column_count;
+    let remainder = 9_360 % column_count;
+    (0..column_count)
+        .map(|index| base + usize::from(index < remainder))
+        .collect()
+}
+
+fn table_borders() -> TableBorders {
+    [
+        TableBorderPosition::Top,
+        TableBorderPosition::Left,
+        TableBorderPosition::Bottom,
+        TableBorderPosition::Right,
+        TableBorderPosition::InsideH,
+        TableBorderPosition::InsideV,
+    ]
+    .into_iter()
+    .fold(TableBorders::with_empty(), |borders, position| {
+        borders.set(TableBorder::new(position).color("DADCE0").size(4))
+    })
+}
+
+fn markdown_table_row(line: &str) -> Option<Vec<String>> {
+    let line = line.trim();
+    let line = line.strip_prefix('|').unwrap_or(line);
+    let line = line.strip_suffix('|').unwrap_or(line);
+    let cells: Vec<_> = line
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect();
+    (cells.len() >= 2).then_some(cells)
+}
+
+fn is_markdown_table_separator(cells: &[String], expected_columns: usize) -> bool {
+    cells.len() == expected_columns
+        && cells.iter().all(|cell| {
+            let marker = cell.trim().trim_matches(':');
+            marker.len() >= 3 && marker.bytes().all(|byte| byte == b'-')
+        })
 }
 
 fn bullet_list_item(line: &str) -> Option<&str> {
@@ -300,7 +425,7 @@ mod tests {
             id: sion_core::WorkflowNodeId::BasicInfo,
             status: sion_core::NodeStatus::Draft,
             markdown:
-                "# 项目简介\n\n## 范围\n\n- 保留所有正文。\n* 兼容星号项目符号。\n1. 确认导出。"
+                "# 项目简介\n\n## 范围\n\n| 阶段 | 负责人 |\n| --- | :---: |\n| 调研 | 产品 |\n\n- 保留所有正文。\n* 兼容星号项目符号。\n1. 确认导出。"
                     .to_string(),
             revision: 1,
             updated_at: "now".to_string(),
@@ -339,6 +464,12 @@ mod tests {
         assert!(styles_xml.contains("w:color w:val=\"2E74B5\""));
         assert!(xml.contains("w:pgSz w:w=\"12240\" w:h=\"15840\""));
         assert!(xml.contains("w:pgMar w:top=\"1440\" w:right=\"1440\""));
+        assert!(xml.contains("阶段"));
+        assert!(xml.contains("负责人"));
+        assert!(xml.contains("w:tblW w:w=\"9360\" w:type=\"dxa\""));
+        assert!(xml.contains("w:tblLayout w:type=\"fixed\""));
+        assert!(xml.contains("w:tblCellMar"));
+        assert!(xml.contains("w:fill=\"F2F4F7\""));
         if let Some(destination) = std::env::var_os("SION_DOCX_QA_OUTPUT") {
             std::fs::copy(&root, destination).unwrap();
         }
@@ -353,5 +484,15 @@ mod tests {
         assert_eq!(bullet_list_item("* 项目"), Some("项目"));
         assert_eq!(bullet_list_item("+ 项目"), Some("项目"));
         assert_eq!(bullet_list_item("普通文本"), None);
+        assert_eq!(equal_column_widths(3), vec![3120, 3120, 3120]);
+        assert_eq!(equal_column_widths(7).iter().sum::<usize>(), 9360);
+        assert!(is_markdown_table_separator(
+            &["---".to_string(), ":---:".to_string()],
+            2
+        ));
+        assert!(!is_markdown_table_separator(
+            &["---".to_string(), "---".to_string()],
+            3
+        ));
     }
 }
