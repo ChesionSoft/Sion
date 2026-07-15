@@ -32,6 +32,7 @@ type ProjectFile = { id: string; originalName: string; byteSize: number; status:
 type ProjectListResponse = { apiVersion: number; projects: RecentProject[] };
 type CreateResponse = { apiVersion: number; created: boolean; project?: ProjectManifest };
 type NodeResponse = { apiVersion: number } & WorkflowNode;
+type AgentOverrideResponse = { apiVersion: number; markdown?: string };
 type SaveResponse = { apiVersion: number; saved?: WorkflowNode; conflict?: { latest: WorkflowNode } };
 type DeliveryPreviewResponse = { apiVersion: number; assistantMessageId: string; nodeId: NodeId; currentRevision: number; markdown: string; additions: number; deletions: number; unchanged: number };
 type SessionListResponse = { apiVersion: number; sessions: ChatSession[] };
@@ -68,6 +69,10 @@ export function App() {
   const [nodeId, setNodeId] = useState<NodeId>("basic-info");
   const [node, setNode] = useState<WorkflowNode | null>(null);
   const [draft, setDraft] = useState("");
+  const [agentOverride, setAgentOverride] = useState<string | null>(null);
+  const [agentOverrideDraft, setAgentOverrideDraft] = useState("");
+  const [agentOverrideOpen, setAgentOverrideOpen] = useState(false);
+  const [savingAgentOverride, setSavingAgentOverride] = useState(false);
   const [notice, setNotice] = useState("正在连接本机应用服务");
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -110,6 +115,7 @@ export function App() {
   useEffect(() => {
     if (project) {
       void loadNode(project.id, nodeId);
+      void loadAgentOverride(project.id, nodeId);
       void loadSessions(project.id, nodeId);
     }
   }, [project, nodeId]);
@@ -317,6 +323,40 @@ export function App() {
     } catch (error) {
       setNode(null);
       setNotice(`读取节点失败：${String(error)}`);
+    }
+  }
+
+  async function loadAgentOverride(projectId: string, nextNodeId: NodeId) {
+    setAgentOverride(null);
+    try {
+      const response = await invoke<AgentOverrideResponse>("project_get_agent_override", {
+        request: { apiVersion: API_VERSION, projectId, nodeId: nextNodeId },
+      });
+      setAgentOverride(response.markdown ?? null);
+    } catch (error) {
+      setNotice(`读取节点自定义规则失败：${String(error)}`);
+    }
+  }
+
+  function openAgentOverride() {
+    setAgentOverrideDraft(agentOverride ?? "");
+    setAgentOverrideOpen(true);
+  }
+
+  async function saveAgentOverride() {
+    if (!project) return;
+    setSavingAgentOverride(true);
+    try {
+      const response = await invoke<AgentOverrideResponse>("project_save_agent_override", {
+        request: { apiVersion: API_VERSION, projectId: project.id, nodeId, markdown: agentOverrideDraft },
+      });
+      setAgentOverride(response.markdown ?? null);
+      setAgentOverrideOpen(false);
+      setNotice(response.markdown ? "节点自定义规则已保存；它会追加到内置规则后" : "已清除节点自定义规则；Agent 将只使用内置规则");
+    } catch (error) {
+      setNotice(`保存节点自定义规则失败：${String(error)}`);
+    } finally {
+      setSavingAgentOverride(false);
     }
   }
 
@@ -575,9 +615,10 @@ export function App() {
       <header className="workbench-bar"><button className="wordmark" onClick={() => { setDeliveryPreview(null); setProject(null); }} type="button">SION<span>DESKTOP</span></button><div className="project-heading"><span>项目 / {project.name}</span><strong>{nodeTitle}</strong></div><div className="save-state"><span className={dirty ? "dirty-dot" : "clean-dot"} />{dirty ? "有未保存修改" : "已同步本地磁盘"}<button className="export-button" disabled={exporting} onClick={() => void exportDocx()} type="button">{exporting ? "导出中" : "DOCX"}</button><button className="save-button" disabled={!dirty || saving} onClick={() => void saveNode()} type="button">{saving ? "保存中" : "保存"} <b>⌘S</b></button></div></header>
       <div className="workbench-grid">
         <aside className="node-rail"><div className="rail-title"><span>设计路径</span><b>12</b></div>{NODES.map(([id, title], index) => <button className={id === nodeId ? "node-item selected" : "node-item"} key={id} onClick={() => { setDeliveryPreview(null); setNodeId(id); }} type="button"><span>{String(index + 1).padStart(2, "0")}</span><strong>{title}</strong><i>{id === nodeId ? "●" : ""}</i></button>)}<div className="rail-foot"><div className="file-head"><span>文件池 / {files.length}</span><button disabled={importingFile} onClick={() => void importFile()} type="button">{importingFile ? "导入中" : "+ 导入"}</button></div>{files.length === 0 ? <small>尚无项目文件</small> : files.slice(-3).map((file) => <label className="file-row" key={file.id}><input checked={selectedFileIds.includes(file.id)} disabled={file.extractionStatus !== "available"} onChange={() => setSelectedFileIds((current) => current.includes(file.id) ? current.filter((id) => id !== file.id) : [...current, file.id])} type="checkbox" /> {file.extractionStatus === "available" ? "◼" : "◇"} {file.originalName}</label>)}</div></aside>
-        <section className="editor-pane"><div className="editor-head"><div><p className="panel-kicker">NODE / {nodeId.toUpperCase()}</p><h1>{nodeTitle}</h1></div><span className={`node-status status-${node?.status ?? "not_started"}`}>{node ? statusLabel[node.status] : "读取中"}</span></div><textarea aria-label={`${nodeTitle} Markdown 编辑器`} disabled={!node} onChange={(event) => setDraft(event.target.value)} spellCheck={false} value={draft} /><div className="editor-foot"><span>Markdown · revision {node?.revision ?? "—"}</span><span>{draft.length.toLocaleString()} 字符</span></div></section>
+        <section className="editor-pane"><div className="editor-head"><div><p className="panel-kicker">NODE / {nodeId.toUpperCase()}</p><h1>{nodeTitle}</h1></div><div className="editor-actions"><button className={agentOverride ? "override-control active" : "override-control"} onClick={openAgentOverride} type="button">{agentOverride ? "自定义规则 · 已启用" : "自定义规则"}</button><span className={`node-status status-${node?.status ?? "not_started"}`}>{node ? statusLabel[node.status] : "读取中"}</span></div></div><textarea aria-label={`${nodeTitle} Markdown 编辑器`} disabled={!node} onChange={(event) => setDraft(event.target.value)} spellCheck={false} value={draft} /><div className="editor-foot"><span>Markdown · revision {node?.revision ?? "—"}</span><span>{draft.length.toLocaleString()} 字符</span></div></section>
       <aside className="run-pane"><div className="run-heading"><p className="panel-kicker">节点会话</p><span>{activeRunId ? <button className="cancel-run" onClick={() => void cancelAgent()} type="button">取消运行</button> : <button className="new-session" onClick={() => void createSession()} type="button">+ 新建</button>}</span></div><div className="session-list">{sessions.length === 0 ? <p className="session-empty">这个节点还没有会话。可直接输入消息，Sion 会先建立本地会话。</p> : sessions.map((session) => <button className={session.id === sessionId ? "session-row active" : "session-row"} key={session.id} onClick={() => { setDeliveryPreview(null); setSessionId(session.id); }} type="button"><strong>{session.name}</strong><span>{session.messageCount} 条消息</span></button>)}</div><div className="task-center"><p>任务中心 / {runs.length}</p>{runs.length === 0 ? <span>暂无运行记录</span> : runs.slice(0, 3).map((run) => <div key={run.id}><i className={`run-${run.status}`} /> <strong>{run.nodeId === nodeId ? "当前节点" : run.nodeId}</strong><small>{run.status === "running" ? "运行中" : run.status === "queued" ? "排队中" : run.status === "completed" ? "已完成" : run.status === "cancelled" ? "已取消" : "失败"}</small></div>)}</div><div className="message-thread">{messages.length === 0 ? <div className="thread-empty"><div className="orbit-mark">↗</div><p>消息会保存在项目 `.sion/chat/`。历史来源和 token 元数据也可被保留，但新应用不会发起网页搜索。</p></div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span>{message.role === "user" ? "你" : message.role === "assistant" ? "助手" : "系统"}</span><p>{message.content}</p>{message.role === "assistant" && !message.id.startsWith("stream-") ? <button className="apply-reply" disabled={previewingMessageId === message.id} onClick={() => void previewAssistant(message.id)} type="button">{previewingMessageId === message.id ? "解析中" : "预览修改"}</button> : null}</article>)}</div><form className="message-form" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}><textarea aria-label="发送给此节点的消息" onChange={(event) => setMessageDraft(event.target.value)} placeholder="描述你希望在此节点完成的工作…" value={messageDraft} /><button disabled={!messageDraft.trim() || sendingMessage || Boolean(activeRunId)} type="submit">{sendingMessage ? "发送中" : activeRunId ? "Agent 运行中" : "发送并运行"}<b>↗</b></button></form><div className="run-notice">{notice}</div></aside>
       </div>
+      {agentOverrideOpen ? <section className="override-dialog" role="dialog" aria-modal="true" aria-label="节点自定义规则"><div className="override-card"><div className="override-head"><div><p className="panel-kicker">节点自定义规则</p><h2>{nodeTitle}</h2><span>这段规则会追加到内置规则之后；留空并保存即可恢复默认规则。</span></div><button onClick={() => setAgentOverrideOpen(false)} type="button" aria-label="关闭自定义规则">×</button></div><textarea aria-label={`${nodeTitle} 自定义规则`} onChange={(event) => setAgentOverrideDraft(event.target.value)} placeholder="例如：仅使用已经确认的事实；不推断预算或日期。" value={agentOverrideDraft} /><div className="override-footer"><span>{agentOverrideDraft.trim() ? "将作为附加约束传给本节点 Agent" : "当前没有附加规则"}</span><div><button onClick={() => setAgentOverrideOpen(false)} type="button">取消</button><button disabled={savingAgentOverride} onClick={() => void saveAgentOverride()} type="button">{savingAgentOverride ? "保存中…" : agentOverrideDraft.trim() ? "保存规则" : "清除规则"}</button></div></div></div></section> : null}
       {deliveryPreview ? <section className="delivery-preview" role="dialog" aria-modal="true" aria-label="Assistant 修改预览"><div className="delivery-preview-card"><div className="delivery-preview-head"><div><p className="panel-kicker">修改预览</p><span>以下为应用分节交付后的完整节点</span></div><button onClick={() => setDeliveryPreview(null)} type="button" aria-label="关闭修改预览">×</button></div><div className="delivery-stats"><span><strong>+{deliveryPreview.additions}</strong> 新增</span><span><strong>-{deliveryPreview.deletions}</strong> 删除</span><span><strong>{deliveryPreview.unchanged}</strong> 保留</span><span><strong>r{deliveryPreview.currentRevision}</strong> 基线</span></div><pre>{deliveryPreview.markdown}</pre><div className="delivery-actions"><button onClick={() => setDeliveryPreview(null)} type="button">取消</button><button onClick={() => void applyAssistant(deliveryPreview.assistantMessageId)} type="button">确认应用修改</button></div></div></section> : null}
     </main>
   );

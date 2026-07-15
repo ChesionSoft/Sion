@@ -447,16 +447,35 @@ impl ProjectStore {
     /// additive project instruction, never an arbitrary path from IPC.
     pub fn agent_override(&self, node_id: WorkflowNodeId) -> Result<Option<String>> {
         self.manifest()?;
-        let path = self
-            .sion_dir()
-            .join("agent-overrides")
-            .join(format!("{}.md", node_id.as_str()));
+        let path = self.agent_override_path(node_id);
         if !path.exists() {
             return Ok(None);
         }
         fs::read_to_string(&path)
             .map(Some)
             .map_err(|source| StorageError::Io { path, source })
+    }
+
+    /// Saves the project-specific additive instruction for a workflow node.
+    /// Whitespace-only input deliberately removes the override, returning the
+    /// Agent to its bundled default rule without leaving an empty source file.
+    pub fn save_agent_override(
+        &self,
+        node_id: WorkflowNodeId,
+        markdown: String,
+    ) -> Result<Option<String>> {
+        self.manifest()?;
+        let path = self.agent_override_path(node_id);
+        if markdown.trim().is_empty() {
+            match fs::remove_file(&path) {
+                Ok(()) => sync_directory(path.parent().expect("override path has a parent"))?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => return Err(StorageError::Io { path, source }),
+            }
+            return Ok(None);
+        }
+        atomic_write_bytes(&path, markdown.as_bytes())?;
+        Ok(Some(markdown))
     }
 
     /// Persists diagnostic-only run state. Model output tokens are intentionally
@@ -583,6 +602,11 @@ impl ProjectStore {
         self.sion_dir()
             .join("nodes")
             .join(format!("{}.json", id.as_str()))
+    }
+    fn agent_override_path(&self, id: WorkflowNodeId) -> PathBuf {
+        self.sion_dir()
+            .join("agent-overrides")
+            .join(format!("{}.md", id.as_str()))
     }
     fn chat_node_dir(&self, id: WorkflowNodeId) -> PathBuf {
         self.sion_dir().join("chat").join(id.as_str())
@@ -1280,6 +1304,29 @@ mod tests {
         assert_eq!(
             store.agent_override(WorkflowNodeId::BasicInfo).unwrap(),
             Some("仅写确认信息".to_string())
+        );
+        assert_eq!(store.agent_override(WorkflowNodeId::Goals).unwrap(), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saves_and_clears_a_project_agent_override_atomically() {
+        let root = temp_project();
+        let store = ProjectStore::at(&root);
+        store.create(input()).unwrap();
+        let saved = store
+            .save_agent_override(WorkflowNodeId::Goals, "只使用确认的目标。".to_string())
+            .unwrap();
+        assert_eq!(saved.as_deref(), Some("只使用确认的目标。"));
+        assert_eq!(
+            store.agent_override(WorkflowNodeId::Goals).unwrap(),
+            Some("只使用确认的目标。".to_string())
+        );
+        assert_eq!(
+            store
+                .save_agent_override(WorkflowNodeId::Goals, " \n ".to_string())
+                .unwrap(),
+            None
         );
         assert_eq!(store.agent_override(WorkflowNodeId::Goals).unwrap(), None);
         let _ = fs::remove_dir_all(root);

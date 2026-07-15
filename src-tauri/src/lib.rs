@@ -275,6 +275,22 @@ struct ProjectNodeRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ProjectAgentOverrideSaveRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    markdown: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectAgentOverride {
+    markdown: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProjectSaveNodeRequest {
     #[serde(flatten)]
     version: VersionedRequest,
@@ -905,6 +921,38 @@ fn project_get_node(
 }
 
 #[tauri::command]
+fn project_get_agent_override(
+    request: ProjectNodeRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ProjectAgentOverride>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let markdown = ProjectStore::at(project_root)
+        .agent_override(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: ProjectAgentOverride { markdown },
+    })
+}
+
+#[tauri::command]
+fn project_save_agent_override(
+    request: ProjectAgentOverrideSaveRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ProjectAgentOverride>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let markdown = ProjectStore::at(project_root)
+        .save_agent_override(request.node_id, request.markdown)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: ProjectAgentOverride { markdown },
+    })
+}
+
+#[tauri::command]
 fn project_save_node(
     request: ProjectSaveNodeRequest,
     app: tauri::AppHandle,
@@ -1485,6 +1533,8 @@ pub fn run() {
             project_create,
             project_list,
             project_get_node,
+            project_get_agent_override,
+            project_save_agent_override,
             project_save_node,
             project_preview_assistant_delivery,
             project_apply_assistant,
