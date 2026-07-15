@@ -175,6 +175,7 @@ export function App() {
     try {
       const response = await invoke<VersionResponse>("app_get_version", { request: { apiVersion: API_VERSION } });
       setVersion(response);
+      setNotice("本机应用服务已就绪");
     } catch (error) {
       setNotice(`IPC 不可用：${String(error)}`);
     }
