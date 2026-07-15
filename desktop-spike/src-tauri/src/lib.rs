@@ -290,6 +290,19 @@ struct ProjectSaveNodeRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ProjectApplyAssistantRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    assistant_message_id: String,
+    expected_revision: u64,
+    now: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProjectExportRequest {
     #[serde(flatten)]
     version: VersionedRequest,
@@ -893,6 +906,42 @@ fn project_save_node(
 }
 
 #[tauri::command]
+fn project_apply_assistant(
+    request: ProjectApplyAssistantRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<SaveNodeResult>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(project_root);
+    let message = store
+        .messages(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?
+        .into_iter()
+        .find(|message| message.id == request.assistant_message_id)
+        .ok_or_else(|| {
+            ApiError::CheckFailed("assistant message was not found in this session".to_string())
+        })?;
+    if message.role != ChatRole::Assistant {
+        return Err(ApiError::CheckFailed(
+            "only an assistant message can replace a node draft".to_string(),
+        ));
+    }
+    let result = store
+        .save_node_if_revision(
+            request.node_id,
+            request.expected_revision,
+            message.content,
+            NodeStatus::Generated,
+            request.now,
+        )
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: result,
+    })
+}
+
+#[tauri::command]
 fn project_export_docx(
     request: ProjectExportRequest,
     app: tauri::AppHandle,
@@ -1331,6 +1380,7 @@ pub fn run() {
             project_list,
             project_get_node,
             project_save_node,
+            project_apply_assistant,
             project_export_docx,
             session_list,
             session_create,
