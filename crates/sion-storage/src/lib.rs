@@ -7,6 +7,7 @@ use std::{
 };
 
 use serde::Serialize;
+use sion_agent::AgentRun;
 use sion_core::{
     ChatMessage, ChatSession, FileExtractionStatus, NodeStatus, PROJECT_SCHEMA_VERSION,
     ProjectFile, ProjectFileKind, ProjectManifest, WorkflowNode, WorkflowNodeId, default_nodes,
@@ -32,6 +33,8 @@ pub enum StorageError {
     InvalidFileName(PathBuf),
     #[error("project file {0} does not exist")]
     ProjectFileNotFound(String),
+    #[error("agent run id is unsafe: {0}")]
+    UnsafeRunId(String),
     #[error("project uses schema {found}, but this app supports up to {supported}")]
     UnsupportedSchema { found: u32, supported: u32 },
     #[error("project JSON is invalid at {path}: {source}")]
@@ -439,6 +442,54 @@ impl ProjectStore {
             })
     }
 
+    /// Persists diagnostic-only run state. Model output tokens are intentionally
+    /// not represented here; a cancelled run cannot leave a partial assistant
+    /// message on disk by way of this record.
+    pub fn save_run(&self, run: &AgentRun) -> Result<()> {
+        self.manifest()?;
+        atomic_write_json(&self.run_path(&run.id)?, run)
+    }
+
+    pub fn run(&self, run_id: &str) -> Result<AgentRun> {
+        self.manifest()?;
+        read_json(&self.run_path(run_id)?)
+    }
+
+    pub fn list_runs(&self) -> Result<Vec<AgentRun>> {
+        self.manifest()?;
+        let directory = self.runs_dir();
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+        let mut runs: Vec<AgentRun> = Vec::new();
+        for entry in fs::read_dir(&directory).map_err(|source| StorageError::Io {
+            path: directory.clone(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| StorageError::Io {
+                path: directory.clone(),
+                source,
+            })?;
+            if entry
+                .file_type()
+                .map_err(|source| StorageError::Io {
+                    path: entry.path(),
+                    source,
+                })?
+                .is_file()
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    == Some("json")
+            {
+                runs.push(read_json(&entry.path())?);
+            }
+        }
+        runs.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        Ok(runs)
+    }
+
     fn recover_pending_append(&self, node_id: WorkflowNodeId) -> Result<()> {
         let journal_path = self.append_journal_path(node_id);
         if !journal_path.exists() {
@@ -536,6 +587,15 @@ impl ProjectStore {
     }
     fn files_index_path(&self) -> PathBuf {
         self.files_dir().join("index.json")
+    }
+    fn runs_dir(&self) -> PathBuf {
+        self.sion_dir().join("runs")
+    }
+    fn run_path(&self, run_id: &str) -> Result<PathBuf> {
+        if !is_safe_file_component(run_id) {
+            return Err(StorageError::UnsafeRunId(run_id.to_string()));
+        }
+        Ok(self.runs_dir().join(format!("{run_id}.json")))
     }
 }
 
@@ -982,6 +1042,28 @@ mod tests {
             Some(FileExtractionStatus::Unsupported)
         );
         assert_eq!(store.read_file_text(&file.id).unwrap(), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persists_run_summaries_without_assistant_message_contents() {
+        let root = temp_project();
+        let store = ProjectStore::at(&root);
+        store.create(input()).unwrap();
+        let run = AgentRun {
+            id: "run-1".to_string(),
+            project_id: "project-1".to_string(),
+            node_id: WorkflowNodeId::Goals,
+            status: sion_agent::AgentRunStatus::Cancelled,
+            created_at: "2026-07-15T00:00:00.000Z".to_string(),
+            started_at: Some("2026-07-15T00:00:01.000Z".to_string()),
+            finished_at: Some("2026-07-15T00:00:02.000Z".to_string()),
+            summary: Some("用户取消，未保存任何部分助手内容".to_string()),
+        };
+        store.save_run(&run).unwrap();
+
+        assert_eq!(store.run("run-1").unwrap(), run);
+        assert_eq!(store.list_runs().unwrap(), vec![run]);
         fs::remove_dir_all(root).unwrap();
     }
 }
