@@ -290,6 +290,114 @@ pub struct WorkflowNode {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatRole {
+    User,
+    Assistant,
+    System,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoricalSourceKind {
+    ProvidedUrl,
+    WebSearch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoricalSource {
+    pub id: String,
+    pub kind: HistoricalSourceKind,
+    pub url: String,
+    pub title: String,
+    pub domain: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    pub retrieved_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenUsageSource {
+    Exact,
+    Estimated,
+    Mixed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCallCategory {
+    Answer,
+    ToolPlanning,
+    DocumentUpdate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCallStatus {
+    Completed,
+    Interrupted,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCallUsage {
+    pub id: String,
+    pub category: ModelCallCategory,
+    pub provider_id: String,
+    pub model: String,
+    pub source: TokenUsageSource,
+    pub status: ModelCallStatus,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnTokenUsage {
+    pub turn_id: String,
+    pub source: TokenUsageSource,
+    pub call_count: u32,
+    pub calls: Vec<ModelCallUsage>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage {
+    pub id: String,
+    pub role: ChatRole,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<HistoricalSource>>,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TurnTokenUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSession {
+    pub id: String,
+    pub node_id: WorkflowNodeId,
+    pub name: String,
+    pub message_count: u32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 pub fn default_node(id: WorkflowNodeId, now: impl Into<String>) -> WorkflowNode {
     let definition = workflow_definition(id);
     let mut lines = vec![format!("# {}", definition.title), String::new()];
@@ -338,5 +446,21 @@ mod tests {
         assert!(node.markdown.contains("## 需求背景"));
         assert!(node.markdown.contains("## 建设目标"));
         assert!(node.markdown.contains("## 范围边界"));
+    }
+
+    #[test]
+    fn parses_historical_message_metadata_without_enabling_new_web_access() {
+        let messages: Vec<ChatMessage> = serde_json::from_str(include_str!(
+            "../../../fixtures/legacy-projects/minimal/projects/6a6b57e7-cbb6-4c0a-b630-000000000001/chat/basic-info/11111111-2222-4333-8444-555555555555.json"
+        ))
+        .unwrap();
+        let assistant = &messages[1];
+        assert_eq!(assistant.role, ChatRole::Assistant);
+        assert_eq!(
+            assistant.sources.as_ref().unwrap()[0].kind,
+            HistoricalSourceKind::WebSearch
+        );
+        assert_eq!(assistant.usage.as_ref().unwrap().total_tokens, 160);
+        assert_eq!(assistant.reasoning_duration_ms, Some(1200));
     }
 }

@@ -25,10 +25,14 @@ type VersionResponse = { apiVersion: number; appVersion: string; rustTarget: str
 type RecentProject = { id: string; name: string; rootPath: string; openedAt: string };
 type ProjectManifest = { id: string; name: string; customerName: string; authorName: string; version: string };
 type WorkflowNode = { id: NodeId; status: NodeStatus; markdown: string; revision: number; updatedAt: string };
+type ChatSession = { id: string; nodeId: NodeId; name: string; messageCount: number; createdAt: string; updatedAt: string };
+type ChatMessage = { id: string; role: "user" | "assistant" | "system"; content: string; createdAt: string };
 type ProjectListResponse = { apiVersion: number; projects: RecentProject[] };
 type CreateResponse = { apiVersion: number; created: boolean; project?: ProjectManifest };
 type NodeResponse = { apiVersion: number } & WorkflowNode;
 type SaveResponse = { apiVersion: number; saved?: WorkflowNode; conflict?: { latest: WorkflowNode } };
+type SessionListResponse = { apiVersion: number; sessions: ChatSession[] };
+type MessageListResponse = { apiVersion: number; messages: ChatMessage[] };
 
 const statusLabel: Record<NodeStatus, string> = {
   not_started: "未开始",
@@ -53,6 +57,11 @@ export function App() {
   const [newName, setNewName] = useState("新项目设计文档");
   const [newCustomer, setNewCustomer] = useState("");
   const [newAuthor, setNewAuthor] = useState("");
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messageDraft, setMessageDraft] = useState("");
+  const [sendingMessage, setSendingMessage] = useState(false);
 
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
@@ -62,8 +71,15 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (project) void loadNode(project.id, nodeId);
+    if (project) {
+      void loadNode(project.id, nodeId);
+      void loadSessions(project.id, nodeId);
+    }
   }, [project?.id, nodeId]);
+
+  useEffect(() => {
+    if (project && sessionId) void loadMessages(project.id, nodeId, sessionId);
+  }, [project?.id, nodeId, sessionId]);
 
   async function loadVersion() {
     try {
@@ -156,6 +172,78 @@ export function App() {
     }
   }
 
+  async function loadSessions(projectId: string, nextNodeId: NodeId) {
+    setSessionId(null);
+    setMessages([]);
+    try {
+      const response = await invoke<SessionListResponse>("session_list", {
+        request: { apiVersion: API_VERSION, projectId, nodeId: nextNodeId },
+      });
+      setSessions(response.sessions);
+      setSessionId(response.sessions[0]?.id ?? null);
+    } catch (error) {
+      setSessions([]);
+      setNotice(`读取会话失败：${String(error)}`);
+    }
+  }
+
+  async function createSession(): Promise<ChatSession | null> {
+    if (!project) return null;
+    try {
+      const session = await invoke<ChatSession>("session_create", {
+        request: {
+          apiVersion: API_VERSION,
+          projectId: project.id,
+          nodeId,
+          name: `会话 ${new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`,
+          now: now(),
+        },
+      });
+      setSessions((current) => [session, ...current]);
+      setSessionId(session.id);
+      setMessages([]);
+      setNotice("已创建本地会话");
+      return session;
+    } catch (error) {
+      setNotice(`创建会话失败：${String(error)}`);
+      return null;
+    }
+  }
+
+  async function loadMessages(projectId: string, nextNodeId: NodeId, nextSessionId: string) {
+    try {
+      const response = await invoke<MessageListResponse>("message_list", {
+        request: { apiVersion: API_VERSION, projectId, nodeId: nextNodeId, sessionId: nextSessionId },
+      });
+      setMessages(response.messages);
+    } catch (error) {
+      setMessages([]);
+      setNotice(`读取消息失败：${String(error)}`);
+    }
+  }
+
+  async function sendMessage() {
+    const content = messageDraft.trim();
+    if (!project || !content) return;
+    setSendingMessage(true);
+    try {
+      const active = sessionId ? sessions.find((session) => session.id === sessionId) ?? null : await createSession();
+      if (!active) return;
+      const message: ChatMessage = { id: crypto.randomUUID(), role: "user", content, createdAt: now() };
+      await invoke<ChatSession>("message_append", {
+        request: { apiVersion: API_VERSION, projectId: project.id, nodeId, sessionId: active.id, message, now: now() },
+      });
+      setMessages((current) => [...current, message]);
+      setSessions((current) => current.map((session) => session.id === active.id ? { ...session, messageCount: session.messageCount + 1, updatedAt: message.createdAt } : session));
+      setMessageDraft("");
+      setNotice("用户消息已持久化；Agent Run 尚未接入，因此不会生成模拟回复");
+    } catch (error) {
+      setNotice(`保存消息失败：${String(error)}`);
+    } finally {
+      setSendingMessage(false);
+    }
+  }
+
   if (!project) {
     return (
       <main className="desk-shell landing-shell">
@@ -186,7 +274,7 @@ export function App() {
       <div className="workbench-grid">
         <aside className="node-rail"><div className="rail-title"><span>设计路径</span><b>12</b></div>{NODES.map(([id, title], index) => <button className={id === nodeId ? "node-item selected" : "node-item"} key={id} onClick={() => setNodeId(id)} type="button"><span>{String(index + 1).padStart(2, "0")}</span><strong>{title}</strong><i>{id === nodeId ? "●" : ""}</i></button>)}<div className="rail-foot">项目状态<br /><strong>本地工作中</strong></div></aside>
         <section className="editor-pane"><div className="editor-head"><div><p className="panel-kicker">NODE / {nodeId.toUpperCase()}</p><h1>{nodeTitle}</h1></div><span className={`node-status status-${node?.status ?? "not_started"}`}>{node ? statusLabel[node.status] : "读取中"}</span></div><textarea aria-label={`${nodeTitle} Markdown 编辑器`} disabled={!node} onChange={(event) => setDraft(event.target.value)} spellCheck={false} value={draft} /><div className="editor-foot"><span>Markdown · revision {node?.revision ?? "—"}</span><span>{draft.length.toLocaleString()} 字符</span></div></section>
-        <aside className="run-pane"><div className="run-heading"><p className="panel-kicker">任务中心</p><span>0 RUNS</span></div><div className="run-empty"><div className="orbit-mark">↗</div><h2>编辑已就绪</h2><p>本阶段只持久化人工编辑。Agent Run、文件上下文和交付预览会在下一里程碑接入，不会在这里模拟为已完成。</p></div><div className="boundary-list"><p>本机边界</p><span>✓ 节点 CAS 保存</span><span>✓ `.sion/` 原子写入</span><span>✓ 不含网页搜索</span><span>✓ 不含 Node 服务</span></div><div className="run-notice">{notice}</div></aside>
+        <aside className="run-pane"><div className="run-heading"><p className="panel-kicker">节点会话</p><button className="new-session" onClick={() => void createSession()} type="button">+ 新建</button></div><div className="session-list">{sessions.length === 0 ? <p className="session-empty">这个节点还没有会话。可直接输入消息，Sion 会先建立本地会话。</p> : sessions.map((session) => <button className={session.id === sessionId ? "session-row active" : "session-row"} key={session.id} onClick={() => setSessionId(session.id)} type="button"><strong>{session.name}</strong><span>{session.messageCount} 条消息</span></button>)}</div><div className="message-thread">{messages.length === 0 ? <div className="thread-empty"><div className="orbit-mark">↗</div><p>消息会保存在项目 `.sion/chat/`。历史来源和 token 元数据也可被保留，但新应用不会发起网页搜索。</p></div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span>{message.role === "user" ? "你" : message.role === "assistant" ? "助手" : "系统"}</span><p>{message.content}</p></article>)}</div><form className="message-form" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}><textarea aria-label="发送给此节点的消息" onChange={(event) => setMessageDraft(event.target.value)} placeholder="描述你希望在此节点完成的工作…" value={messageDraft} /><button disabled={!messageDraft.trim() || sendingMessage} type="submit">{sendingMessage ? "保存中" : "保存消息"}<b>↗</b></button></form><div className="run-notice">{notice}</div></aside>
       </div>
     </main>
   );

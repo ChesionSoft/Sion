@@ -6,7 +6,9 @@ mod provider_migration;
 mod streaming;
 
 use serde::{Deserialize, Serialize};
-use sion_core::{NodeStatus, ProjectManifest, WorkflowNode, WorkflowNodeId};
+use sion_core::{
+    ChatMessage, ChatSession, NodeStatus, ProjectManifest, WorkflowNode, WorkflowNodeId,
+};
 use sion_storage::{
     CreateProjectInput, ProjectRegistry, ProjectStore, RecentProject, SaveNodeResult,
 };
@@ -137,6 +139,60 @@ struct ProjectSaveNodeRequest {
     markdown: String,
     status: NodeStatus,
     now: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionListRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionCreateRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    name: String,
+    now: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageListRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageAppendRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    message: ChatMessage,
+    now: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionList {
+    sessions: Vec<ChatSession>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageList {
+    messages: Vec<ChatMessage>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -369,6 +425,75 @@ fn project_save_node(
     })
 }
 
+#[tauri::command]
+fn session_list(
+    request: SessionListRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<SessionList>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let sessions = ProjectStore::at(project_root)
+        .list_sessions(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: SessionList { sessions },
+    })
+}
+
+#[tauri::command]
+fn session_create(
+    request: SessionCreateRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ChatSession>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let session = ProjectStore::at(project_root)
+        .create_session(request.node_id, request.name, request.now)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: session,
+    })
+}
+
+#[tauri::command]
+fn message_list(
+    request: MessageListRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<MessageList>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let messages = ProjectStore::at(project_root)
+        .messages(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: MessageList { messages },
+    })
+}
+
+#[tauri::command]
+fn message_append(
+    request: MessageAppendRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ChatSession>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let session = ProjectStore::at(project_root)
+        .append_message(
+            request.node_id,
+            &request.session_id,
+            request.message,
+            request.now,
+        )
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: session,
+    })
+}
+
 fn resolve_registered_project_root(
     app: &tauri::AppHandle,
     project_id: &str,
@@ -395,7 +520,11 @@ pub fn run() {
             project_create,
             project_list,
             project_get_node,
-            project_save_node
+            project_save_node,
+            session_list,
+            session_create,
+            message_list,
+            message_append
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Sion desktop spike");

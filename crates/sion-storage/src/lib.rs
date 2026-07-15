@@ -8,8 +8,8 @@ use std::{
 
 use serde::Serialize;
 use sion_core::{
-    NodeStatus, PROJECT_SCHEMA_VERSION, ProjectManifest, WorkflowNode, WorkflowNodeId,
-    default_nodes,
+    ChatMessage, ChatSession, NodeStatus, PROJECT_SCHEMA_VERSION, ProjectManifest, WorkflowNode,
+    WorkflowNodeId, default_nodes,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -22,6 +22,12 @@ pub enum StorageError {
     NotInitialized,
     #[error("project {0} is not registered")]
     NotRegistered(String),
+    #[error("chat session id is unsafe: {0}")]
+    UnsafeSessionId(String),
+    #[error("chat session {0} does not exist")]
+    SessionNotFound(String),
+    #[error("chat message count exceeds the supported range")]
+    MessageCountOverflow,
     #[error("project uses schema {found}, but this app supports up to {supported}")]
     UnsupportedSchema { found: u32, supported: u32 },
     #[error("project JSON is invalid at {path}: {source}")]
@@ -52,6 +58,14 @@ pub struct CreateProjectInput {
 pub enum SaveNodeResult {
     Saved(WorkflowNode),
     Conflict { latest: WorkflowNode },
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingMessageAppend {
+    session_id: String,
+    message: ChatMessage,
+    updated_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +173,15 @@ impl ProjectStore {
             for directory in ["chat", "files", "agent-overrides", "exports", "runs"] {
                 create_dir_all(&staging.join(directory))?;
             }
+            for node_id in WorkflowNodeId::ALL {
+                atomic_write_json(
+                    &staging
+                        .join("chat")
+                        .join(node_id.as_str())
+                        .join("sessions.json"),
+                    &Vec::<ChatSession>::new(),
+                )?;
+            }
             atomic_write_json(
                 &staging.join("files/index.json"),
                 &Vec::<serde_json::Value>::new(),
@@ -224,6 +247,154 @@ impl ProjectStore {
         Ok(SaveNodeResult::Saved(saved))
     }
 
+    pub fn list_sessions(&self, node_id: WorkflowNodeId) -> Result<Vec<ChatSession>> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        let path = self.sessions_path(node_id);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut sessions: Vec<ChatSession> = read_json(&path)?;
+        sessions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        Ok(sessions)
+    }
+
+    pub fn create_session(
+        &self,
+        node_id: WorkflowNodeId,
+        name: String,
+        now: String,
+    ) -> Result<ChatSession> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        let session = ChatSession {
+            id: Uuid::new_v4().to_string(),
+            node_id,
+            name,
+            message_count: 0,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        atomic_write_json(
+            &self.messages_path(node_id, &session.id)?,
+            &Vec::<ChatMessage>::new(),
+        )?;
+        let mut sessions = self.list_sessions(node_id)?;
+        sessions.push(session.clone());
+        sessions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        atomic_write_json(&self.sessions_path(node_id), &sessions)?;
+        Ok(session)
+    }
+
+    pub fn messages(&self, node_id: WorkflowNodeId, session_id: &str) -> Result<Vec<ChatMessage>> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        self.require_session(node_id, session_id)?;
+        read_json(&self.messages_path(node_id, session_id)?)
+    }
+
+    /// Appends a fully formed message with a small write-ahead journal so an
+    /// interruption cannot silently lose a message or leave the session count stale.
+    pub fn append_message(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        message: ChatMessage,
+        updated_at: String,
+    ) -> Result<ChatSession> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        self.require_session(node_id, session_id)?;
+        let journal = PendingMessageAppend {
+            session_id: session_id.to_string(),
+            message: message.clone(),
+            updated_at: updated_at.clone(),
+        };
+        atomic_write_json(&self.append_journal_path(node_id), &journal)?;
+
+        let mut messages: Vec<ChatMessage> = read_json(&self.messages_path(node_id, session_id)?)?;
+        if !messages.iter().any(|item| item.id == message.id) {
+            messages.push(message);
+            atomic_write_json(&self.messages_path(node_id, session_id)?, &messages)?;
+        }
+        let session =
+            self.update_session_metadata(node_id, session_id, messages.len(), updated_at)?;
+        fs::remove_file(self.append_journal_path(node_id)).map_err(|source| StorageError::Io {
+            path: self.append_journal_path(node_id),
+            source,
+        })?;
+        Ok(session)
+    }
+
+    fn recover_pending_append(&self, node_id: WorkflowNodeId) -> Result<()> {
+        let journal_path = self.append_journal_path(node_id);
+        if !journal_path.exists() {
+            return Ok(());
+        }
+        let pending: PendingMessageAppend = read_json(&journal_path)?;
+        self.require_session(node_id, &pending.session_id)?;
+        let message_path = self.messages_path(node_id, &pending.session_id)?;
+        let mut messages: Vec<ChatMessage> = read_json(&message_path)?;
+        if !messages
+            .iter()
+            .any(|message| message.id == pending.message.id)
+        {
+            messages.push(pending.message);
+            atomic_write_json(&message_path, &messages)?;
+        }
+        self.update_session_metadata(
+            node_id,
+            &pending.session_id,
+            messages.len(),
+            pending.updated_at,
+        )?;
+        fs::remove_file(&journal_path).map_err(|source| StorageError::Io {
+            path: journal_path,
+            source,
+        })
+    }
+
+    fn update_session_metadata(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        message_count: usize,
+        updated_at: String,
+    ) -> Result<ChatSession> {
+        let count = u32::try_from(message_count).map_err(|_| StorageError::MessageCountOverflow)?;
+        let mut sessions = self.read_sessions(node_id)?;
+        let session = sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+            .ok_or_else(|| StorageError::SessionNotFound(session_id.to_string()))?;
+        session.message_count = count;
+        session.updated_at = updated_at;
+        let updated = session.clone();
+        atomic_write_json(&self.sessions_path(node_id), &sessions)?;
+        Ok(updated)
+    }
+
+    fn require_session(&self, node_id: WorkflowNodeId, session_id: &str) -> Result<()> {
+        self.messages_path(node_id, session_id)?;
+        if self
+            .read_sessions(node_id)?
+            .iter()
+            .any(|session| session.id == session_id)
+        {
+            Ok(())
+        } else {
+            Err(StorageError::SessionNotFound(session_id.to_string()))
+        }
+    }
+
+    fn read_sessions(&self, node_id: WorkflowNodeId) -> Result<Vec<ChatSession>> {
+        let path = self.sessions_path(node_id);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        read_json(&path)
+    }
+
     fn sion_dir(&self) -> PathBuf {
         self.project_root.join(".sion")
     }
@@ -232,6 +403,30 @@ impl ProjectStore {
             .join("nodes")
             .join(format!("{}.json", id.as_str()))
     }
+    fn chat_node_dir(&self, id: WorkflowNodeId) -> PathBuf {
+        self.sion_dir().join("chat").join(id.as_str())
+    }
+    fn sessions_path(&self, id: WorkflowNodeId) -> PathBuf {
+        self.chat_node_dir(id).join("sessions.json")
+    }
+    fn messages_path(&self, id: WorkflowNodeId, session_id: &str) -> Result<PathBuf> {
+        if !is_safe_file_component(session_id) {
+            return Err(StorageError::UnsafeSessionId(session_id.to_string()));
+        }
+        Ok(self.chat_node_dir(id).join(format!("{session_id}.json")))
+    }
+    fn append_journal_path(&self, id: WorkflowNodeId) -> PathBuf {
+        self.chat_node_dir(id).join(".append-journal.json")
+    }
+}
+
+fn is_safe_file_component(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && !value.contains('/')
+        && !value.contains('\\')
+        && !value.contains('\0')
 }
 
 fn create_dir_all(path: &Path) -> Result<()> {
@@ -332,6 +527,12 @@ mod tests {
         assert_eq!(manifest.schema_version, PROJECT_SCHEMA_VERSION);
         assert!(root.join(".sion/runs").is_dir());
         assert_eq!(store.list_nodes().unwrap().len(), 12);
+        assert!(
+            store
+                .list_sessions(WorkflowNodeId::Goals)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(ProjectStore::at(&root).manifest().unwrap().name, "项目");
         fs::remove_dir_all(root).unwrap();
     }
@@ -410,6 +611,99 @@ mod tests {
         let raw = fs::read_to_string(root.join("registry.json")).unwrap();
         assert!(!raw.contains("customerName"));
         assert!(!raw.contains("authorName"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn chat_message(id: &str, role: sion_core::ChatRole, content: &str) -> ChatMessage {
+        ChatMessage {
+            id: id.to_string(),
+            role,
+            content: content.to_string(),
+            reasoning_content: None,
+            sources: None,
+            created_at: "2026-07-15T00:03:00.000Z".to_string(),
+            turn_id: None,
+            reasoning_duration_ms: None,
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn persists_sessions_and_messages_inside_the_project_state() {
+        let root = temp_project();
+        let store = ProjectStore::at(&root);
+        store.create(input()).unwrap();
+        let session = store
+            .create_session(
+                WorkflowNodeId::Goals,
+                "需求讨论".to_string(),
+                "2026-07-15T00:02:00.000Z".to_string(),
+            )
+            .unwrap();
+        let updated = store
+            .append_message(
+                WorkflowNodeId::Goals,
+                &session.id,
+                chat_message("user-1", sion_core::ChatRole::User, "请整理目标"),
+                "2026-07-15T00:03:00.000Z".to_string(),
+            )
+            .unwrap();
+
+        assert_eq!(updated.message_count, 1);
+        assert_eq!(
+            store
+                .messages(WorkflowNodeId::Goals, &session.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            root.join(format!(".sion/chat/goals/{}.json", session.id))
+                .is_file()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovers_an_interrupted_message_append_without_duplication() {
+        let root = temp_project();
+        let store = ProjectStore::at(&root);
+        store.create(input()).unwrap();
+        let session = store
+            .create_session(
+                WorkflowNodeId::Goals,
+                "恢复测试".to_string(),
+                "2026-07-15T00:02:00.000Z".to_string(),
+            )
+            .unwrap();
+        let message = chat_message("assistant-1", sion_core::ChatRole::Assistant, "已完成");
+        atomic_write_json(
+            &store
+                .messages_path(WorkflowNodeId::Goals, &session.id)
+                .unwrap(),
+            &vec![message.clone()],
+        )
+        .unwrap();
+        atomic_write_json(
+            &store.append_journal_path(WorkflowNodeId::Goals),
+            &PendingMessageAppend {
+                session_id: session.id.clone(),
+                message,
+                updated_at: "2026-07-15T00:04:00.000Z".to_string(),
+            },
+        )
+        .unwrap();
+
+        let sessions = store.list_sessions(WorkflowNodeId::Goals).unwrap();
+        assert_eq!(sessions[0].message_count, 1);
+        assert_eq!(
+            store
+                .messages(WorkflowNodeId::Goals, &session.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(!store.append_journal_path(WorkflowNodeId::Goals).exists());
         fs::remove_dir_all(root).unwrap();
     }
 }
