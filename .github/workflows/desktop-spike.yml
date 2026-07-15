@@ -5,11 +5,17 @@ on:
     branches: [codex/desktop-rust]
     paths:
       - "desktop-spike/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "fixtures/**"
       - ".github/workflows/desktop-spike.yml"
   pull_request:
     paths:
       - "desktop-spike/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "fixtures/**"
       - ".github/workflows/desktop-spike.yml"
 
@@ -53,11 +59,14 @@ jobs:
         run: npm run lint && npm run build
       - name: Check Rust
         run: |
+          cargo fmt --all --check --manifest-path ../Cargo.toml
+          cargo clippy --workspace --manifest-path ../Cargo.toml -- -D warnings
+          cargo test --workspace --manifest-path ../Cargo.toml
           cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
           cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
           npm run test:rust
       - name: Verify system credential store
-        run: npm run test:keyring
+        run: npm run test:keyring && npm run test:provider-migration
       - name: Build desktop integration
         run: npm run build:desktop
       - name: Bundle macOS application
