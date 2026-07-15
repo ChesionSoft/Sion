@@ -1,0 +1,17 @@
+[
+  {
+    "id": "file-fixture-001",
+    "originalName": "README.md",
+    "storedName": "README.md",
+    "extension": ".md",
+    "mimeType": "text/markdown",
+    "byteSize": 69,
+    "uploadedAt": "2026-02-03T04:05:06.000Z",
+    "status": "available",
+    "textPath": "file-fixture-001.txt",
+    "characterCount": 33,
+    "kind": "markdown",
+    "extractionStatus": "available",
+    "truncated": false
+  }
+]
