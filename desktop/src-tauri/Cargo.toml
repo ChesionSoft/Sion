@@ -1,12 +1,12 @@
 [package]
-name = "sion-desktop-spike"
-version = "0.0.1"
-description = "Sion desktop reliability spike"
+name = "sion-desktop"
+version = "0.1.0"
+description = "Sion local-first desktop application"
 authors = ["Sion"]
 edition = "2024"
 
 [lib]
-name = "sion_desktop_spike_lib"
+name = "sion_desktop_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]

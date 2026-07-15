@@ -1,6 +1,6 @@
 {
-  "name": "sion-desktop-spike",
-  "version": "0.0.1",
+  "name": "sion-desktop",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {

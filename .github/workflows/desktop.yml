@@ -1,23 +1,23 @@
-name: Desktop spike
+name: Desktop
 
 on:
   push:
     branches: [codex/desktop-rust]
     paths:
-      - "desktop-spike/**"
+      - "desktop/**"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "fixtures/**"
-      - ".github/workflows/desktop-spike.yml"
+      - ".github/workflows/desktop.yml"
   pull_request:
     paths:
-      - "desktop-spike/**"
+      - "desktop/**"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "fixtures/**"
-      - ".github/workflows/desktop-spike.yml"
+      - ".github/workflows/desktop.yml"
 
 permissions:
   contents: read
@@ -39,14 +39,14 @@ jobs:
             runner: windows-2022
     defaults:
       run:
-        working-directory: desktop-spike
+        working-directory: desktop
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: desktop-spike/package-lock.json
+          cache-dependency-path: desktop/package-lock.json
       - name: Set up Rust
         shell: bash
         run: rustup toolchain install stable --profile minimal && rustup default stable

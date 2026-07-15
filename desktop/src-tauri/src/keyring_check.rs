@@ -1,11 +1,11 @@
 use keyring::Entry;
 use uuid::Uuid;
 
-const SERVICE: &str = "com.chesoft.sion.desktop-spike";
+const SERVICE: &str = "com.chesoft.sion.desktop";
 
 pub fn round_trip_check() -> Result<(), String> {
-    let account = format!("spike-{}", Uuid::new_v4());
-    let secret = format!("sion-spike-{}", Uuid::new_v4());
+    let account = format!("desktop-check-{}", Uuid::new_v4());
+    let secret = format!("sion-desktop-check-{}", Uuid::new_v4());
     let entry = Entry::new(SERVICE, &account)
         .map_err(|error| format!("credential entry failed: {error}"))?;
 

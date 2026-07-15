@@ -4333,8 +4333,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "sion-desktop-spike"
-version = "0.0.1"
+name = "sion-desktop"
+version = "0.1.0"
 dependencies = [
  "docx-rs",
  "image",
