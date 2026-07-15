@@ -482,7 +482,7 @@ export function App() {
     try {
       await invoke<AgentRun>("agent_run_cancel", { request: { apiVersion: API_VERSION, projectId: project.id, runId: activeRunId, now: now() } });
       await loadRuns(project.id);
-      setNotice("已请求取消 Agent Run；已收到的内容会保留在本地会话");
+      setNotice("已请求取消 Agent Run；未完成的流式片段不会写入本地会话");
     } catch (error) {
       setNotice(`取消 Agent Run 失败：${String(error)}`);
     }
