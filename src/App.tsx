@@ -161,6 +161,16 @@ export function App() {
     return () => { disposed = true; void subscriptions.then((unlisten) => { if (disposed) unlisten.forEach((stop) => stop()); }); };
   }, [project, nodeId, sessionId]);
 
+  useEffect(() => {
+    function saveWithShortcut(event: KeyboardEvent) {
+      if (event.key.toLowerCase() !== "s" || (!event.metaKey && !event.ctrlKey)) return;
+      event.preventDefault();
+      if (!event.repeat && project && node && dirty && !saving) void saveNode();
+    }
+    window.addEventListener("keydown", saveWithShortcut);
+    return () => window.removeEventListener("keydown", saveWithShortcut);
+  }, [project, node, draft, dirty, saving]);
+
   async function loadVersion() {
     try {
       const response = await invoke<VersionResponse>("app_get_version", { request: { apiVersion: API_VERSION } });
@@ -612,7 +622,7 @@ export function App() {
 
   return (
     <main className="desk-shell workbench-shell">
-      <header className="workbench-bar"><button className="wordmark" onClick={() => { setDeliveryPreview(null); setProject(null); }} type="button">SION<span>DESKTOP</span></button><div className="project-heading"><span>项目 / {project.name}</span><strong>{nodeTitle}</strong></div><div className="save-state"><span className={dirty ? "dirty-dot" : "clean-dot"} />{dirty ? "有未保存修改" : "已同步本地磁盘"}<button className="export-button" disabled={exporting} onClick={() => void exportDocx()} type="button">{exporting ? "导出中" : "DOCX"}</button><button className="save-button" disabled={!dirty || saving} onClick={() => void saveNode()} type="button">{saving ? "保存中" : "保存"} <b>⌘S</b></button></div></header>
+      <header className="workbench-bar"><button className="wordmark" onClick={() => { setDeliveryPreview(null); setProject(null); }} type="button">SION<span>DESKTOP</span></button><div className="project-heading"><span>项目 / {project.name}</span><strong>{nodeTitle}</strong></div><div className="save-state"><span className={dirty ? "dirty-dot" : "clean-dot"} />{dirty ? "有未保存修改" : "已同步本地磁盘"}<button className="export-button" disabled={exporting} onClick={() => void exportDocx()} type="button">{exporting ? "导出中" : "DOCX"}</button><button className="save-button" disabled={!dirty || saving} onClick={() => void saveNode()} type="button">{saving ? "保存中" : "保存"} <b>⌘/Ctrl S</b></button></div></header>
       <div className="workbench-grid">
         <aside className="node-rail"><div className="rail-title"><span>设计路径</span><b>12</b></div>{NODES.map(([id, title], index) => <button className={id === nodeId ? "node-item selected" : "node-item"} key={id} onClick={() => { setDeliveryPreview(null); setNodeId(id); }} type="button"><span>{String(index + 1).padStart(2, "0")}</span><strong>{title}</strong><i>{id === nodeId ? "●" : ""}</i></button>)}<div className="rail-foot"><div className="file-head"><span>文件池 / {files.length}</span><button disabled={importingFile} onClick={() => void importFile()} type="button">{importingFile ? "导入中" : "+ 导入"}</button></div>{files.length === 0 ? <small>尚无项目文件</small> : files.slice(-3).map((file) => <label className="file-row" key={file.id}><input checked={selectedFileIds.includes(file.id)} disabled={file.extractionStatus !== "available"} onChange={() => setSelectedFileIds((current) => current.includes(file.id) ? current.filter((id) => id !== file.id) : [...current, file.id])} type="checkbox" /> {file.extractionStatus === "available" ? "◼" : "◇"} {file.originalName}</label>)}</div></aside>
         <section className="editor-pane"><div className="editor-head"><div><p className="panel-kicker">NODE / {nodeId.toUpperCase()}</p><h1>{nodeTitle}</h1></div><div className="editor-actions"><button className={agentOverride ? "override-control active" : "override-control"} onClick={openAgentOverride} type="button">{agentOverride ? "自定义规则 · 已启用" : "自定义规则"}</button><span className={`node-status status-${node?.status ?? "not_started"}`}>{node ? statusLabel[node.status] : "读取中"}</span></div></div><textarea aria-label={`${nodeTitle} Markdown 编辑器`} disabled={!node} onChange={(event) => setDraft(event.target.value)} spellCheck={false} value={draft} /><div className="editor-foot"><span>Markdown · revision {node?.revision ?? "—"}</span><span>{draft.length.toLocaleString()} 字符</span></div></section>
