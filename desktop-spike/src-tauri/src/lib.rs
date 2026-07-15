@@ -7,7 +7,8 @@ mod streaming;
 
 use serde::{Deserialize, Serialize};
 use sion_core::{
-    ChatMessage, ChatSession, NodeStatus, ProjectManifest, WorkflowNode, WorkflowNodeId,
+    ChatMessage, ChatSession, NodeStatus, ProjectFile, ProjectManifest, WorkflowNode,
+    WorkflowNodeId,
 };
 use sion_storage::{
     CreateProjectInput, ProjectRegistry, ProjectStore, RecentProject, SaveNodeResult,
@@ -183,6 +184,30 @@ struct MessageAppendRequest {
     now: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileListRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileImportRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    now: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileImportResult {
+    imported: bool,
+    file: Option<ProjectFile>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionList {
@@ -193,6 +218,12 @@ struct SessionList {
 #[serde(rename_all = "camelCase")]
 struct MessageList {
     messages: Vec<ChatMessage>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileList {
+    files: Vec<ProjectFile>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -494,6 +525,53 @@ fn message_append(
     })
 }
 
+#[tauri::command]
+fn file_list(
+    request: FileListRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<FileList>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let files = ProjectStore::at(project_root)
+        .list_files()
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: FileList { files },
+    })
+}
+
+#[tauri::command]
+fn file_import(
+    request: FileImportRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<FileImportResult>, ApiError> {
+    assert_api_version(&request.version)?;
+    let Some(source) = app.dialog().file().blocking_pick_file() else {
+        return Ok(VersionedResponse {
+            api_version: API_VERSION,
+            payload: FileImportResult {
+                imported: false,
+                file: None,
+            },
+        });
+    };
+    let source = source.into_path().map_err(|error| {
+        ApiError::CheckFailed(format!("selected source file is not a local path: {error}"))
+    })?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let file = ProjectStore::at(project_root)
+        .import_file(&source, request.now)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: FileImportResult {
+            imported: true,
+            file: Some(file),
+        },
+    })
+}
+
 fn resolve_registered_project_root(
     app: &tauri::AppHandle,
     project_id: &str,
@@ -524,7 +602,9 @@ pub fn run() {
             session_list,
             session_create,
             message_list,
-            message_append
+            message_append,
+            file_list,
+            file_import
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Sion desktop spike");

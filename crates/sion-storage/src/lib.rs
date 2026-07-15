@@ -2,14 +2,14 @@
 
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
 use serde::Serialize;
 use sion_core::{
-    ChatMessage, ChatSession, NodeStatus, PROJECT_SCHEMA_VERSION, ProjectManifest, WorkflowNode,
-    WorkflowNodeId, default_nodes,
+    ChatMessage, ChatSession, FileExtractionStatus, NodeStatus, PROJECT_SCHEMA_VERSION,
+    ProjectFile, ProjectFileKind, ProjectManifest, WorkflowNode, WorkflowNodeId, default_nodes,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -28,6 +28,10 @@ pub enum StorageError {
     SessionNotFound(String),
     #[error("chat message count exceeds the supported range")]
     MessageCountOverflow,
+    #[error("file path has no usable filename: {0}")]
+    InvalidFileName(PathBuf),
+    #[error("project file {0} does not exist")]
+    ProjectFileNotFound(String),
     #[error("project uses schema {found}, but this app supports up to {supported}")]
     UnsupportedSchema { found: u32, supported: u32 },
     #[error("project JSON is invalid at {path}: {source}")]
@@ -326,6 +330,115 @@ impl ProjectStore {
         Ok(session)
     }
 
+    pub fn list_files(&self) -> Result<Vec<ProjectFile>> {
+        self.manifest()?;
+        let index = self.files_index_path();
+        if !index.exists() {
+            return Ok(Vec::new());
+        }
+        read_json(&index)
+    }
+
+    /// Copies an import source into the project and, where supported, stores a
+    /// UTF-8 text companion. This initial adapter handles text formats only;
+    /// binary office/PDF formats are persisted as originals and explicitly
+    /// marked unsupported until their dedicated extractors are added.
+    pub fn import_file(&self, source: &Path, now: String) -> Result<ProjectFile> {
+        self.manifest()?;
+        let original_name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| StorageError::InvalidFileName(source.to_path_buf()))?
+            .to_string();
+        let extension = source
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
+            .unwrap_or_default();
+        let metadata = fs::metadata(source).map_err(|source_error| StorageError::Io {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?;
+        if !metadata.is_file() {
+            return Err(StorageError::InvalidFileName(source.to_path_buf()));
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let stored_name = format!("{id}{extension}");
+        let stored_path = self.files_dir().join(&stored_name);
+        copy_file_atomic(source, &stored_path)?;
+        let result = (|| {
+            let (kind, mime_type) = classify_file(&extension);
+            let mut file = ProjectFile {
+                id: id.clone(),
+                original_name,
+                stored_name,
+                extension,
+                mime_type: mime_type.to_string(),
+                byte_size: metadata.len(),
+                uploaded_at: now,
+                status: "unsupported".to_string(),
+                text_path: None,
+                character_count: None,
+                kind: Some(kind.clone()),
+                extraction_status: Some(FileExtractionStatus::Unsupported),
+                extraction_error: None,
+                page_count: None,
+                sheet_count: None,
+                truncated: Some(false),
+            };
+            if is_text_kind(&kind) {
+                match fs::read_to_string(&stored_path) {
+                    Ok(text) => {
+                        let text_name = format!("{id}.txt");
+                        atomic_write_bytes(&self.files_dir().join(&text_name), text.as_bytes())?;
+                        file.status = "available".to_string();
+                        file.text_path = Some(text_name);
+                        file.character_count = Some(text.encode_utf16().count() as u64);
+                        file.extraction_status = Some(FileExtractionStatus::Available);
+                    }
+                    Err(error) => {
+                        file.status = "read_failed".to_string();
+                        file.extraction_status = Some(FileExtractionStatus::Failed);
+                        file.extraction_error = Some(error.to_string());
+                    }
+                }
+            }
+            let mut files = self.list_files()?;
+            files.push(file.clone());
+            atomic_write_json(&self.files_index_path(), &files)?;
+            Ok(file)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&stored_path);
+            let _ = fs::remove_file(self.files_dir().join(format!("{id}.txt")));
+        }
+        result
+    }
+
+    pub fn read_file_text(&self, file_id: &str) -> Result<Option<String>> {
+        let file = self
+            .list_files()?
+            .into_iter()
+            .find(|file| file.id == file_id)
+            .ok_or_else(|| StorageError::ProjectFileNotFound(file_id.to_string()))?;
+        let Some(text_path) = file.text_path else {
+            return Ok(None);
+        };
+        if !is_safe_file_component(&text_path) {
+            return Err(StorageError::InvalidFileName(
+                self.files_dir().join(text_path),
+            ));
+        }
+        fs::read_to_string(self.files_dir().join(text_path))
+            .map(Some)
+            .map_err(|source| StorageError::Io {
+                path: self.files_dir().join(file.id),
+                source,
+            })
+    }
+
     fn recover_pending_append(&self, node_id: WorkflowNodeId) -> Result<()> {
         let journal_path = self.append_journal_path(node_id);
         if !journal_path.exists() {
@@ -418,6 +531,12 @@ impl ProjectStore {
     fn append_journal_path(&self, id: WorkflowNodeId) -> PathBuf {
         self.chat_node_dir(id).join(".append-journal.json")
     }
+    fn files_dir(&self) -> PathBuf {
+        self.sion_dir().join("files")
+    }
+    fn files_index_path(&self) -> PathBuf {
+        self.files_dir().join("index.json")
+    }
 }
 
 fn is_safe_file_component(value: &str) -> bool {
@@ -427,6 +546,35 @@ fn is_safe_file_component(value: &str) -> bool {
         && !value.contains('/')
         && !value.contains('\\')
         && !value.contains('\0')
+}
+
+fn classify_file(extension: &str) -> (ProjectFileKind, &'static str) {
+    match extension {
+        ".md" | ".markdown" => (ProjectFileKind::Markdown, "text/markdown"),
+        ".txt" => (ProjectFileKind::Text, "text/plain"),
+        ".json" => (ProjectFileKind::Json, "application/json"),
+        ".csv" => (ProjectFileKind::Csv, "text/csv"),
+        ".pdf" => (ProjectFileKind::Pdf, "application/pdf"),
+        ".doc" | ".docx" => (
+            ProjectFileKind::Word,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        ".xls" | ".xlsx" => (
+            ProjectFileKind::Excel,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        _ => (ProjectFileKind::Unsupported, "application/octet-stream"),
+    }
+}
+
+fn is_text_kind(kind: &ProjectFileKind) -> bool {
+    matches!(
+        kind,
+        ProjectFileKind::Markdown
+            | ProjectFileKind::Text
+            | ProjectFileKind::Json
+            | ProjectFileKind::Csv
+    )
 }
 
 fn create_dir_all(path: &Path) -> Result<()> {
@@ -445,6 +593,90 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn copy_file_atomic(source: &Path, destination: &Path) -> Result<()> {
+    let parent = destination
+        .parent()
+        .expect("project file destinations always have a parent");
+    create_dir_all(parent)?;
+    let staging = parent.join(format!(".{}.{}.tmp", Uuid::new_v4(), Uuid::new_v4()));
+    let result = (|| {
+        let mut input = fs::File::open(source).map_err(|source_error| StorageError::Io {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?;
+        let mut output = fs::File::create(&staging).map_err(|source_error| StorageError::Io {
+            path: staging.clone(),
+            source: source_error,
+        })?;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = input
+                .read(&mut buffer)
+                .map_err(|source_error| StorageError::Io {
+                    path: source.to_path_buf(),
+                    source: source_error,
+                })?;
+            if read == 0 {
+                break;
+            }
+            output
+                .write_all(&buffer[..read])
+                .map_err(|source_error| StorageError::Io {
+                    path: staging.clone(),
+                    source: source_error,
+                })?;
+        }
+        output.sync_all().map_err(|source_error| StorageError::Io {
+            path: staging.clone(),
+            source: source_error,
+        })?;
+        fs::rename(&staging, destination).map_err(|source_error| StorageError::Io {
+            path: destination.to_path_buf(),
+            source: source_error,
+        })?;
+        sync_directory(parent)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(staging);
+    }
+    result
+}
+
+fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .expect("project state paths always have a parent");
+    create_dir_all(parent)?;
+    let staging = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap().to_string_lossy(),
+        Uuid::new_v4()
+    ));
+    let result = (|| {
+        let mut file = fs::File::create(&staging).map_err(|source| StorageError::Io {
+            path: staging.clone(),
+            source,
+        })?;
+        file.write_all(bytes).map_err(|source| StorageError::Io {
+            path: staging.clone(),
+            source,
+        })?;
+        file.sync_all().map_err(|source| StorageError::Io {
+            path: staging.clone(),
+            source,
+        })?;
+        fs::rename(&staging, path).map_err(|source| StorageError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        sync_directory(parent)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(staging);
+    }
+    result
 }
 
 fn atomic_write_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -704,6 +936,52 @@ mod tests {
             1
         );
         assert!(!store.append_journal_path(WorkflowNodeId::Goals).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_text_files_with_a_durable_extracted_copy() {
+        let root = temp_project();
+        let source = root.join("brief.md");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, "# 需求\n\n你好，Sion。\n").unwrap();
+        let project = root.join("project");
+        let store = ProjectStore::at(&project);
+        store.create(input()).unwrap();
+
+        let file = store
+            .import_file(&source, "2026-07-15T00:05:00.000Z".to_string())
+            .unwrap();
+        assert_eq!(file.kind, Some(ProjectFileKind::Markdown));
+        assert_eq!(file.status, "available");
+        assert_eq!(store.list_files().unwrap(), vec![file.clone()]);
+        assert_eq!(
+            store.read_file_text(&file.id).unwrap().unwrap(),
+            "# 需求\n\n你好，Sion。\n"
+        );
+        assert!(project.join(".sion/files").join(file.stored_name).is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preserves_unsupported_binary_files_without_claiming_text_extraction() {
+        let root = temp_project();
+        let source = root.join("reference.pdf");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, b"%PDF-not-a-real-document").unwrap();
+        let project = root.join("project");
+        let store = ProjectStore::at(&project);
+        store.create(input()).unwrap();
+
+        let file = store
+            .import_file(&source, "2026-07-15T00:05:00.000Z".to_string())
+            .unwrap();
+        assert_eq!(file.kind, Some(ProjectFileKind::Pdf));
+        assert_eq!(
+            file.extraction_status,
+            Some(FileExtractionStatus::Unsupported)
+        );
+        assert_eq!(store.read_file_text(&file.id).unwrap(), None);
         fs::remove_dir_all(root).unwrap();
     }
 }

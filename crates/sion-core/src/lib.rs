@@ -398,6 +398,56 @@ pub struct ChatSession {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectFileKind {
+    Markdown,
+    Text,
+    Json,
+    Csv,
+    Pdf,
+    Word,
+    Excel,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileExtractionStatus {
+    Available,
+    Failed,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFile {
+    pub id: String,
+    pub original_name: String,
+    pub stored_name: String,
+    pub extension: String,
+    pub mime_type: String,
+    pub byte_size: u64,
+    pub uploaded_at: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub character_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ProjectFileKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extraction_status: Option<FileExtractionStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extraction_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sheet_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+}
+
 pub fn default_node(id: WorkflowNodeId, now: impl Into<String>) -> WorkflowNode {
     let definition = workflow_definition(id);
     let mut lines = vec![format!("# {}", definition.title), String::new()];

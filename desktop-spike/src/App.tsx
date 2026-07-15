@@ -27,12 +27,15 @@ type ProjectManifest = { id: string; name: string; customerName: string; authorN
 type WorkflowNode = { id: NodeId; status: NodeStatus; markdown: string; revision: number; updatedAt: string };
 type ChatSession = { id: string; nodeId: NodeId; name: string; messageCount: number; createdAt: string; updatedAt: string };
 type ChatMessage = { id: string; role: "user" | "assistant" | "system"; content: string; createdAt: string };
+type ProjectFile = { id: string; originalName: string; byteSize: number; status: string; extractionStatus?: string; textPath?: string };
 type ProjectListResponse = { apiVersion: number; projects: RecentProject[] };
 type CreateResponse = { apiVersion: number; created: boolean; project?: ProjectManifest };
 type NodeResponse = { apiVersion: number } & WorkflowNode;
 type SaveResponse = { apiVersion: number; saved?: WorkflowNode; conflict?: { latest: WorkflowNode } };
 type SessionListResponse = { apiVersion: number; sessions: ChatSession[] };
 type MessageListResponse = { apiVersion: number; messages: ChatMessage[] };
+type FileListResponse = { apiVersion: number; files: ProjectFile[] };
+type FileImportResponse = { apiVersion: number; imported: boolean; file?: ProjectFile };
 
 const statusLabel: Record<NodeStatus, string> = {
   not_started: "未开始",
@@ -62,6 +65,8 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messageDraft, setMessageDraft] = useState("");
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [files, setFiles] = useState<ProjectFile[]>([]);
+  const [importingFile, setImportingFile] = useState(false);
 
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
@@ -76,6 +81,10 @@ export function App() {
       void loadSessions(project.id, nodeId);
     }
   }, [project?.id, nodeId]);
+
+  useEffect(() => {
+    if (project) void loadFiles(project.id);
+  }, [project?.id]);
 
   useEffect(() => {
     if (project && sessionId) void loadMessages(project.id, nodeId, sessionId);
@@ -244,6 +253,38 @@ export function App() {
     }
   }
 
+  async function loadFiles(projectId: string) {
+    try {
+      const response = await invoke<FileListResponse>("file_list", {
+        request: { apiVersion: API_VERSION, projectId },
+      });
+      setFiles(response.files);
+    } catch (error) {
+      setFiles([]);
+      setNotice(`读取文件池失败：${String(error)}`);
+    }
+  }
+
+  async function importFile() {
+    if (!project) return;
+    setImportingFile(true);
+    try {
+      const response = await invoke<FileImportResponse>("file_import", {
+        request: { apiVersion: API_VERSION, projectId: project.id, now: now() },
+      });
+      if (!response.imported || !response.file) {
+        setNotice("已取消文件选择，项目未改变");
+        return;
+      }
+      setFiles((current) => [...current, response.file!]);
+      setNotice(response.file.extractionStatus === "available" ? `已导入并提取 ${response.file.originalName}` : `已导入 ${response.file.originalName}；该格式尚未提取文本`);
+    } catch (error) {
+      setNotice(`导入文件失败：${String(error)}`);
+    } finally {
+      setImportingFile(false);
+    }
+  }
+
   if (!project) {
     return (
       <main className="desk-shell landing-shell">
@@ -272,7 +313,7 @@ export function App() {
     <main className="desk-shell workbench-shell">
       <header className="workbench-bar"><button className="wordmark" onClick={() => setProject(null)} type="button">SION<span>DESKTOP</span></button><div className="project-heading"><span>项目 / {project.name}</span><strong>{nodeTitle}</strong></div><div className="save-state"><span className={dirty ? "dirty-dot" : "clean-dot"} />{dirty ? "有未保存修改" : "已同步本地磁盘"}<button className="save-button" disabled={!dirty || saving} onClick={() => void saveNode()} type="button">{saving ? "保存中" : "保存"} <b>⌘S</b></button></div></header>
       <div className="workbench-grid">
-        <aside className="node-rail"><div className="rail-title"><span>设计路径</span><b>12</b></div>{NODES.map(([id, title], index) => <button className={id === nodeId ? "node-item selected" : "node-item"} key={id} onClick={() => setNodeId(id)} type="button"><span>{String(index + 1).padStart(2, "0")}</span><strong>{title}</strong><i>{id === nodeId ? "●" : ""}</i></button>)}<div className="rail-foot">项目状态<br /><strong>本地工作中</strong></div></aside>
+        <aside className="node-rail"><div className="rail-title"><span>设计路径</span><b>12</b></div>{NODES.map(([id, title], index) => <button className={id === nodeId ? "node-item selected" : "node-item"} key={id} onClick={() => setNodeId(id)} type="button"><span>{String(index + 1).padStart(2, "0")}</span><strong>{title}</strong><i>{id === nodeId ? "●" : ""}</i></button>)}<div className="rail-foot"><div className="file-head"><span>文件池 / {files.length}</span><button disabled={importingFile} onClick={() => void importFile()} type="button">{importingFile ? "导入中" : "+ 导入"}</button></div>{files.length === 0 ? <small>尚无项目文件</small> : files.slice(-3).map((file) => <span className="file-row" key={file.id}>{file.extractionStatus === "available" ? "◼" : "◇"} {file.originalName}</span>)}</div></aside>
         <section className="editor-pane"><div className="editor-head"><div><p className="panel-kicker">NODE / {nodeId.toUpperCase()}</p><h1>{nodeTitle}</h1></div><span className={`node-status status-${node?.status ?? "not_started"}`}>{node ? statusLabel[node.status] : "读取中"}</span></div><textarea aria-label={`${nodeTitle} Markdown 编辑器`} disabled={!node} onChange={(event) => setDraft(event.target.value)} spellCheck={false} value={draft} /><div className="editor-foot"><span>Markdown · revision {node?.revision ?? "—"}</span><span>{draft.length.toLocaleString()} 字符</span></div></section>
         <aside className="run-pane"><div className="run-heading"><p className="panel-kicker">节点会话</p><button className="new-session" onClick={() => void createSession()} type="button">+ 新建</button></div><div className="session-list">{sessions.length === 0 ? <p className="session-empty">这个节点还没有会话。可直接输入消息，Sion 会先建立本地会话。</p> : sessions.map((session) => <button className={session.id === sessionId ? "session-row active" : "session-row"} key={session.id} onClick={() => setSessionId(session.id)} type="button"><strong>{session.name}</strong><span>{session.messageCount} 条消息</span></button>)}</div><div className="message-thread">{messages.length === 0 ? <div className="thread-empty"><div className="orbit-mark">↗</div><p>消息会保存在项目 `.sion/chat/`。历史来源和 token 元数据也可被保留，但新应用不会发起网页搜索。</p></div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span>{message.role === "user" ? "你" : message.role === "assistant" ? "助手" : "系统"}</span><p>{message.content}</p></article>)}</div><form className="message-form" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}><textarea aria-label="发送给此节点的消息" onChange={(event) => setMessageDraft(event.target.value)} placeholder="描述你希望在此节点完成的工作…" value={messageDraft} /><button disabled={!messageDraft.trim() || sendingMessage} type="submit">{sendingMessage ? "保存中" : "保存消息"}<b>↗</b></button></form><div className="run-notice">{notice}</div></aside>
       </div>
