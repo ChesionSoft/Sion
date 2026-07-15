@@ -256,6 +256,40 @@ pub fn workflow_definition(id: WorkflowNodeId) -> &'static WorkflowNodeDefinitio
         .expect("workflow is complete")
 }
 
+/// Product rule assets are embedded in the Rust binary. `include_str!` makes
+/// an accidentally missing asset a build failure for both development and
+/// packaged desktop builds instead of a silent runtime fallback.
+pub fn agent_rule(id: WorkflowNodeId) -> &'static str {
+    match id {
+        WorkflowNodeId::BasicInfo => include_str!("../../../assets/agents/01-basic-info.md"),
+        WorkflowNodeId::Goals => include_str!("../../../assets/agents/02-goals.md"),
+        WorkflowNodeId::RolesPermissions => {
+            include_str!("../../../assets/agents/03-roles-permissions.md")
+        }
+        WorkflowNodeId::BusinessFlow => include_str!("../../../assets/agents/04-business-flow.md"),
+        WorkflowNodeId::FeatureDesign => {
+            include_str!("../../../assets/agents/05-feature-design.md")
+        }
+        WorkflowNodeId::PageInteraction => {
+            include_str!("../../../assets/agents/06-page-interaction.md")
+        }
+        WorkflowNodeId::DataStructure => {
+            include_str!("../../../assets/agents/07-data-structure.md")
+        }
+        WorkflowNodeId::ApiDesign => include_str!("../../../assets/agents/08-api-design.md"),
+        WorkflowNodeId::ArchitectureDeployment => {
+            include_str!("../../../assets/agents/09-architecture-deployment.md")
+        }
+        WorkflowNodeId::DevelopmentTasks => {
+            include_str!("../../../assets/agents/10-development-tasks.md")
+        }
+        WorkflowNodeId::RisksOpenQuestions => {
+            include_str!("../../../assets/agents/11-risks-open-questions.md")
+        }
+        WorkflowNodeId::FinalExport => include_str!("../../../assets/agents/12-final-export.md"),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeStatus {
@@ -496,6 +530,15 @@ mod tests {
         assert!(node.markdown.contains("## 需求背景"));
         assert!(node.markdown.contains("## 建设目标"));
         assert!(node.markdown.contains("## 范围边界"));
+    }
+
+    #[test]
+    fn embeds_a_non_empty_rule_for_every_workflow_node() {
+        for definition in WORKFLOW {
+            let rule = agent_rule(definition.id);
+            assert!(rule.contains("Agent"));
+            assert!(rule.len() > 100);
+        }
     }
 
     #[test]

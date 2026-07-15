@@ -1067,7 +1067,8 @@ fn agent_prompt(node: &WorkflowNode, messages: &[ChatMessage]) -> String {
         .collect::<Vec<_>>()
         .join("\n\n");
     format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点和会话，给出可直接用于设计文档的中文建议。\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点和会话，给出可直接用于设计文档的中文建议。\n\n# 本节点规则\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        sion_core::agent_rule(node.id),
         node.id.as_str(),
         node.markdown,
         transcript
@@ -1309,5 +1310,19 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(completion, (true, None));
+    }
+
+    #[test]
+    fn agent_prompt_embeds_the_selected_node_rule() {
+        let node = WorkflowNode {
+            id: WorkflowNodeId::BasicInfo,
+            status: NodeStatus::Draft,
+            markdown: "# 项目基本信息".to_string(),
+            revision: 0,
+            updated_at: "now".to_string(),
+        };
+        let prompt = agent_prompt(&node, &[]);
+        assert!(prompt.contains("你只负责项目基本信息"));
+        assert!(prompt.contains("不要浏览网页"));
     }
 }
