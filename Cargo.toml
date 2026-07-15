@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/sion-core",
   "crates/sion-storage",
+  "crates/sion-agent",
 ]
 exclude = ["desktop-spike/src-tauri"]
 

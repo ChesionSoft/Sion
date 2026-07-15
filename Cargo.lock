@@ -164,6 +164,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sion-agent"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sion-core",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "sion-core"
 version = "0.1.0"
 dependencies = [

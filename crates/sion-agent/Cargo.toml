@@ -1,0 +1,11 @@
+[package]
+name = "sion-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+sion-core = { path = "../sion-core" }
