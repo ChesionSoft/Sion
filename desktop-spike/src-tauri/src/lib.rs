@@ -1134,28 +1134,20 @@ fn complete_agent_run(
     outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
 ) {
     let finished_at = run.created_at.clone();
-    let completion: Result<(bool, String), String> = match outcome {
-        Ok(sion_agent::model_stream::StreamOutcome::Completed(tokens)) => {
-            Ok((false, tokens.join("")))
-        }
-        Ok(sion_agent::model_stream::StreamOutcome::Cancelled(tokens)) => {
-            Ok((true, tokens.join("")))
-        }
-        Err(error) => Err(error),
-    };
+    let completion = completion_from_stream(outcome);
     let (final_run, promoted) = {
         let Ok(mut scheduler) = state.scheduler.lock() else {
             return;
         };
         let transition = match completion {
-            Ok((cancelled, text)) if cancelled => scheduler
+            Ok((cancelled, content)) if cancelled => scheduler
                 .cancel(
                     &run.id,
                     finished_at.clone(),
                     Some("已取消；部分输出不会自动写入节点".to_string()),
                 )
-                .map(|promoted| (promoted, Some(text))),
-            Ok((_cancelled, text)) => scheduler
+                .map(|promoted| (promoted, content)),
+            Ok((_cancelled, content)) => scheduler
                 .complete(
                     &run.id,
                     finished_at.clone(),
@@ -1164,7 +1156,7 @@ fn complete_agent_run(
                         job.model.provider_id
                     )),
                 )
-                .map(|promoted| (promoted, Some(text))),
+                .map(|promoted| (promoted, content)),
             Err(error) => scheduler
                 .fail(
                     &run.id,
@@ -1207,6 +1199,21 @@ fn complete_agent_run(
     }
     let _ = app.emit("agent-run-finished", AgentFinishedEvent { run: final_run });
     spawn_promoted_runs(app.clone(), state.clone(), promoted);
+}
+
+/// A cancelled stream may be shown transiently in the UI, but is never an
+/// assistant message on disk. This makes a retry unambiguous and prevents a
+/// user from mistaking a truncated draft for a completed answer.
+fn completion_from_stream(
+    outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
+) -> Result<(bool, Option<String>), String> {
+    match outcome {
+        Ok(sion_agent::model_stream::StreamOutcome::Completed(tokens)) => {
+            Ok((false, Some(tokens.join(""))))
+        }
+        Ok(sion_agent::model_stream::StreamOutcome::Cancelled(_)) => Ok((true, None)),
+        Err(error) => Err(error),
+    }
 }
 
 fn spawn_promoted_runs(
@@ -1293,5 +1300,14 @@ mod tests {
             })
             .is_ok()
         );
+    }
+
+    #[test]
+    fn cancelled_streams_never_produce_a_persistable_assistant_message() {
+        let completion = completion_from_stream(Ok(
+            sion_agent::model_stream::StreamOutcome::Cancelled(vec!["partial".to_string()]),
+        ))
+        .unwrap();
+        assert_eq!(completion, (true, None));
     }
 }
