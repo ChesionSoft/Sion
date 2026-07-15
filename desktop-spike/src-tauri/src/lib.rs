@@ -16,7 +16,7 @@ use sion_storage::{
     CreateProjectInput, ProjectRegistry, ProjectStore, RecentProject, SaveNodeResult,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -206,6 +206,7 @@ struct AgentRunStartRequest {
     project_id: String,
     node_id: WorkflowNodeId,
     session_id: String,
+    file_ids: Vec<String>,
     now: String,
 }
 
@@ -679,7 +680,8 @@ fn agent_run_start(
     let project_override = store
         .agent_override(request.node_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let prompt = agent_prompt(&node, &messages, project_override.as_deref());
+    let attachments = selected_file_context(&store, &request.file_ids)?;
+    let prompt = agent_prompt(&node, &messages, project_override.as_deref(), &attachments);
     let run = state
         .scheduler
         .lock()
@@ -1054,6 +1056,7 @@ fn agent_prompt(
     node: &WorkflowNode,
     messages: &[ChatMessage],
     project_override: Option<&str>,
+    attachments: &[(String, String)],
 ) -> String {
     let transcript = messages
         .iter()
@@ -1077,14 +1080,59 @@ fn agent_prompt(
         .filter(|rule| !rule.trim().is_empty())
         .map(|rule| format!("\n\n# 项目覆盖规则\n{rule}"))
         .unwrap_or_default();
+    let attachment_block = attachments
+        .iter()
+        .map(|(name, text)| format!("## {name}\n{text}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
     format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点和会话，给出可直接用于设计文档的中文建议。\n\n# 本节点规则\n{}{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。\n\n# 本节点规则\n{}{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
         sion_core::agent_rule(node.id),
         override_block,
+        attachment_block,
         node.id.as_str(),
         node.markdown,
         transcript
     )
+}
+
+fn selected_file_context(
+    store: &ProjectStore,
+    file_ids: &[String],
+) -> Result<Vec<(String, String)>, ApiError> {
+    const MAX_TOTAL_CHARS: usize = 48_000;
+    const MAX_PER_FILE_CHARS: usize = 12_000;
+    let files = store
+        .list_files()
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let mut seen = HashSet::new();
+    let mut remaining = MAX_TOTAL_CHARS;
+    let mut result = Vec::new();
+    for id in file_ids {
+        if !seen.insert(id) || remaining == 0 {
+            continue;
+        }
+        let file = files
+            .iter()
+            .find(|file| file.id == *id)
+            .ok_or_else(|| ApiError::CheckFailed(format!("selected file {id} was not found")))?;
+        let text = store
+            .read_file_text(id)
+            .map_err(|error| ApiError::CheckFailed(error.to_string()))?
+            .ok_or_else(|| {
+                ApiError::CheckFailed(format!(
+                    "selected file {} has no extracted text",
+                    file.original_name
+                ))
+            })?;
+        let excerpt = text
+            .chars()
+            .take(remaining.min(MAX_PER_FILE_CHARS))
+            .collect::<String>();
+        remaining -= excerpt.chars().count();
+        result.push((file.original_name.clone(), excerpt));
+    }
+    Ok(result)
 }
 
 fn spawn_agent_run(
@@ -1333,9 +1381,15 @@ mod tests {
             revision: 0,
             updated_at: "now".to_string(),
         };
-        let prompt = agent_prompt(&node, &[], Some("只写确认事实"));
+        let prompt = agent_prompt(
+            &node,
+            &[],
+            Some("只写确认事实"),
+            &[("资料.txt".to_string(), "资料正文".to_string())],
+        );
         assert!(prompt.contains("你只负责项目基本信息"));
         assert!(prompt.contains("只写确认事实"));
+        assert!(prompt.contains("资料正文"));
         assert!(prompt.contains("不要浏览网页"));
     }
 }
