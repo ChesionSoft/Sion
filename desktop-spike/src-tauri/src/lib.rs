@@ -1,6 +1,7 @@
 mod docx_check;
 mod keyring_check;
 mod migration;
+mod provider_migration;
 #[allow(dead_code)]
 mod streaming;
 
@@ -59,6 +60,23 @@ struct MigrationRunRequest {
     legacy_root: String,
     project_id: String,
     target_project_root: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderMigrationInspectRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    legacy_root: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderMigrationRunRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    legacy_root: String,
+    app_data_root: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -162,6 +180,35 @@ fn migration_run(
     })
 }
 
+#[tauri::command]
+fn provider_migration_inspect(
+    request: ProviderMigrationInspectRequest,
+) -> Result<VersionedResponse<provider_migration::ProviderMigrationInspection>, ApiError> {
+    assert_api_version(&request.version)?;
+    let inspection = provider_migration::inspect_legacy_providers(Path::new(&request.legacy_root))
+        .map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: inspection,
+    })
+}
+
+#[tauri::command]
+fn provider_migration_run(
+    request: ProviderMigrationRunRequest,
+) -> Result<VersionedResponse<provider_migration::ProviderMigrationReport>, ApiError> {
+    assert_api_version(&request.version)?;
+    let report = provider_migration::migrate_legacy_providers(
+        Path::new(&request.legacy_root),
+        Path::new(&request.app_data_root),
+    )
+    .map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: report,
+    })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -169,7 +216,9 @@ pub fn run() {
             spike_docx_check,
             spike_keyring_check,
             migration_inspect,
-            migration_run
+            migration_run,
+            provider_migration_inspect,
+            provider_migration_run
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Sion desktop spike");

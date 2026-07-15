@@ -18,6 +18,7 @@ npm run lint
 npm run build
 npm run test:rust
 npm run test:keyring  # 写入并立即删除一个随机的系统临时凭据
+npm run test:provider-migration  # 验证 Provider API Key 的真实安全迁移与清理
 npm run bundle
 ```
 
@@ -34,3 +35,5 @@ Rust 层已提供版本化的 `migration_inspect` 和 `migration_run` command。
 - 旧版单文件聊天会转为一个确定的 `legacy-import` 会话；节点的 `assumptions` / `openQuestions` 会并入 Markdown。
 - 未恢复的 `.append-journal.json` 会使导入失败，避免静默丢失消息。
 - 旧附件索引没有哈希字段，因此迁移器会对每个源文件和目标文件实际计算 SHA-256 对比，并校验索引中的字节数和文本 UTF-16 字符数。
+
+模型提供商迁移使用同一轮的“全部成功才提交”规则：先验证并写入每个 API Key 到 Keychain / Credential Manager，随后才写入全局 `providers.json`。该 JSON 只含 provider 元数据和 `keyRef`；后续任一凭据写入失败或元数据落盘失败时，本轮已写入的凭据会删除。已有 `providers.json` 默认拒绝覆盖。
