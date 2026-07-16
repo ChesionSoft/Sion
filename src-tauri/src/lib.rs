@@ -1,3 +1,4 @@
+mod app_settings;
 mod docx_check;
 mod keyring_check;
 mod migration;
@@ -91,6 +92,34 @@ struct AppVersion {
 struct SpikeCheck {
     label: String,
     detail: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsSummary {
+    default_project_directory: Option<String>,
+}
+
+fn settings_summary(settings: &app_settings::AppSettings) -> SettingsSummary {
+    SettingsSummary {
+        default_project_directory: settings
+            .default_project_directory
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+    }
+}
+
+/// Builds the native folder picker for choosing a project directory, seeded
+/// with the saved default directory when it still exists on disk. A stale
+/// default falls back to the operating system's default location.
+fn project_directory_dialog(
+    app: &tauri::AppHandle,
+    settings: &app_settings::AppSettings,
+) -> tauri_plugin_dialog::FileDialogBuilder<tauri::Wry> {
+    match app_settings::usable_default_directory(settings) {
+        Some(path) => app.dialog().file().set_directory(path),
+        None => app.dialog().file(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -843,12 +872,83 @@ fn agent_run_cancel(
 }
 
 #[tauri::command]
+fn settings_get(
+    request: VersionedRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
+    assert_api_version(&request)?;
+    let app_data_root = app.path().app_data_dir().map_err(|error| {
+        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
+    })?;
+    let settings = app_settings::load(&app_data_root).map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: settings_summary(&settings),
+    })
+}
+
+#[tauri::command]
+async fn settings_pick_default_project_directory(
+    request: VersionedRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
+    assert_api_version(&request)?;
+    let app_data_root = app.path().app_data_dir().map_err(|error| {
+        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
+    })?;
+    let settings = app_settings::load(&app_data_root).map_err(ApiError::CheckFailed)?;
+    let Some(directory) = project_directory_dialog(&app, &settings).blocking_pick_folder() else {
+        return Ok(VersionedResponse {
+            api_version: API_VERSION,
+            payload: settings_summary(&settings),
+        });
+    };
+    let directory = directory.into_path().map_err(|error| {
+        ApiError::CheckFailed(format!("selected directory is not a local path: {error}"))
+    })?;
+    let updated = app_settings::save(
+        &app_data_root,
+        app_settings::AppSettings::with_default_directory(Some(directory)),
+    )
+    .map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: settings_summary(&updated),
+    })
+}
+
+#[tauri::command]
+fn settings_clear_default_project_directory(
+    request: VersionedRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
+    assert_api_version(&request)?;
+    let app_data_root = app.path().app_data_dir().map_err(|error| {
+        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
+    })?;
+    let cleared = app_settings::save(
+        &app_data_root,
+        app_settings::AppSettings::with_default_directory(None),
+    )
+    .map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: settings_summary(&cleared),
+    })
+}
+
+#[tauri::command]
 async fn project_create(
     request: ProjectCreateRequest,
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<ProjectCreateResult>, ApiError> {
     assert_api_version(&request.version)?;
-    let Some(project_root) = app.dialog().file().blocking_pick_folder() else {
+    let app_data_root = app.path().app_data_dir().map_err(|error| {
+        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
+    })?;
+    let settings = app_settings::load(&app_data_root).map_err(ApiError::CheckFailed)?;
+    let Some(project_root) = project_directory_dialog(&app, &settings).blocking_pick_folder()
+    else {
         return Ok(VersionedResponse {
             api_version: API_VERSION,
             payload: ProjectCreateResult {
@@ -871,9 +971,6 @@ async fn project_create(
             now: request.now,
         })
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
     ProjectRegistry::at(app_data_root)
         .register(&manifest, project_root, manifest.updated_at.clone())
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
@@ -1517,6 +1614,9 @@ pub fn run() {
             app_get_version,
             spike_docx_check,
             spike_keyring_check,
+            settings_get,
+            settings_pick_default_project_directory,
+            settings_clear_default_project_directory,
             migration_inspect,
             migration_run,
             migration_pick_workspace,
