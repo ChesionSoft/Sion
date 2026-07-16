@@ -45,10 +45,13 @@ jobs:
         include:
           - label: macOS Apple Silicon
             runner: macos-15
+            bundle_path: src-tauri/target/universal-apple-darwin/release/bundle/
           - label: macOS Intel
             runner: macos-15-intel
+            bundle_path: src-tauri/target/release/bundle/
           - label: Windows x64
             runner: windows-2022
+            bundle_path: src-tauri/target/release/bundle/
     defaults:
       run:
         working-directory: .
@@ -62,6 +65,10 @@ jobs:
       - name: Set up Rust
         shell: bash
         run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Install universal macOS Rust targets
+        if: matrix.label == 'macOS Apple Silicon'
+        shell: bash
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install UI dependencies
         run: npm ci
       - name: Validate migration fixture
@@ -97,5 +104,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: sion-${{ matrix.label }}
-          path: src-tauri/target/release/bundle/
+          path: ${{ matrix.bundle_path }}
           if-no-files-found: error
