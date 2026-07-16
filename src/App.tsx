@@ -186,7 +186,7 @@ export function App() {
   async function handleSaveProvider(draft: ProviderDraft) {
     try {
       const saved = await saveProvider(draft);
-      setProviders((current) => [...current.map((item) => ({ ...item, isDefault: false })), saved]);
+      setProviders(await listProviders());
       setNotice(`${saved.name} 已保存；密钥仅保存在系统钥匙串`);
     } catch (error) {
       setNotice(`保存模型配置失败：${String(error)}`);
@@ -206,7 +206,7 @@ export function App() {
   async function handleDeleteProvider(providerId: string) {
     try {
       await deleteProvider(providerId);
-      setProviders((current) => current.filter((item) => item.id !== providerId));
+      setProviders(await listProviders());
       setNotice("配置和系统凭据已删除");
     } catch (error) {
       setNotice(`删除模型配置失败：${String(error)}`);
