@@ -55,7 +55,7 @@ pub struct ResolvedModel {
     pub model: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProvidersFile {
     schema_version: u32,
@@ -132,7 +132,7 @@ pub fn set_default(app_data_root: &Path, provider_id: &str) -> Result<ProviderSu
 fn set_default_with_store<S: CredentialStore>(
     app_data_root: &Path,
     provider_id: &str,
-    credentials: &S,
+    _credentials: &S,
 ) -> Result<ProviderSummary, String> {
     if !safe_id(provider_id) {
         return Err("provider id is unsafe".to_string());
@@ -150,10 +150,7 @@ fn set_default_with_store<S: CredentialStore>(
     }
     atomic_write_json(&path(app_data_root), &file)?;
     let provider = file.providers.remove(selected);
-    Ok(summary(
-        provider.clone(),
-        credentials.get(&keyring_account(&provider.id))?.is_some(),
-    ))
+    Ok(summary(provider))
 }
 
 pub fn resolve_default_model(app_data_root: &Path) -> Result<ResolvedModel, String> {
@@ -162,15 +159,12 @@ pub fn resolve_default_model(app_data_root: &Path) -> Result<ResolvedModel, Stri
 
 fn list_with_store<S: CredentialStore>(
     app_data_root: &Path,
-    credentials: &S,
+    _credentials: &S,
 ) -> Result<Vec<ProviderSummary>, String> {
     let file = read_file(app_data_root)?;
     file.providers
         .into_iter()
-        .map(|provider| {
-            let has_api_key = credentials.get(&keyring_account(&provider.id))?.is_some();
-            Ok(summary(provider, has_api_key))
-        })
+        .map(|provider| Ok(summary(provider)))
         .collect()
 }
 
@@ -181,28 +175,17 @@ fn save_with_store<S: CredentialStore>(
 ) -> Result<ProviderSummary, String> {
     validate_input(&input)?;
     let mut file = read_file(app_data_root)?;
+    let original = file.clone();
+    let file_existed = path(app_data_root).exists();
     let account = keyring_account(&input.id);
     let existing_index = file.providers.iter().position(|item| item.id == input.id);
-    if existing_index.is_none()
-        && input
-            .api_key
-            .as_deref()
-            .map(str::trim)
-            .is_none_or(str::is_empty)
-    {
-        return Err("a new provider requires an API key".to_string());
-    }
-
-    let previous_secret = credentials.get(&account)?;
-    let mut wrote_secret = false;
-    if let Some(api_key) = input
+    let replacement_key = input
         .api_key
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        credentials.set(&account, api_key)?;
-        wrote_secret = true;
+        .filter(|value| !value.is_empty());
+    if existing_index.is_none() && replacement_key.is_none() {
+        return Err("a new provider requires an API key".to_string());
     }
 
     let created_at = existing_index
@@ -226,10 +209,11 @@ fn save_with_store<S: CredentialStore>(
         file.providers.push(metadata.clone());
     }
     normalize_defaults(&mut file.providers);
-    if let Err(error) = atomic_write_json(&path(app_data_root), &file) {
-        if wrote_secret {
-            restore_secret(credentials, &account, previous_secret);
-        }
+    atomic_write_json(&path(app_data_root), &file)?;
+    if let Some(api_key) = replacement_key
+        && let Err(error) = credentials.set(&account, api_key)
+    {
+        restore_file(app_data_root, &original, file_existed);
         return Err(error);
     }
     let persisted = file
@@ -237,7 +221,7 @@ fn save_with_store<S: CredentialStore>(
         .into_iter()
         .find(|provider| provider.id == metadata.id)
         .ok_or_else(|| "saved provider was not found in metadata".to_string())?;
-    Ok(summary(persisted, credentials.get(&account)?.is_some()))
+    Ok(summary(persisted))
 }
 
 fn delete_with_store<S: CredentialStore>(
@@ -256,13 +240,13 @@ fn delete_with_store<S: CredentialStore>(
     else {
         return Err("provider was not found".to_string());
     };
+    let original = file.clone();
     let account = keyring_account(provider_id);
-    let previous_secret = credentials.get(&account)?;
-    credentials.delete(&account)?;
     let removed = file.providers.remove(index);
     normalize_defaults(&mut file.providers);
-    if let Err(error) = atomic_write_json(&path(app_data_root), &file) {
-        restore_secret(credentials, &account, previous_secret);
+    atomic_write_json(&path(app_data_root), &file)?;
+    if let Err(error) = credentials.delete(&account) {
+        let _ = atomic_write_json(&path(app_data_root), &original);
         return Err(error);
     }
     debug_assert_eq!(removed.id, provider_id);
@@ -310,17 +294,6 @@ fn resolve_default_model_with_store<S: CredentialStore>(
         protocol: provider.protocol.clone(),
         model: model.name.clone(),
     })
-}
-
-fn restore_secret<S: CredentialStore>(credentials: &S, account: &str, previous: Option<String>) {
-    match previous {
-        Some(secret) => {
-            let _ = credentials.set(account, &secret);
-        }
-        None => {
-            let _ = credentials.delete(account);
-        }
-    }
 }
 
 fn read_file(app_data_root: &Path) -> Result<ProvidersFile, String> {
@@ -394,7 +367,7 @@ fn normalize_defaults(providers: &mut [ProviderMetadata]) {
     }
 }
 
-fn summary(provider: ProviderMetadata, has_api_key: bool) -> ProviderSummary {
+fn summary(provider: ProviderMetadata) -> ProviderSummary {
     ProviderSummary {
         id: provider.id,
         name: provider.name,
@@ -403,7 +376,7 @@ fn summary(provider: ProviderMetadata, has_api_key: bool) -> ProviderSummary {
         protocol: provider.protocol,
         models: provider.models,
         is_default: provider.is_default,
-        has_api_key,
+        has_api_key: !provider.key_ref.is_empty(),
     }
 }
 
@@ -432,18 +405,33 @@ fn atomic_write_json(target: &Path, value: &impl Serialize) -> Result<(), String
     result
 }
 
+fn restore_file(app_data_root: &Path, previous: &ProvidersFile, previously_existed: bool) {
+    let target = path(app_data_root);
+    if previously_existed {
+        let _ = atomic_write_json(&target, previous);
+    } else {
+        let _ = fs::remove_file(target);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::RefCell, collections::BTreeMap, path::PathBuf};
+    use std::{
+        cell::{Cell, RefCell},
+        collections::BTreeMap,
+        path::PathBuf,
+    };
 
     #[derive(Default)]
     struct FakeCredentials {
         values: RefCell<BTreeMap<String, String>>,
+        get_calls: Cell<u32>,
         fail_set: bool,
     }
     impl CredentialStore for FakeCredentials {
         fn get(&self, account: &str) -> Result<Option<String>, String> {
+            self.get_calls.set(self.get_calls.get() + 1);
             Ok(self.values.borrow().get(account).cloned())
         }
         fn set(&self, account: &str, secret: &str) -> Result<(), String> {
@@ -502,6 +490,7 @@ mod tests {
         let root = root();
         let credentials = FakeCredentials {
             values: RefCell::new(BTreeMap::new()),
+            get_calls: Cell::new(0),
             fail_set: true,
         };
         assert!(save_with_store(&root, input("provider-a"), &credentials).is_err());
@@ -579,6 +568,27 @@ mod tests {
         let providers = list_with_store(&root, &credentials).unwrap();
         assert!(!providers[0].is_default && providers[1].is_default);
         assert_eq!(credentials.values.borrow().len(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn configuration_operations_do_not_read_credentials() {
+        let root = root();
+        let credentials = FakeCredentials::default();
+        save_with_store(&root, input("provider-a"), &credentials).unwrap();
+        let mut second = input("provider-b");
+        second.is_default = false;
+        save_with_store(&root, second, &credentials).unwrap();
+        credentials.get_calls.set(0);
+
+        list_with_store(&root, &credentials).unwrap();
+        set_default_with_store(&root, "provider-b", &credentials).unwrap();
+        let mut edited = input("provider-b");
+        edited.api_key = None;
+        save_with_store(&root, edited, &credentials).unwrap();
+        delete_with_store(&root, "provider-b", &credentials).unwrap();
+
+        assert_eq!(credentials.get_calls.get(), 0);
         let _ = fs::remove_dir_all(root);
     }
 }

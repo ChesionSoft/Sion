@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Sion application icon</title>
+  <desc id="desc">A compact S-shaped workflow mark on a white rounded square.</desc>
+  <defs>
+    <linearGradient id="flow" x1="288" y1="330" x2="742" y2="704" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#18c8c4"/>
+      <stop offset=".48" stop-color="#2394e8"/>
+      <stop offset="1" stop-color="#6177f4"/>
+    </linearGradient>
+    <filter id="glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="#fff"/>
+  <g transform="translate(525 487) scale(1.15) translate(-512 -512)">
+    <path d="M321 280h274l123 123v289c0 29-24 53-53 53H321c-29 0-53-24-53-53V333c0-29 24-53 53-53Z" fill="none" stroke="#b9c9d8" stroke-linejoin="round" stroke-width="32" opacity=".84"/>
+    <path d="M595 280v123h123" fill="none" stroke="#b9c9d8" stroke-linejoin="round" stroke-width="32" opacity=".84"/>
+    <path d="M698 358H479c-87 0-143 58-143 133 0 72 57 120 145 120h63c61 0 104 32 104 79 0 47-42 79-105 79H319" fill="none" stroke="#1cc4c5" stroke-linecap="round" stroke-linejoin="round" stroke-width="68" opacity=".15" filter="url(#glow)"/>
+    <path d="M698 358H479c-87 0-143 58-143 133 0 72 57 120 145 120h63c61 0 104 32 104 79 0 47-42 79-105 79H319" fill="none" stroke="url(#flow)" stroke-linecap="round" stroke-linejoin="round" stroke-width="54"/>
+    <circle cx="698" cy="358" r="35" fill="#18c8c4" stroke="#fff" stroke-width="12"/>
+    <circle cx="481" cy="611" r="35" fill="#2494e8" stroke="#fff" stroke-width="12"/>
+    <circle cx="319" cy="769" r="35" fill="#6177f4" stroke="#fff" stroke-width="12"/>
+  </g>
+</svg>
