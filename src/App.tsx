@@ -11,6 +11,7 @@ import {
   exportDocx as exportDocxApi,
   getAgentOverride,
   getAppVersion,
+  getFilePreview,
   getNode,
   getProjects,
   getSettings,
@@ -32,7 +33,7 @@ import { LandingPage } from "./components/LandingPage";
 import { ProviderManager } from "./components/ProviderManager";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Workbench } from "./components/Workbench";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AppVersion, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type NodeId, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type WorkflowNode } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AppVersion, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type NodeId, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type WorkflowNode, type WorkbenchTab } from "./types";
 
 const now = () => new Date().toISOString();
 
@@ -67,6 +68,10 @@ export function App() {
   const [exporting, setExporting] = useState(false);
   const [deliveryPreview, setDeliveryPreview] = useState<AssistantDeliveryPreview | null>(null);
   const [previewingMessageId, setPreviewingMessageId] = useState<string | null>(null);
+  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>("chat");
+  const [previewFileId, setPreviewFileId] = useState<string | null>(null);
+  const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
+  const [isFileDrawerOpen, setIsFileDrawerOpen] = useState(false);
 
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
@@ -242,6 +247,8 @@ export function App() {
   function openProject(item: RecentProject) {
     setDeliveryPreview(null);
     setSelectedFileIds([]);
+    setFilePreview(null);
+    setPreviewFileId(null);
     setProject(item);
     setNodeId("basic-info");
   }
@@ -459,6 +466,7 @@ export function App() {
         return;
       }
       setFiles((current) => [...current, result.file!]);
+      void selectFilePreview(result.file!.id);
       setNotice(result.file.extractionStatus === "available" ? `已导入并提取 ${result.file.originalName}` : `已导入 ${result.file.originalName}；该格式尚未提取文本`);
     } catch (error) {
       setNotice(`导入文件失败：${String(error)}`);
@@ -471,8 +479,25 @@ export function App() {
     setSelectedFileIds((current) => current.includes(fileId) ? current.filter((id) => id !== fileId) : [...current, fileId]);
   }
 
+  async function selectFilePreview(fileId: string) {
+    if (!project) return;
+    setPreviewFileId(fileId);
+    try {
+      setFilePreview(await getFilePreview(project.id, fileId));
+    } catch (error) {
+      setFilePreview(null);
+      setNotice(`读取文件预览失败：${String(error)}`);
+    }
+  }
+
+  function toggleFileDrawer() {
+    setIsFileDrawerOpen((current) => !current);
+  }
+
   function exitProject() {
     setDeliveryPreview(null);
+    setFilePreview(null);
+    setPreviewFileId(null);
     setProject(null);
   }
 
@@ -536,11 +561,17 @@ export function App() {
       onSave={() => void saveNodeDraft()}
       onExportDocx={() => void exportDocx()}
       onSelectNode={selectNode}
+      tab={workbenchTab}
+      onSelectTab={setWorkbenchTab}
       files={files}
       selectedFileIds={selectedFileIds}
       importingFile={importingFile}
       onImport={() => void importFile()}
       onToggleFile={toggleFileContext}
+      preview={filePreview}
+      onSelectPreview={(id) => void selectFilePreview(id)}
+      isFileDrawerOpen={isFileDrawerOpen}
+      onToggleFileDrawer={toggleFileDrawer}
       agentOverride={agentOverride}
       agentOverrideOpen={agentOverrideOpen}
       agentOverrideDraft={agentOverrideDraft}
