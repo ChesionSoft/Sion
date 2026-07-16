@@ -1,7 +1,6 @@
 mod app_paths;
 mod app_settings;
 mod docx_check;
-mod keyring_check;
 mod project_export;
 mod provider_settings;
 
@@ -533,21 +532,6 @@ fn spike_docx_check(request: VersionedRequest) -> Result<VersionedResponse<Spike
         payload: SpikeCheck {
             label: "DOCX round trip passed".to_string(),
             detail: "生成、解包与中文正文检查均通过".to_string(),
-        },
-    })
-}
-
-#[tauri::command]
-fn spike_keyring_check(
-    request: VersionedRequest,
-) -> Result<VersionedResponse<SpikeCheck>, ApiError> {
-    assert_api_version(&request)?;
-    keyring_check::round_trip_check().map_err(ApiError::CheckFailed)?;
-    Ok(VersionedResponse {
-        api_version: API_VERSION,
-        payload: SpikeCheck {
-            label: "System credential round trip passed".to_string(),
-            detail: "临时凭据已写入、读取并删除".to_string(),
         },
     })
 }
@@ -1466,7 +1450,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_get_version,
             spike_docx_check,
-            spike_keyring_check,
             settings_get,
             settings_pick_projects_directory,
             settings_clear_projects_directory,

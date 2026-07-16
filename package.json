@@ -9,7 +9,6 @@
     "lint": "tsc -b --pretty false",
     "test": "npm run lint",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:keyring": "cargo test --manifest-path src-tauri/Cargo.toml keyring_check::tests::round_trips_a_real_system_credential -- --ignored --exact",
     "test:no-browser-runtime": "node scripts/verify-no-browser-runtime.mjs",
     "test:no-legacy-migration-runtime": "node scripts/verify-no-legacy-migration-runtime.mjs",
     "build:desktop": "tauri build --no-bundle",
