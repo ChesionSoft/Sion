@@ -16,8 +16,8 @@
         "title": "Sion",
         "width": 1040,
         "height": 690,
-        "minWidth": 760,
-        "minHeight": 610,
+        "minWidth": 960,
+        "minHeight": 640,
         "resizable": true
       }
     ],
