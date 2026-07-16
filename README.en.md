@@ -14,7 +14,7 @@
 >
 > Built for small client projects, solo builders, and lightweight teams. It turns scattered requirements, reference material, per-node Agent conversations, and Markdown deliverables into a reviewable project-design path.
 
-Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x64. Rust owns project data, migration, model connectivity, file extraction, and Word export; React/Vite provides the workbench UI.
+Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x64. Rust owns project data, model connectivity, file extraction, and Word export; React/Vite provides the workbench UI.
 
 ## Contents
 
@@ -26,7 +26,6 @@ Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x6
 - [Model configuration](#model-configuration)
 - [Attachments and Agent deliveries](#attachments-and-agent-deliveries)
 - [Word export](#word-export)
-- [Legacy migration](#legacy-migration)
 - [Local data and privacy](#local-data-and-privacy)
 - [Build and release](#build-and-release)
 
@@ -51,7 +50,6 @@ Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x6
 | **Local file pool** | Import TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX, then select files as Agent context. |
 | **Secure model settings** | OpenAI-compatible Chat Completions and Responses providers; keys live only in the OS credential store. |
 | **Structured Word export** | Export Markdown nodes as DOCX with headings, a table of contents, lists, and tables. |
-| **Legacy migration** | Atomically migrate older Sion projects into `.sion/` without restoring browser-search state. |
 
 ## Quick start
 
@@ -155,7 +153,7 @@ Common issues:
 - **401 / unauthorized**: the API key is incorrect, lacks access, or belongs to a different service than the Base URL.
 - **404 / missing endpoint**: the Base URL probably includes `/chat/completions` or `/responses`, or the selected protocol is wrong.
 - **Model not found**: use the provider console's exact model ID in **Default Model**.
-- **Can I work offline?** Yes. A model connection is needed only for Agent runs; Markdown editing, project creation, migration, and DOCX export work offline.
+- **Can I work offline?** Yes. A model connection is needed only for Agent runs; Markdown editing, project creation, and DOCX export work offline.
 
 Provider metadata is stored in the application-data directory. API keys are stored only in macOS Keychain or Windows Credential Manager and are never echoed back in the UI.
 
@@ -172,17 +170,6 @@ Writeable Agent output must be fenced `delivery` JSON. By default it patches exi
 Export DOCX from the final node and choose the destination through the native save dialog. The document preserves Markdown heading levels, project title and metadata, a table of contents, ordered and unordered lists, and pipe tables for continued review in Word.
 
 The chosen destination receives the export. Sion does not automatically write it into the project directory or upload it.
-
-## Legacy migration
-
-From the landing screen, select an older Sion workspace and migrate projects one by one. Migration validates a sibling staging directory before atomically writing the destination `.sion/`.
-
-- Project metadata, twelve nodes, chat sessions, files, project rule overrides, and historical exports are retained.
-- Legacy provider keys are migrated separately into the OS credential store; new metadata contains no plaintext keys.
-- Browser-search settings, profiles/caches, web fetching, and automatic URL reads are not migrated or enabled.
-- Migration refuses to overwrite a target that already contains `.sion/`.
-
-See [fixtures/contracts/migration-expectations.md](fixtures/contracts/migration-expectations.md) for the migration contract.
 
 ## Local data and privacy
 

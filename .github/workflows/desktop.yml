@@ -14,7 +14,7 @@ on:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - "fixtures/**"
+      - "scripts/**"
       - ".github/workflows/desktop.yml"
   pull_request:
     paths:
@@ -28,7 +28,7 @@ on:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - "fixtures/**"
+      - "scripts/**"
       - ".github/workflows/desktop.yml"
 
 permissions:
@@ -71,9 +71,6 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install UI dependencies
         run: npm ci
-      - name: Validate migration fixture
-        working-directory: .
-        run: node fixtures/validate-fixtures.mjs
       - name: Verify browserless desktop runtime
         run: npm run test:no-browser-runtime
       - name: Check UI
@@ -87,7 +84,7 @@ jobs:
           cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
           npm run test:rust
       - name: Verify system credential store
-        run: npm run test:keyring && npm run test:provider-migration
+        run: npm run test:keyring
       - name: Build desktop integration
         run: npm run build:desktop
       - name: Bundle universal macOS application

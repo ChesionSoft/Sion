@@ -790,9 +790,61 @@ mod tests {
 
     #[test]
     fn parses_historical_message_metadata_without_enabling_new_web_access() {
-        let messages: Vec<ChatMessage> = serde_json::from_str(include_str!(
-            "../../../fixtures/legacy-projects/minimal/projects/6a6b57e7-cbb6-4c0a-b630-000000000001/chat/basic-info/11111111-2222-4333-8444-555555555555.json"
-        ))
+        // Inlined so sion-core no longer reads fixtures/legacy-projects. The
+        // payload is a historical chat transcript whose assistant turn carries
+        // a web-search source and token usage; parsing it must not enable any
+        // new web access in the desktop runtime.
+        let messages: Vec<ChatMessage> = serde_json::from_str(
+            r#"[
+  {
+    "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    "role": "user",
+    "content": "请写入项目基本信息。",
+    "createdAt": "2026-02-03T04:05:06.000Z"
+  },
+  {
+    "id": "ffffffff-1111-4222-8333-444444444444",
+    "role": "assistant",
+    "content": "已整理项目基本信息。",
+    "reasoningContent": "先核对用户提供信息。",
+    "sources": [
+      {
+        "id": "source-legacy-1",
+        "kind": "web_search",
+        "url": "https://example.invalid/reference",
+        "title": "历史来源，仅作保留",
+        "domain": "example.invalid",
+        "snippet": "此来源不应触发新应用联网。",
+        "retrievedAt": "2026-02-03T04:05:30.000Z"
+      }
+    ],
+    "createdAt": "2026-02-03T04:06:06.000Z",
+    "turnId": "turn-fixture-001",
+    "reasoningDurationMs": 1200,
+    "usage": {
+      "inputTokens": 120,
+      "outputTokens": 40,
+      "totalTokens": 160,
+      "turnId": "turn-fixture-001",
+      "source": "exact",
+      "callCount": 1,
+      "calls": [
+        {
+          "id": "call-fixture-001",
+          "category": "answer",
+          "providerId": "provider-fixture-001",
+          "model": "fixture-model",
+          "source": "exact",
+          "status": "completed",
+          "inputTokens": 120,
+          "outputTokens": 40,
+          "totalTokens": 160
+        }
+      ]
+    }
+  }
+]"#,
+        )
         .unwrap();
         let assistant = &messages[1];
         assert_eq!(assistant.role, ChatRole::Assistant);

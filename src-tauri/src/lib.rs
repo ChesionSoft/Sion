@@ -1,9 +1,7 @@
 mod app_settings;
 mod docx_check;
 mod keyring_check;
-mod migration;
 mod project_export;
-mod provider_migration;
 mod provider_settings;
 
 use serde::{Deserialize, Serialize};
@@ -16,7 +14,7 @@ use sion_storage::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 use tauri::{Emitter, Manager};
@@ -120,79 +118,6 @@ fn project_directory_dialog(
         Some(path) => app.dialog().file().set_directory(path),
         None => app.dialog().file(),
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationInspectRequest {
-    #[serde(flatten)]
-    version: VersionedRequest,
-    legacy_root: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationInspection {
-    project_ids: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationWorkspaceSelection {
-    selected: bool,
-    legacy_root: Option<String>,
-    project_ids: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationRunRequest {
-    #[serde(flatten)]
-    version: VersionedRequest,
-    legacy_root: String,
-    project_id: String,
-    target_project_root: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationNativeRunRequest {
-    #[serde(flatten)]
-    version: VersionedRequest,
-    legacy_root: String,
-    project_id: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationNativeResult {
-    report: migration::MigrationReport,
-    project: ProjectManifest,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderMigrationInspectRequest {
-    #[serde(flatten)]
-    version: VersionedRequest,
-    legacy_root: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderMigrationRunRequest {
-    #[serde(flatten)]
-    version: VersionedRequest,
-    legacy_root: String,
-    app_data_root: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProviderMigrationNativeRequest {
-    #[serde(flatten)]
-    version: VersionedRequest,
-    legacy_root: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -551,155 +476,6 @@ fn spike_keyring_check(
             label: "System credential round trip passed".to_string(),
             detail: "临时凭据已写入、读取并删除".to_string(),
         },
-    })
-}
-
-#[tauri::command]
-fn migration_inspect(
-    request: MigrationInspectRequest,
-) -> Result<VersionedResponse<MigrationInspection>, ApiError> {
-    assert_api_version(&request.version)?;
-    let project_ids = migration::inspect_legacy_workspace(Path::new(&request.legacy_root))
-        .map_err(ApiError::CheckFailed)?;
-    Ok(VersionedResponse {
-        api_version: API_VERSION,
-        payload: MigrationInspection { project_ids },
-    })
-}
-
-#[tauri::command]
-async fn migration_pick_workspace(
-    request: VersionedRequest,
-    app: tauri::AppHandle,
-) -> Result<VersionedResponse<MigrationWorkspaceSelection>, ApiError> {
-    assert_api_version(&request)?;
-    let Some(root) = app.dialog().file().blocking_pick_folder() else {
-        return Ok(VersionedResponse {
-            api_version: API_VERSION,
-            payload: MigrationWorkspaceSelection {
-                selected: false,
-                legacy_root: None,
-                project_ids: Vec::new(),
-            },
-        });
-    };
-    let root = root.into_path().map_err(|error| {
-        ApiError::CheckFailed(format!(
-            "selected legacy workspace is not a local path: {error}"
-        ))
-    })?;
-    let project_ids = migration::inspect_legacy_workspace(&root).map_err(ApiError::CheckFailed)?;
-    Ok(VersionedResponse {
-        api_version: API_VERSION,
-        payload: MigrationWorkspaceSelection {
-            selected: true,
-            legacy_root: Some(root.to_string_lossy().into_owned()),
-            project_ids,
-        },
-    })
-}
-
-#[tauri::command]
-fn migration_run(
-    request: MigrationRunRequest,
-) -> Result<VersionedResponse<migration::MigrationReport>, ApiError> {
-    assert_api_version(&request.version)?;
-    let report = migration::migrate_legacy_project(
-        Path::new(&request.legacy_root),
-        &request.project_id,
-        Path::new(&request.target_project_root),
-    )
-    .map_err(ApiError::CheckFailed)?;
-    Ok(VersionedResponse {
-        api_version: API_VERSION,
-        payload: report,
-    })
-}
-
-#[tauri::command]
-async fn migration_run_native(
-    request: MigrationNativeRunRequest,
-    app: tauri::AppHandle,
-) -> Result<VersionedResponse<MigrationNativeResult>, ApiError> {
-    assert_api_version(&request.version)?;
-    let Some(target) = app.dialog().file().blocking_pick_folder() else {
-        return Err(ApiError::CheckFailed(
-            "migration target directory selection was cancelled".to_string(),
-        ));
-    };
-    let target = target.into_path().map_err(|error| {
-        ApiError::CheckFailed(format!(
-            "selected project directory is not a local path: {error}"
-        ))
-    })?;
-    let report = migration::migrate_legacy_project(
-        Path::new(&request.legacy_root),
-        &request.project_id,
-        &target,
-    )
-    .map_err(ApiError::CheckFailed)?;
-    let store = ProjectStore::at(&target);
-    let project = store
-        .manifest()
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
-    ProjectRegistry::at(app_data_root)
-        .register(&project, target, project.updated_at.clone())
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    Ok(VersionedResponse {
-        api_version: API_VERSION,
-        payload: MigrationNativeResult { report, project },
-    })
-}
-
-#[tauri::command]
-fn provider_migration_inspect(
-    request: ProviderMigrationInspectRequest,
-) -> Result<VersionedResponse<provider_migration::ProviderMigrationInspection>, ApiError> {
-    assert_api_version(&request.version)?;
-    let inspection = provider_migration::inspect_legacy_providers(Path::new(&request.legacy_root))
-        .map_err(ApiError::CheckFailed)?;
-    Ok(VersionedResponse {
-        api_version: API_VERSION,
-        payload: inspection,
-    })
-}
-
-#[tauri::command]
-fn provider_migration_run(
-    request: ProviderMigrationRunRequest,
-) -> Result<VersionedResponse<provider_migration::ProviderMigrationReport>, ApiError> {
-    assert_api_version(&request.version)?;
-    let report = provider_migration::migrate_legacy_providers(
-        Path::new(&request.legacy_root),
-        Path::new(&request.app_data_root),
-    )
-    .map_err(ApiError::CheckFailed)?;
-    Ok(VersionedResponse {
-        api_version: API_VERSION,
-        payload: report,
-    })
-}
-
-#[tauri::command]
-fn provider_migration_run_native(
-    request: ProviderMigrationNativeRequest,
-    app: tauri::AppHandle,
-) -> Result<VersionedResponse<provider_migration::ProviderMigrationReport>, ApiError> {
-    assert_api_version(&request.version)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
-    let report = provider_migration::migrate_legacy_providers(
-        Path::new(&request.legacy_root),
-        &app_data_root,
-    )
-    .map_err(ApiError::CheckFailed)?;
-    Ok(VersionedResponse {
-        api_version: API_VERSION,
-        payload: report,
     })
 }
 
@@ -1667,13 +1443,6 @@ pub fn run() {
             settings_get,
             settings_pick_default_project_directory,
             settings_clear_default_project_directory,
-            migration_inspect,
-            migration_run,
-            migration_pick_workspace,
-            migration_run_native,
-            provider_migration_inspect,
-            provider_migration_run,
-            provider_migration_run_native,
             provider_list,
             provider_save,
             provider_set_default,

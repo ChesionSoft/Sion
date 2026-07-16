@@ -15,7 +15,6 @@ cargo test --workspace
 cargo clippy --workspace -- -D warnings
 npm run test:rust
 npm run test:no-browser-runtime
-node fixtures/validate-fixtures.mjs
 ```
 
 随后在 macOS Apple Silicon runner 构建通用包，并在 Windows runner 构建两个
@@ -75,6 +74,5 @@ MSI。未签名的安装器可以运行，但通过浏览器下载时会触发 S
 
 ## 最终验收
 
-每个平台都在未安装开发环境的测试账户上执行：安装、首次启动、创建项目、迁移一份
-旧项目、配置一个测试模型提供商、导入附件、运行一次 Agent、导出 DOCX。确认新数据
+每个平台都在未安装开发环境的测试账户上执行：安装、首次启动、创建项目、导入附件、运行一次 Agent、导出 DOCX。确认新数据
 仅写入 `<项目目录>/.sion/`，且凭据未出现在项目树、导出物或日志中。

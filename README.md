@@ -14,7 +14,7 @@
 >
 > 面向小型外包项目、个人开发者和轻量团队，把零散需求、参考资料、节点 Agent 对话和 Markdown 交付稿组织成一条可交付的项目设计路径。
 
-Sion 现为 macOS（Apple Silicon、Intel）与 Windows x64 桌面应用。Rust 负责项目数据、迁移、模型连接、文件提取和 Word 导出；React/Vite 仅提供工作台界面。
+Sion 现为 macOS（Apple Silicon、Intel）与 Windows x64 桌面应用。Rust 负责项目数据、模型连接、文件提取和 Word 导出；React/Vite 仅提供工作台界面。
 
 ## 目录
 
@@ -26,7 +26,6 @@ Sion 现为 macOS（Apple Silicon、Intel）与 Windows x64 桌面应用。Rust 
 - [模型配置](#模型配置)
 - [附件与 Agent 交付](#附件与-agent-交付)
 - [导出 Word](#导出-word)
-- [旧数据迁移](#旧数据迁移)
 - [本地数据与隐私](#本地数据与隐私)
 - [构建与发布](#构建与发布)
 
@@ -51,7 +50,6 @@ Sion 现为 macOS（Apple Silicon、Intel）与 Windows x64 桌面应用。Rust 
 | **本地文件池** | 导入 TXT、Markdown、JSON、CSV、PDF、DOCX、XLSX；可选择文件作为当前 Agent 的上下文。 |
 | **安全模型配置** | 支持 OpenAI-compatible Chat Completions 与 OpenAI Responses；API Key 只写入系统凭据库。 |
 | **结构化 Word 导出** | 将节点 Markdown 导出为含标题层级、目录、列表和表格的 DOCX。 |
-| **旧项目迁移** | 将旧 Sion 项目原子迁移到新的 `.sion/` 存储，不恢复浏览器搜索状态。 |
 
 ## 快速开始
 
@@ -155,7 +153,7 @@ https://api.example.com/v1
 - **401 / 未授权**：通常是 API Key 错误、账户无权限，或 Key 与 Base URL 不属于同一服务商。
 - **404 / endpoint 不存在**：检查是否把 `/chat/completions` 或 `/responses` 填进了 Base URL，或协议选错。
 - **模型不存在**：将“默认模型”改为服务商控制台显示的精确模型 ID。
-- **离线也能编辑吗？** 可以。模型连接只在运行 Agent 时需要，Markdown 编辑、项目创建、迁移和 DOCX 导出都可离线完成。
+- **离线也能编辑吗？** 可以。模型连接只在运行 Agent 时需要，Markdown 编辑、项目创建和 DOCX 导出都可离线完成。
 
 提供商元数据保存在应用数据目录；API Key 只写入 macOS Keychain 或 Windows Credential Manager，界面不会回显密钥。
 
@@ -172,17 +170,6 @@ Agent 回复中的写入内容必须是受约束的 fenced `delivery` JSON：默
 从工作台的最终节点触发 DOCX 导出，并在系统保存面板选择目标位置。导出文档会保留 Markdown 的标题层级、项目标题和元数据、目录、无序/有序列表及管道表格，适合继续在 Word 中审阅和交付。
 
 导出文件由用户选择位置保存；不会自动写入项目目录或上传到网络。
-
-## 旧数据迁移
-
-启动页可选择旧 Sion 工作区并逐个迁移项目。迁移过程先在同级临时目录完成校验，再原子写入目标项目的 `.sion/`：
-
-- 保留项目元数据、12 个节点、聊天会话、附件、项目规则覆盖和历史导出；
-- 旧提供商的 API Key 单独迁移至系统凭据库，新的元数据不保存明文密钥；
-- 浏览器搜索配置、浏览器 profile/cache、网页抓取与自动 URL 读取不会迁移，也不会在新应用中启用；
-- 如果目标目录已经存在 `.sion/`，迁移会拒绝覆盖。
-
-迁移格式和 Golden 约束见 [fixtures/contracts/migration-expectations.md](fixtures/contracts/migration-expectations.md)。
 
 ## 本地数据与隐私
 
