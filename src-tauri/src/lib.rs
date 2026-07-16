@@ -219,6 +219,14 @@ struct ProviderDeleteRequest {
     provider_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderSetDefaultRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    provider_id: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderList {
@@ -713,6 +721,23 @@ fn provider_save(
     })?;
     let provider =
         provider_settings::save(&app_data_root, request.provider).map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: provider,
+    })
+}
+
+#[tauri::command]
+fn provider_set_default(
+    request: ProviderSetDefaultRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<provider_settings::ProviderSummary>, ApiError> {
+    assert_api_version(&request.version)?;
+    let app_data_root = app.path().app_data_dir().map_err(|error| {
+        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
+    })?;
+    let provider = provider_settings::set_default(&app_data_root, &request.provider_id)
+        .map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: provider,
@@ -1626,6 +1651,7 @@ pub fn run() {
             provider_migration_run_native,
             provider_list,
             provider_save,
+            provider_set_default,
             provider_delete,
             agent_run_start,
             agent_run_list,

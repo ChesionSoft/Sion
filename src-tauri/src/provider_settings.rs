@@ -125,6 +125,37 @@ pub fn delete(app_data_root: &Path, provider_id: &str) -> Result<(), String> {
     delete_with_store(app_data_root, provider_id, &SystemCredentialStore)
 }
 
+pub fn set_default(app_data_root: &Path, provider_id: &str) -> Result<ProviderSummary, String> {
+    set_default_with_store(app_data_root, provider_id, &SystemCredentialStore)
+}
+
+fn set_default_with_store<S: CredentialStore>(
+    app_data_root: &Path,
+    provider_id: &str,
+    credentials: &S,
+) -> Result<ProviderSummary, String> {
+    if !safe_id(provider_id) {
+        return Err("provider id is unsafe".to_string());
+    }
+    let mut file = read_file(app_data_root)?;
+    let Some(selected) = file
+        .providers
+        .iter()
+        .position(|provider| provider.id == provider_id)
+    else {
+        return Err("provider was not found".to_string());
+    };
+    for (index, provider) in file.providers.iter_mut().enumerate() {
+        provider.is_default = index == selected;
+    }
+    atomic_write_json(&path(app_data_root), &file)?;
+    let provider = file.providers.remove(selected);
+    Ok(summary(
+        provider.clone(),
+        credentials.get(&keyring_account(&provider.id))?.is_some(),
+    ))
+}
+
 pub fn resolve_default_model(app_data_root: &Path) -> Result<ResolvedModel, String> {
     resolve_default_model_with_store(app_data_root, &SystemCredentialStore)
 }
@@ -513,6 +544,41 @@ mod tests {
         );
         assert_eq!(resolved.model, "model-a");
         assert_eq!(resolved.api_key, "secret-value");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn edits_existing_metadata_without_replacing_the_saved_secret() {
+        let root = root();
+        let credentials = FakeCredentials::default();
+        save_with_store(&root, input("provider-a"), &credentials).unwrap();
+        let mut edited = input("provider-a");
+        edited.name = "Renamed Provider".to_string();
+        edited.api_key = None;
+        save_with_store(&root, edited, &credentials).unwrap();
+        assert_eq!(
+            credentials.values.borrow()["provider:provider-a"],
+            "secret-value"
+        );
+        assert_eq!(
+            list_with_store(&root, &credentials).unwrap()[0].name,
+            "Renamed Provider"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicitly_switches_the_default_provider_without_touching_credentials() {
+        let root = root();
+        let credentials = FakeCredentials::default();
+        save_with_store(&root, input("provider-a"), &credentials).unwrap();
+        let mut second = input("provider-b");
+        second.is_default = false;
+        save_with_store(&root, second, &credentials).unwrap();
+        set_default_with_store(&root, "provider-b", &credentials).unwrap();
+        let providers = list_with_store(&root, &credentials).unwrap();
+        assert!(!providers[0].is_default && providers[1].is_default);
+        assert_eq!(credentials.values.borrow().len(), 2);
         let _ = fs::remove_dir_all(root);
     }
 }
