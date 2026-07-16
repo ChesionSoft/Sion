@@ -48,7 +48,9 @@ Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x6
 | **Markdown working papers** | Edit, save, and track the state of every node directly. |
 | **Project rule overrides** | Add project-specific instructions per node without changing bundled defaults. |
 | **Local file pool** | Import TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX, then select files as Agent context. |
-| **Secure model settings** | OpenAI-compatible Chat Completions and Responses providers; keys live only in the OS credential store. |
+| **Secure model settings** | OpenAI-compatible Chat Completions and Responses providers; editable, with an explicit default. Keys live only in the OS credential store and cannot be recovered. |
+| **Default project directory** | Users choose the project directory; a starting directory can be saved in Settings so the folder picker opens there. |
+| **File preview** | The right-hand attachments pane previews extracted file text (text only); only checked files become Agent context. |
 | **Structured Word export** | Export Markdown nodes as DOCX with headings, a table of contents, lists, and tables. |
 
 ## Quick start
@@ -76,9 +78,9 @@ npm run test:no-browser-runtime
 
 ## Workflow
 
-1. Choose a local directory on the landing screen and create a project. Sion creates only `.sion/` in that directory.
+1. Choose a local directory on the landing screen and create a project. Sion creates only `.sion/` in that directory. You may save a starting directory in **Default Directory Settings**; the folder picker then opens there for new projects.
 2. Configure a provider and a default model in **Model Connection**. Offline editing works without one.
-3. Work through the twelve nodes. Import files and select only the references relevant to the current Agent conversation.
+3. Work through the twelve nodes. Import files and select only the references relevant to the current Agent conversation. The workbench center has two tabs: **Chat** to talk with the node Agent and **Draft** to edit Markdown; the right-hand attachments pane previews extracted file text.
 4. Chat with the current-node Agent, review its delivery patch, then explicitly apply it to the Markdown working paper.
 5. Complete the final-node checks and export a DOCX through the system save dialog.
 
@@ -111,7 +113,7 @@ Complete every field in **Model Connection**:
 | **API Base URL** | The provider's **version root**, including its version prefix but not the final endpoint path. It commonly ends in `/v1`. |
 | **Protocol** | Use **Chat Completions** for most OpenAI-compatible services. Use **Responses** only when the provider explicitly supports the OpenAI Responses API. |
 | **Default Model** | The exact model ID in the provider documentation, for example `gpt-5` or `deepseek-chat`; it is not a marketing display name. |
-| **API Key** | A key issued by that provider. It is required for a new provider and is never echoed after saving. |
+| **API Key** | A key issued by that provider. It is required for a new provider and is never echoed after saving. When editing an existing provider, leave this field blank to keep the stored key, or enter a new value to replace it. Keys live only in the OS credential store and cannot be recovered. |
 
 ### How to enter the URL
 
@@ -146,7 +148,7 @@ These show endpoint and protocol shapes only. Available models, account access, 
 
 1. Select **Save Secure Configuration**. Seeing the provider in the list with a configured state means its key was saved to Keychain / Credential Manager.
 2. Open or create a project and send an Agent message in any node. A streaming reply confirms the connection.
-3. The first provider saved is the current default provider. This version has no default-provider switcher; to switch, delete existing providers and save the preferred provider first. Deletion also removes that provider's system credential.
+3. The first provider saved is the current default provider. In **Manage Model Connections** you can edit any provider's name, URL, protocol, or model without re-entering its API Key (leave the key blank to keep the stored secret), or enter a new key to replace it. Any provider can be set as the default. Deleting a provider also removes its key from the system credential store, and the key cannot be recovered.
 
 Common issues:
 
@@ -161,7 +163,7 @@ Provider metadata is stored in the application-data directory. API keys are stor
 
 ## Attachments and Agent deliveries
 
-Imported files are copied into `.sion/files/` alongside extracted text. TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX are extractable. Failed extraction is visible as a failure; it is never presented as usable text.
+Imported files are copied into `.sion/files/` alongside extracted text. TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX are extractable. Failed extraction is visible as a failure; it is never presented as usable text. The right-hand attachments pane previews the extracted text of an imported file (text only; it never renders web pages or opens external links). Previewing a file is independent of selecting it as Agent context; only checked files become Agent context.
 
 Writeable Agent output must be fenced `delivery` JSON. By default it patches existing second-level sections only; a full rewrite requires an explicit user request. Sion validates the node structure, previews changes, and saves with the current revision, so a partial streaming response cannot become project content.
 

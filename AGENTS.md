@@ -19,7 +19,7 @@ The Tauri crate is `src-tauri/`; its independent `Cargo.toml` is deliberately ex
 ## Architecture
 
 - `src/` — React/Vite workbench only. Use Tauri `invoke` for native actions; do not access the local filesystem or model network from the UI.
-- `src-tauri/` — versioned Tauri command layer, native dialogs, provider settings, and DOCX export.
+- `src-tauri/` — versioned Tauri command layer, native dialogs, app settings (default project directory), provider settings, bounded file preview, and DOCX export.
 - `crates/sion-core` — pure workflow/domain types, default Markdown, agent rules, and validated `delivery` patch application.
 - `crates/sion-storage` — durable `.sion/` project store, CAS node saves, sessions, attachments, and registries.
 - `crates/sion-agent` — provider SSE streaming, cancellation behavior, and run scheduling.

@@ -71,8 +71,8 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install UI dependencies
         run: npm ci
-      - name: Verify browserless desktop runtime
-        run: npm run test:no-browser-runtime
+      - name: Verify browserless and migration-free runtime
+        run: npm run test:no-browser-runtime && npm run test:no-legacy-migration-runtime
       - name: Check UI
         run: npm run lint && npm run build
       - name: Check Rust
