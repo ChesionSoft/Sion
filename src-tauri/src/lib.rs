@@ -522,7 +522,7 @@ fn migration_inspect(
 }
 
 #[tauri::command]
-fn migration_pick_workspace(
+async fn migration_pick_workspace(
     request: VersionedRequest,
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<MigrationWorkspaceSelection>, ApiError> {
@@ -571,7 +571,7 @@ fn migration_run(
 }
 
 #[tauri::command]
-fn migration_run_native(
+async fn migration_run_native(
     request: MigrationNativeRunRequest,
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<MigrationNativeResult>, ApiError> {
@@ -843,7 +843,7 @@ fn agent_run_cancel(
 }
 
 #[tauri::command]
-fn project_create(
+async fn project_create(
     request: ProjectCreateRequest,
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<ProjectCreateResult>, ApiError> {
@@ -1096,7 +1096,7 @@ fn line_change_stats(before: &str, after: &str) -> LineChangeStats {
 }
 
 #[tauri::command]
-fn project_export_docx(
+async fn project_export_docx(
     request: ProjectExportRequest,
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<ProjectExportResult>, ApiError> {
@@ -1225,7 +1225,7 @@ fn file_list(
 }
 
 #[tauri::command]
-fn file_import(
+async fn file_import(
     request: FileImportRequest,
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<FileImportResult>, ApiError> {
