@@ -1,66 +1,43 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState } from "react";
+import {
+  cancelAgentRun,
+  clearDefaultProjectDirectory,
+  applyAssistant as applyAssistantApi,
+  appendMessage,
+  createProject,
+  createSession as createSessionApi,
+  deleteProvider,
+  exportDocx as exportDocxApi,
+  getAgentOverride,
+  getAppVersion,
+  getNode,
+  getProjects,
+  getSettings,
+  importFile as importFileApi,
+  listFiles,
+  listMessages,
+  listProviders,
+  listRuns,
+  listSessions,
+  pickDefaultProjectDirectory,
+  previewAssistantDelivery,
+  saveAgentOverride,
+  saveNode,
+  saveProvider,
+  setDefaultProvider,
+  startAgentRun,
+} from "./api";
+import { LandingPage } from "./components/LandingPage";
+import { ProviderManager } from "./components/ProviderManager";
+import { SettingsDialog } from "./components/SettingsDialog";
+import { Workbench } from "./components/Workbench";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AppVersion, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type NodeId, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type WorkflowNode } from "./types";
 
-const API_VERSION = 1;
-
-const NODES = [
-  ["basic-info", "项目基本信息"],
-  ["goals", "需求背景与目标"],
-  ["roles-permissions", "角色与权限"],
-  ["business-flow", "业务流程"],
-  ["feature-design", "功能模块"],
-  ["page-interaction", "页面与交互"],
-  ["data-structure", "数据结构"],
-  ["api-design", "接口设计"],
-  ["architecture-deployment", "架构与部署"],
-  ["development-tasks", "开发任务"],
-  ["risks-open-questions", "风险与待确认"],
-  ["final-export", "最终文档"],
-] as const;
-
-type NodeId = (typeof NODES)[number][0];
-type NodeStatus = "not_started" | "draft" | "generated" | "confirmed" | "needs_confirmation";
-
-type VersionResponse = { apiVersion: number; appVersion: string; rustTarget: string };
-type RecentProject = { id: string; name: string; rootPath: string; openedAt: string };
-type ProjectManifest = { id: string; name: string; customerName: string; authorName: string; version: string };
-type WorkflowNode = { id: NodeId; status: NodeStatus; markdown: string; revision: number; updatedAt: string };
-type ChatSession = { id: string; nodeId: NodeId; name: string; messageCount: number; createdAt: string; updatedAt: string };
-type ChatMessage = { id: string; role: "user" | "assistant" | "system"; content: string; createdAt: string };
-type ProjectFile = { id: string; originalName: string; byteSize: number; status: string; extractionStatus?: string; textPath?: string };
-type ProjectListResponse = { apiVersion: number; projects: RecentProject[] };
-type CreateResponse = { apiVersion: number; created: boolean; project?: ProjectManifest };
-type NodeResponse = { apiVersion: number } & WorkflowNode;
-type AgentOverrideResponse = { apiVersion: number; markdown?: string };
-type SaveResponse = { apiVersion: number; saved?: WorkflowNode; conflict?: { latest: WorkflowNode } };
-type DeliveryPreviewResponse = { apiVersion: number; assistantMessageId: string; nodeId: NodeId; currentRevision: number; markdown: string; additions: number; deletions: number; unchanged: number };
-type SessionListResponse = { apiVersion: number; sessions: ChatSession[] };
-type MessageListResponse = { apiVersion: number; messages: ChatMessage[] };
-type FileListResponse = { apiVersion: number; files: ProjectFile[] };
-type FileImportResponse = { apiVersion: number; imported: boolean; file?: ProjectFile };
-type ProviderModel = { name: string; isDefault: boolean; toolCalling: boolean };
-type Provider = { id: string; name: string; apiBaseUrl: string; apiUrlMode: "base" | "full"; protocol: "chat_completions" | "openai_responses"; models: ProviderModel[]; isDefault: boolean; hasApiKey: boolean };
-type ProviderListResponse = { apiVersion: number; providers: Provider[] };
-type ProviderSaveResponse = { apiVersion: number } & Provider;
-type AgentRun = { id: string; projectId: string; nodeId: NodeId; status: "queued" | "running" | "completed" | "failed" | "cancelled"; summary?: string };
-type AgentRunListResponse = { apiVersion: number; runs: AgentRun[] };
-type AgentTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
-type AgentFinishedEvent = { run: AgentRun };
-type ProjectExportResponse = { apiVersion: number; exported: boolean; path?: string };
-
-const statusLabel: Record<NodeStatus, string> = {
-  not_started: "未开始",
-  draft: "草稿",
-  generated: "已生成",
-  confirmed: "已确认",
-  needs_confirmation: "待确认",
-};
-
-function now() { return new Date().toISOString(); }
+const now = () => new Date().toISOString();
 
 export function App() {
-  const [version, setVersion] = useState<VersionResponse | null>(null);
+  const [version, setVersion] = useState<AppVersion | null>(null);
   const [projects, setProjects] = useState<RecentProject[]>([]);
   const [project, setProject] = useState<RecentProject | null>(null);
   const [nodeId, setNodeId] = useState<NodeId>("basic-info");
@@ -73,9 +50,6 @@ export function App() {
   const [notice, setNotice] = useState("正在连接本机应用服务");
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [newName, setNewName] = useState("新项目设计文档");
-  const [newCustomer, setNewCustomer] = useState("");
-  const [newAuthor, setNewAuthor] = useState("");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -85,23 +59,20 @@ export function App() {
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
   const [importingFile, setImportingFile] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
-  const [providerName, setProviderName] = useState("");
-  const [providerUrl, setProviderUrl] = useState("https://api.openai.com/v1");
-  const [providerModel, setProviderModel] = useState("");
-  const [providerKey, setProviderKey] = useState("");
-  const [providerProtocol, setProviderProtocol] = useState<Provider["protocol"]>("chat_completions");
-  const [savingProvider, setSavingProvider] = useState(false);
+  const [settings, setSettings] = useState<AppSettings>({ defaultProjectDirectory: null });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [providersOpen, setProvidersOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [exporting, setExporting] = useState(false);
-  const [deliveryPreview, setDeliveryPreview] = useState<DeliveryPreviewResponse | null>(null);
+  const [deliveryPreview, setDeliveryPreview] = useState<AssistantDeliveryPreview | null>(null);
   const [previewingMessageId, setPreviewingMessageId] = useState<string | null>(null);
 
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
 
   useEffect(() => {
-    void Promise.all([loadVersion(), loadProjects(), loadProviders()]);
+    void Promise.all([loadVersion(), loadProjects(), loadProviders(), loadSettings()]);
   }, []);
 
   useEffect(() => {
@@ -113,9 +84,7 @@ export function App() {
   }, [project, nodeId]);
 
   useEffect(() => {
-    if (project) {
-      void loadFiles(project.id);
-    }
+    if (project) void loadFiles(project.id);
   }, [project]);
 
   useEffect(() => {
@@ -127,7 +96,6 @@ export function App() {
   }, [project, nodeId, sessionId]);
 
   useEffect(() => {
-    let disposed = false;
     const subscriptions = Promise.all([
       listen<AgentTokenEvent>("agent-token", (event) => {
         const token = event.payload;
@@ -150,14 +118,14 @@ export function App() {
         setNotice(run.status === "completed" ? "Agent 回复已保存到本地会话" : run.summary ?? "Agent Run 已结束");
       }),
     ]);
-    return () => { disposed = true; void subscriptions.then((unlisten) => { if (disposed) unlisten.forEach((stop) => stop()); }); };
+    return () => { void subscriptions.then((unlisten) => unlisten.forEach((stop) => stop())); };
   }, [project, nodeId, sessionId]);
 
   useEffect(() => {
     function saveWithShortcut(event: KeyboardEvent) {
       if (event.key.toLowerCase() !== "s" || (!event.metaKey && !event.ctrlKey)) return;
       event.preventDefault();
-      if (!event.repeat && project && node && dirty && !saving) void saveNode();
+      if (!event.repeat && project && node && dirty && !saving) void saveNodeDraft();
     }
     window.addEventListener("keydown", saveWithShortcut);
     return () => window.removeEventListener("keydown", saveWithShortcut);
@@ -165,8 +133,7 @@ export function App() {
 
   async function loadVersion() {
     try {
-      const response = await invoke<VersionResponse>("app_get_version", { request: { apiVersion: API_VERSION } });
-      setVersion(response);
+      setVersion(await getAppVersion());
       setNotice("本机应用服务已就绪");
     } catch (error) {
       setNotice(`IPC 不可用：${String(error)}`);
@@ -175,8 +142,7 @@ export function App() {
 
   async function loadProjects() {
     try {
-      const response = await invoke<ProjectListResponse>("project_list", { request: { apiVersion: API_VERSION } });
-      setProjects(response.projects);
+      setProjects(await getProjects());
     } catch (error) {
       setNotice(`读取项目注册表失败：${String(error)}`);
     }
@@ -184,73 +150,82 @@ export function App() {
 
   async function loadProviders() {
     try {
-      const response = await invoke<ProviderListResponse>("provider_list", { request: { apiVersion: API_VERSION } });
-      setProviders(response.providers);
+      setProviders(await listProviders());
     } catch (error) {
       setNotice(`读取模型配置失败：${String(error)}`);
     }
   }
 
-  async function loadRuns(projectId: string) {
+  async function loadSettings() {
     try {
-      const response = await invoke<AgentRunListResponse>("agent_run_list", { request: { apiVersion: API_VERSION, projectId } });
-      setRuns(response.runs);
+      setSettings(await getSettings());
     } catch (error) {
-      setNotice(`读取任务中心失败：${String(error)}`);
+      setNotice(`读取应用设置失败：${String(error)}`);
     }
   }
 
-  async function saveProvider() {
-    const name = providerName.trim();
-    const model = providerModel.trim();
-    if (!name || !model || !providerKey.trim()) {
-      setNotice("请填写提供商名称、模型名称和 API Key");
-      return;
-    }
-    setSavingProvider(true);
+  async function chooseDefaultDirectory() {
     try {
-      const response = await invoke<ProviderSaveResponse>("provider_save", {
-        request: {
-          apiVersion: API_VERSION,
-          id: crypto.randomUUID(), name, apiBaseUrl: providerUrl.trim(), apiUrlMode: "base",
-          protocol: providerProtocol, models: [{ name: model, isDefault: true, toolCalling: false }],
-          isDefault: providers.length === 0, apiKey: providerKey, now: now(),
-        },
-      });
-      setProviders((current) => [...current.map((item) => ({ ...item, isDefault: false })), response]);
-      setProviderName(""); setProviderModel(""); setProviderKey("");
-      setNotice(`${response.name} 已保存；密钥仅保存在系统钥匙串`);
+      const updated = await pickDefaultProjectDirectory();
+      setSettings(updated);
+      setNotice(updated.defaultProjectDirectory ? "默认项目目录已更新" : "未更改默认项目目录");
+    } catch (error) {
+      setNotice(`设置默认目录失败：${String(error)}`);
+    }
+  }
+
+  async function resetDefaultDirectory() {
+    try {
+      setSettings(await clearDefaultProjectDirectory());
+      setNotice("已清除默认项目目录；下次将使用系统默认位置");
+    } catch (error) {
+      setNotice(`清除默认目录失败：${String(error)}`);
+    }
+  }
+
+  async function handleSaveProvider(draft: ProviderDraft) {
+    try {
+      const saved = await saveProvider(draft);
+      setProviders((current) => [...current.map((item) => ({ ...item, isDefault: false })), saved]);
+      setNotice(`${saved.name} 已保存；密钥仅保存在系统钥匙串`);
     } catch (error) {
       setNotice(`保存模型配置失败：${String(error)}`);
-    } finally {
-      setSavingProvider(false);
     }
   }
 
-  async function deleteProvider(provider: Provider) {
+  async function handleSetDefaultProvider(providerId: string) {
     try {
-      await invoke("provider_delete", { request: { apiVersion: API_VERSION, providerId: provider.id } });
-      setProviders((current) => current.filter((item) => item.id !== provider.id));
-      setNotice(`${provider.name} 的配置和系统凭据已删除`);
+      await setDefaultProvider(providerId);
+      setProviders(await listProviders());
+      setNotice("已设为默认提供商");
+    } catch (error) {
+      setNotice(`设置默认提供商失败：${String(error)}`);
+    }
+  }
+
+  async function handleDeleteProvider(providerId: string) {
+    try {
+      await deleteProvider(providerId);
+      setProviders((current) => current.filter((item) => item.id !== providerId));
+      setNotice("配置和系统凭据已删除");
     } catch (error) {
       setNotice(`删除模型配置失败：${String(error)}`);
     }
   }
 
-  async function createProject() {
+  async function loadRuns(projectId: string) {
+    try {
+      setRuns(await listRuns(projectId));
+    } catch (error) {
+      setNotice(`读取任务中心失败：${String(error)}`);
+    }
+  }
+
+  async function createProjectFromForm(name: string, customer: string, author: string) {
     setCreating(true);
     setNotice("请选择用于保存此项目的目录");
     try {
-      const response = await invoke<CreateResponse>("project_create", {
-        request: {
-          apiVersion: API_VERSION,
-          id: crypto.randomUUID(),
-          name: newName.trim() || "未命名项目",
-          customerName: newCustomer.trim(),
-          authorName: newAuthor.trim(),
-          now: now(),
-        },
-      });
+      const response = await createProject(crypto.randomUUID(), name.trim() || "未命名项目", customer.trim(), author.trim(), now());
       if (!response.created || !response.project) {
         setNotice("已取消目录选择，未写入任何项目数据");
         return;
@@ -264,15 +239,20 @@ export function App() {
     }
   }
 
+  function openProject(item: RecentProject) {
+    setDeliveryPreview(null);
+    setSelectedFileIds([]);
+    setProject(item);
+    setNodeId("basic-info");
+  }
+
   async function loadNode(projectId: string, nextNodeId: NodeId) {
     setNotice(`正在读取 ${NODES.find(([id]) => id === nextNodeId)?.[1] ?? "节点"}`);
     try {
-      const response = await invoke<NodeResponse>("project_get_node", {
-        request: { apiVersion: API_VERSION, projectId, nodeId: nextNodeId },
-      });
-      setNode(response);
-      setDraft(response.markdown);
-      setNotice(`节点 revision ${response.revision} 已从本地项目读取`);
+      const loaded = await getNode(projectId, nextNodeId);
+      setNode(loaded);
+      setDraft(loaded.markdown);
+      setNotice(`节点 revision ${loaded.revision} 已从本地项目读取`);
     } catch (error) {
       setNode(null);
       setNotice(`读取节点失败：${String(error)}`);
@@ -282,9 +262,7 @@ export function App() {
   async function loadAgentOverride(projectId: string, nextNodeId: NodeId) {
     setAgentOverride(null);
     try {
-      const response = await invoke<AgentOverrideResponse>("project_get_agent_override", {
-        request: { apiVersion: API_VERSION, projectId, nodeId: nextNodeId },
-      });
+      const response = await getAgentOverride(projectId, nextNodeId);
       setAgentOverride(response.markdown ?? null);
     } catch (error) {
       setNotice(`读取节点自定义规则失败：${String(error)}`);
@@ -296,13 +274,11 @@ export function App() {
     setAgentOverrideOpen(true);
   }
 
-  async function saveAgentOverride() {
+  async function saveAgentOverrideDraft() {
     if (!project) return;
     setSavingAgentOverride(true);
     try {
-      const response = await invoke<AgentOverrideResponse>("project_save_agent_override", {
-        request: { apiVersion: API_VERSION, projectId: project.id, nodeId, markdown: agentOverrideDraft },
-      });
+      const response = await saveAgentOverride(project.id, nodeId, agentOverrideDraft);
       setAgentOverride(response.markdown ?? null);
       setAgentOverrideOpen(false);
       setNotice(response.markdown ? "节点自定义规则已保存；它会追加到内置规则后" : "已清除节点自定义规则；Agent 将只使用内置规则");
@@ -313,29 +289,19 @@ export function App() {
     }
   }
 
-  async function saveNode() {
+  async function saveNodeDraft() {
     if (!project || !node) return;
     setSaving(true);
     try {
-      const response = await invoke<SaveResponse>("project_save_node", {
-        request: {
-          apiVersion: API_VERSION,
-          projectId: project.id,
-          nodeId,
-          expectedRevision: node.revision,
-          markdown: draft,
-          status: node.status,
-          now: now(),
-        },
-      });
-      if (response.conflict) {
-        setNode(response.conflict.latest);
-        setDraft(response.conflict.latest.markdown);
+      const result = await saveNode(project.id, nodeId, node.revision, draft, node.status, now());
+      if (result.conflict) {
+        setNode(result.conflict.latest);
+        setDraft(result.conflict.latest.markdown);
         setNotice("检测到另一次保存；已载入磁盘中的最新版本，没有覆盖它");
-      } else if (response.saved) {
-        setNode(response.saved);
-        setDraft(response.saved.markdown);
-        setNotice(`已原子保存 revision ${response.saved.revision}`);
+      } else if (result.saved) {
+        setNode(result.saved);
+        setDraft(result.saved.markdown);
+        setNotice(`已原子保存 revision ${result.saved.revision}`);
       }
     } catch (error) {
       setNotice(`保存失败：${String(error)}`);
@@ -352,11 +318,9 @@ export function App() {
     }
     setPreviewingMessageId(messageId);
     try {
-      const response = await invoke<DeliveryPreviewResponse>("project_preview_assistant_delivery", {
-        request: { apiVersion: API_VERSION, projectId: project.id, nodeId, sessionId, assistantMessageId: messageId },
-      });
-      setDeliveryPreview(response);
-      setNotice(`已生成修改预览：+${response.additions} / -${response.deletions} / ${response.unchanged} 行保留`);
+      const preview = await previewAssistantDelivery(project.id, nodeId, sessionId, messageId);
+      setDeliveryPreview(preview);
+      setNotice(`已生成修改预览：+${preview.additions} / -${preview.deletions} / ${preview.unchanged} 行保留`);
     } catch (error) {
       setNotice(`预览 Assistant 修改失败：${String(error)}`);
     } finally {
@@ -371,17 +335,15 @@ export function App() {
       return;
     }
     try {
-      const response = await invoke<SaveResponse>("project_apply_assistant", {
-        request: { apiVersion: API_VERSION, projectId: project.id, nodeId, sessionId, assistantMessageId: messageId, expectedRevision: node.revision, now: now() },
-      });
-      if (response.conflict) {
-        setNode(response.conflict.latest); setDraft(response.conflict.latest.markdown);
+      const result = await applyAssistantApi(project.id, nodeId, sessionId, messageId, node.revision, now());
+      if (result.conflict) {
+        setNode(result.conflict.latest); setDraft(result.conflict.latest.markdown);
         setDeliveryPreview(null);
         setNotice("节点在确认前已被修改；已显示最新版本，未覆盖它");
-      } else if (response.saved) {
-        setNode(response.saved); setDraft(response.saved.markdown);
+      } else if (result.saved) {
+        setNode(result.saved); setDraft(result.saved.markdown);
         setDeliveryPreview(null);
-        setNotice(`已应用 Assistant 修改到节点 revision ${response.saved.revision}`);
+        setNotice(`已应用 Assistant 修改到节点 revision ${result.saved.revision}`);
       }
     } catch (error) {
       setNotice(`应用 Assistant 修改失败：${String(error)}`);
@@ -393,11 +355,9 @@ export function App() {
     setMessages([]);
     setDeliveryPreview(null);
     try {
-      const response = await invoke<SessionListResponse>("session_list", {
-        request: { apiVersion: API_VERSION, projectId, nodeId: nextNodeId },
-      });
-      setSessions(response.sessions);
-      setSessionId(response.sessions[0]?.id ?? null);
+      const loaded = await listSessions(projectId, nextNodeId);
+      setSessions(loaded);
+      setSessionId(loaded[0]?.id ?? null);
     } catch (error) {
       setSessions([]);
       setNotice(`读取会话失败：${String(error)}`);
@@ -407,15 +367,7 @@ export function App() {
   async function createSession(): Promise<ChatSession | null> {
     if (!project) return null;
     try {
-      const session = await invoke<ChatSession>("session_create", {
-        request: {
-          apiVersion: API_VERSION,
-          projectId: project.id,
-          nodeId,
-          name: `会话 ${new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`,
-          now: now(),
-        },
-      });
+      const session = await createSessionApi(project.id, nodeId, `会话 ${new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`, now());
       setSessions((current) => [session, ...current]);
       setSessionId(session.id);
       setMessages([]);
@@ -429,10 +381,7 @@ export function App() {
 
   async function loadMessages(projectId: string, nextNodeId: NodeId, nextSessionId: string) {
     try {
-      const response = await invoke<MessageListResponse>("message_list", {
-        request: { apiVersion: API_VERSION, projectId, nodeId: nextNodeId, sessionId: nextSessionId },
-      });
-      setMessages(response.messages);
+      setMessages(await listMessages(projectId, nextNodeId, nextSessionId));
     } catch (error) {
       setMessages([]);
       setNotice(`读取消息失败：${String(error)}`);
@@ -447,16 +396,12 @@ export function App() {
       const active = sessionId ? sessions.find((session) => session.id === sessionId) ?? null : await createSession();
       if (!active) return;
       const message: ChatMessage = { id: crypto.randomUUID(), role: "user", content, createdAt: now() };
-      await invoke<ChatSession>("message_append", {
-        request: { apiVersion: API_VERSION, projectId: project.id, nodeId, sessionId: active.id, message, now: now() },
-      });
+      await appendMessage(project.id, nodeId, active.id, message, now());
       setMessages((current) => [...current, message]);
       setSessions((current) => current.map((session) => session.id === active.id ? { ...session, messageCount: session.messageCount + 1, updatedAt: message.createdAt } : session));
       setMessageDraft("");
       try {
-        const run = await invoke<AgentRun>("agent_run_start", {
-          request: { apiVersion: API_VERSION, projectId: project.id, nodeId, sessionId: active.id, fileIds: selectedFileIds, now: now() },
-        });
+        const run = await startAgentRun(project.id, nodeId, active.id, selectedFileIds, now());
         setActiveRunId(run.id);
         setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
         setNotice(run.status === "queued" ? "Agent Run 已排队；同一节点不会并发写入" : "Agent 正在本机流式生成回复");
@@ -473,7 +418,7 @@ export function App() {
   async function cancelAgent() {
     if (!project || !activeRunId) return;
     try {
-      await invoke<AgentRun>("agent_run_cancel", { request: { apiVersion: API_VERSION, projectId: project.id, runId: activeRunId, now: now() } });
+      await cancelAgentRun(project.id, activeRunId, now());
       await loadRuns(project.id);
       setNotice("已请求取消 Agent Run；未完成的流式片段不会写入本地会话");
     } catch (error) {
@@ -486,8 +431,8 @@ export function App() {
     setExporting(true);
     setNotice("请选择 DOCX 保存位置");
     try {
-      const response = await invoke<ProjectExportResponse>("project_export_docx", { request: { apiVersion: API_VERSION, projectId: project.id } });
-      setNotice(response.exported ? `DOCX 已导出到 ${response.path}` : "已取消 DOCX 导出");
+      const result = await exportDocxApi(project.id);
+      setNotice(result.exported ? `DOCX 已导出到 ${result.path}` : "已取消 DOCX 导出");
     } catch (error) {
       setNotice(`DOCX 导出失败：${String(error)}`);
     } finally {
@@ -497,10 +442,7 @@ export function App() {
 
   async function loadFiles(projectId: string) {
     try {
-      const response = await invoke<FileListResponse>("file_list", {
-        request: { apiVersion: API_VERSION, projectId },
-      });
-      setFiles(response.files);
+      setFiles(await listFiles(projectId));
     } catch (error) {
       setFiles([]);
       setNotice(`读取文件池失败：${String(error)}`);
@@ -511,15 +453,13 @@ export function App() {
     if (!project) return;
     setImportingFile(true);
     try {
-      const response = await invoke<FileImportResponse>("file_import", {
-        request: { apiVersion: API_VERSION, projectId: project.id, now: now() },
-      });
-      if (!response.imported || !response.file) {
+      const result = await importFileApi(project.id, now());
+      if (!result.imported || !result.file) {
         setNotice("已取消文件选择，项目未改变");
         return;
       }
-      setFiles((current) => [...current, response.file!]);
-      setNotice(response.file.extractionStatus === "available" ? `已导入并提取 ${response.file.originalName}` : `已导入 ${response.file.originalName}；该格式尚未提取文本`);
+      setFiles((current) => [...current, result.file!]);
+      setNotice(result.file.extractionStatus === "available" ? `已导入并提取 ${result.file.originalName}` : `已导入 ${result.file.originalName}；该格式尚未提取文本`);
     } catch (error) {
       setNotice(`导入文件失败：${String(error)}`);
     } finally {
@@ -527,51 +467,106 @@ export function App() {
     }
   }
 
+  function toggleFileContext(fileId: string) {
+    setSelectedFileIds((current) => current.includes(fileId) ? current.filter((id) => id !== fileId) : [...current, fileId]);
+  }
+
+  function exitProject() {
+    setDeliveryPreview(null);
+    setProject(null);
+  }
+
+  function selectNode(id: NodeId) {
+    setDeliveryPreview(null);
+    setNodeId(id);
+  }
+
+  function selectSession(nextSessionId: string) {
+    setDeliveryPreview(null);
+    setSessionId(nextSessionId);
+  }
+
   if (!project) {
     return (
-      <main className="desk-shell landing-shell">
-        <header className="masthead">
-          <div><p className="kicker">SION / LOCAL DESKTOP</p><h1>设计文档<br /><em>落在你的手里。</em></h1></div>
-          <div className="run-mark">01<span>WORKBENCH</span></div>
-        </header>
-        <section className="landing-intro"><span>本地优先 / Rust 核心 / 无浏览器自动化</span><p>每个项目都以可携带的 <code>.sion/</code> 目录保存。选择目录后，Sion 会创建 12 个可编辑的设计节点。</p></section>
-        <section className="landing-grid">
-          <form className="new-project-card" onSubmit={(event) => { event.preventDefault(); void createProject(); }}>
-            <p className="panel-kicker">新建项目</p><h2>开始一份<br />可迁移的设计稿</h2>
-            <label>项目名称<input value={newName} onChange={(event) => setNewName(event.target.value)} /></label>
-            <div className="field-row"><label>客户<input value={newCustomer} onChange={(event) => setNewCustomer(event.target.value)} /></label><label>作者<input value={newAuthor} onChange={(event) => setNewAuthor(event.target.value)} /></label></div>
-            <button className="primary-action" disabled={creating} type="submit">{creating ? "正在打开目录选择…" : "选择目录并创建"}<b>↗</b></button>
-          </form>
-          <section className="recent-projects" aria-label="最近项目"><div className="section-head"><p className="panel-kicker">最近打开</p><span>{projects.length.toString().padStart(2, "0")}</span></div>
-            {projects.length === 0 ? <div className="empty-projects"><strong>还没有登记的项目</strong><span>选择目录创建你的第一份本地项目。</span></div> : projects.map((item) => <button key={item.id} className="project-row" onClick={() => { setDeliveryPreview(null); setSelectedFileIds([]); setProject(item); setNodeId("basic-info"); }} type="button"><span className="project-dot" /><span><strong>{item.name}</strong><small>{item.rootPath}</small></span><b>↗</b></button>)}
-          </section>
-        </section>
-        <section className="provider-settings">
-          <div className="provider-copy"><p className="panel-kicker">模型连接</p><h2>把密钥留给<br /><em>操作系统。</em></h2><p>配置元数据保存在应用目录；API Key 只写入 macOS Keychain 或 Windows Credential Manager，界面永不回显。</p></div>
-          <form className="provider-form" onSubmit={(event) => { event.preventDefault(); void saveProvider(); }}>
-            <label>提供商名称<input value={providerName} onChange={(event) => setProviderName(event.target.value)} placeholder="OpenAI" /></label>
-            <label>API Base URL<input value={providerUrl} onChange={(event) => setProviderUrl(event.target.value)} /></label>
-            <div className="provider-row"><label>协议<select value={providerProtocol} onChange={(event) => setProviderProtocol(event.target.value as Provider["protocol"])}><option value="chat_completions">Chat Completions</option><option value="openai_responses">Responses</option></select></label><label>默认模型<input value={providerModel} onChange={(event) => setProviderModel(event.target.value)} placeholder="gpt-5" /></label></div>
-            <label>API Key<input type="password" autoComplete="off" value={providerKey} onChange={(event) => setProviderKey(event.target.value)} placeholder="仅写入系统凭据库" /></label>
-            <button className="provider-save" disabled={savingProvider} type="submit">{savingProvider ? "写入中…" : "保存安全配置"}<b>↗</b></button>
-          </form>
-          <div className="provider-list">{providers.length === 0 ? <p>尚未配置模型。当前工作台仍可离线编辑和保存。</p> : providers.map((provider) => <div className="provider-item" key={provider.id}><span><strong>{provider.name}</strong><small>{provider.models.map((model) => model.name).join(", ")} · {provider.protocol === "openai_responses" ? "Responses" : "Chat"}</small></span><i className={provider.hasApiKey ? "provider-ready" : "provider-missing"}>{provider.hasApiKey ? "已配置" : "缺少密钥"}</i><button onClick={() => void deleteProvider(provider)} type="button" aria-label={`删除 ${provider.name}`}>×</button></div>)}</div>
-        </section>
-        <footer><span>{notice}</span><span>RUST / {version?.rustTarget ?? "NEGOTIATING"}</span></footer>
-      </main>
+      <>
+        <LandingPage
+          projects={projects}
+          providers={providers}
+          settings={settings}
+          creating={creating}
+          onCreate={createProjectFromForm}
+          onOpenProject={openProject}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenProviders={() => setProvidersOpen(true)}
+          notice={notice}
+          appVersion={version}
+        />
+        {settingsOpen ? (
+          <SettingsDialog
+            settings={settings}
+            onPickDirectory={() => void chooseDefaultDirectory()}
+            onClearDirectory={() => void resetDefaultDirectory()}
+            onClose={() => setSettingsOpen(false)}
+          />
+        ) : null}
+        {providersOpen ? (
+          <ProviderManager
+            providers={providers}
+            onSave={(draft) => void handleSaveProvider(draft)}
+            onSetDefault={(id) => void handleSetDefaultProvider(id)}
+            onDelete={(id) => void handleDeleteProvider(id)}
+            onClose={() => setProvidersOpen(false)}
+          />
+        ) : null}
+      </>
     );
   }
 
   return (
-    <main className="desk-shell workbench-shell">
-      <header className="workbench-bar"><button className="wordmark" onClick={() => { setDeliveryPreview(null); setProject(null); }} type="button">SION<span>DESKTOP</span></button><div className="project-heading"><span>项目 / {project.name}</span><strong>{nodeTitle}</strong></div><div className="save-state"><span className={dirty ? "dirty-dot" : "clean-dot"} />{dirty ? "有未保存修改" : "已同步本地磁盘"}<button className="export-button" disabled={exporting} onClick={() => void exportDocx()} type="button">{exporting ? "导出中" : "DOCX"}</button><button className="save-button" disabled={!dirty || saving} onClick={() => void saveNode()} type="button">{saving ? "保存中" : "保存"} <b>⌘/Ctrl S</b></button></div></header>
-      <div className="workbench-grid">
-        <aside className="node-rail"><div className="rail-title"><span>设计路径</span><b>12</b></div>{NODES.map(([id, title], index) => <button className={id === nodeId ? "node-item selected" : "node-item"} key={id} onClick={() => { setDeliveryPreview(null); setNodeId(id); }} type="button"><span>{String(index + 1).padStart(2, "0")}</span><strong>{title}</strong><i>{id === nodeId ? "●" : ""}</i></button>)}<div className="rail-foot"><div className="file-head"><span>文件池 / {files.length}</span><button disabled={importingFile} onClick={() => void importFile()} type="button">{importingFile ? "导入中" : "+ 导入"}</button></div>{files.length === 0 ? <small>尚无项目文件</small> : files.slice(-3).map((file) => <label className="file-row" key={file.id}><input checked={selectedFileIds.includes(file.id)} disabled={file.extractionStatus !== "available"} onChange={() => setSelectedFileIds((current) => current.includes(file.id) ? current.filter((id) => id !== file.id) : [...current, file.id])} type="checkbox" /> {file.extractionStatus === "available" ? "◼" : "◇"} {file.originalName}</label>)}</div></aside>
-        <section className="editor-pane"><div className="editor-head"><div><p className="panel-kicker">NODE / {nodeId.toUpperCase()}</p><h1>{nodeTitle}</h1></div><div className="editor-actions"><button className={agentOverride ? "override-control active" : "override-control"} onClick={openAgentOverride} type="button">{agentOverride ? "自定义规则 · 已启用" : "自定义规则"}</button><span className={`node-status status-${node?.status ?? "not_started"}`}>{node ? statusLabel[node.status] : "读取中"}</span></div></div><textarea aria-label={`${nodeTitle} Markdown 编辑器`} disabled={!node} onChange={(event) => setDraft(event.target.value)} spellCheck={false} value={draft} /><div className="editor-foot"><span>Markdown · revision {node?.revision ?? "—"}</span><span>{draft.length.toLocaleString()} 字符</span></div></section>
-      <aside className="run-pane"><div className="run-heading"><p className="panel-kicker">节点会话</p><span>{activeRunId ? <button className="cancel-run" onClick={() => void cancelAgent()} type="button">取消运行</button> : <button className="new-session" onClick={() => void createSession()} type="button">+ 新建</button>}</span></div><div className="session-list">{sessions.length === 0 ? <p className="session-empty">这个节点还没有会话。可直接输入消息，Sion 会先建立本地会话。</p> : sessions.map((session) => <button className={session.id === sessionId ? "session-row active" : "session-row"} key={session.id} onClick={() => { setDeliveryPreview(null); setSessionId(session.id); }} type="button"><strong>{session.name}</strong><span>{session.messageCount} 条消息</span></button>)}</div><div className="task-center"><p>任务中心 / {runs.length}</p>{runs.length === 0 ? <span>暂无运行记录</span> : runs.slice(0, 3).map((run) => <div key={run.id}><i className={`run-${run.status}`} /> <strong>{run.nodeId === nodeId ? "当前节点" : run.nodeId}</strong><small>{run.status === "running" ? "运行中" : run.status === "queued" ? "排队中" : run.status === "completed" ? "已完成" : run.status === "cancelled" ? "已取消" : "失败"}</small></div>)}</div><div className="message-thread">{messages.length === 0 ? <div className="thread-empty"><div className="orbit-mark">↗</div><p>消息会保存在项目 `.sion/chat/`。历史来源和 token 元数据也可被保留，但新应用不会发起网页搜索。</p></div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span>{message.role === "user" ? "你" : message.role === "assistant" ? "助手" : "系统"}</span><p>{message.content}</p>{message.role === "assistant" && !message.id.startsWith("stream-") ? <button className="apply-reply" disabled={previewingMessageId === message.id} onClick={() => void previewAssistant(message.id)} type="button">{previewingMessageId === message.id ? "解析中" : "预览修改"}</button> : null}</article>)}</div><form className="message-form" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}><textarea aria-label="发送给此节点的消息" onChange={(event) => setMessageDraft(event.target.value)} placeholder="描述你希望在此节点完成的工作…" value={messageDraft} /><button disabled={!messageDraft.trim() || sendingMessage || Boolean(activeRunId)} type="submit">{sendingMessage ? "发送中" : activeRunId ? "Agent 运行中" : "发送并运行"}<b>↗</b></button></form><div className="run-notice">{notice}</div></aside>
-      </div>
-      {agentOverrideOpen ? <section className="override-dialog" role="dialog" aria-modal="true" aria-label="节点自定义规则"><div className="override-card"><div className="override-head"><div><p className="panel-kicker">节点自定义规则</p><h2>{nodeTitle}</h2><span>这段规则会追加到内置规则之后；留空并保存即可恢复默认规则。</span></div><button onClick={() => setAgentOverrideOpen(false)} type="button" aria-label="关闭自定义规则">×</button></div><textarea aria-label={`${nodeTitle} 自定义规则`} onChange={(event) => setAgentOverrideDraft(event.target.value)} placeholder="例如：仅使用已经确认的事实；不推断预算或日期。" value={agentOverrideDraft} /><div className="override-footer"><span>{agentOverrideDraft.trim() ? "将作为附加约束传给本节点 Agent" : "当前没有附加规则"}</span><div><button onClick={() => setAgentOverrideOpen(false)} type="button">取消</button><button disabled={savingAgentOverride} onClick={() => void saveAgentOverride()} type="button">{savingAgentOverride ? "保存中…" : agentOverrideDraft.trim() ? "保存规则" : "清除规则"}</button></div></div></div></section> : null}
-      {deliveryPreview ? <section className="delivery-preview" role="dialog" aria-modal="true" aria-label="Assistant 修改预览"><div className="delivery-preview-card"><div className="delivery-preview-head"><div><p className="panel-kicker">修改预览</p><span>以下为应用分节交付后的完整节点</span></div><button onClick={() => setDeliveryPreview(null)} type="button" aria-label="关闭修改预览">×</button></div><div className="delivery-stats"><span><strong>+{deliveryPreview.additions}</strong> 新增</span><span><strong>-{deliveryPreview.deletions}</strong> 删除</span><span><strong>{deliveryPreview.unchanged}</strong> 保留</span><span><strong>r{deliveryPreview.currentRevision}</strong> 基线</span></div><pre>{deliveryPreview.markdown}</pre><div className="delivery-actions"><button onClick={() => setDeliveryPreview(null)} type="button">取消</button><button onClick={() => void applyAssistant(deliveryPreview.assistantMessageId)} type="button">确认应用修改</button></div></div></section> : null}
-    </main>
+    <Workbench
+      project={project}
+      node={node}
+      nodeTitle={nodeTitle}
+      draft={draft}
+      setDraft={setDraft}
+      dirty={dirty}
+      saving={saving}
+      exporting={exporting}
+      onExit={exitProject}
+      onSave={() => void saveNodeDraft()}
+      onExportDocx={() => void exportDocx()}
+      onSelectNode={selectNode}
+      files={files}
+      selectedFileIds={selectedFileIds}
+      importingFile={importingFile}
+      onImport={() => void importFile()}
+      onToggleFile={toggleFileContext}
+      agentOverride={agentOverride}
+      agentOverrideOpen={agentOverrideOpen}
+      agentOverrideDraft={agentOverrideDraft}
+      setAgentOverrideDraft={setAgentOverrideDraft}
+      openAgentOverride={openAgentOverride}
+      closeAgentOverride={() => setAgentOverrideOpen(false)}
+      savingAgentOverride={savingAgentOverride}
+      saveAgentOverride={() => void saveAgentOverrideDraft()}
+      sessions={sessions}
+      sessionId={sessionId}
+      onSelectSession={selectSession}
+      onCreateSession={() => void createSession()}
+      runs={runs}
+      activeRunId={activeRunId}
+      onCancelAgent={() => void cancelAgent()}
+      messages={messages}
+      previewingMessageId={previewingMessageId}
+      onPreviewAssistant={(id) => void previewAssistant(id)}
+      messageDraft={messageDraft}
+      setMessageDraft={setMessageDraft}
+      onSendMessage={() => void sendMessage()}
+      sendingMessage={sendingMessage}
+      notice={notice}
+      deliveryPreview={deliveryPreview}
+      onCloseDeliveryPreview={() => setDeliveryPreview(null)}
+      onApplyAssistant={(id) => void applyAssistant(id)}
+    />
   );
 }
