@@ -300,10 +300,14 @@ pub enum NodeStatus {
     NeedsConfirmation,
 }
 
+fn default_project_schema_version() -> u32 {
+    PROJECT_SCHEMA_VERSION
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectManifest {
-    #[serde(rename = "schema_version")]
+    #[serde(default = "default_project_schema_version")]
     pub schema_version: u32,
     pub id: String,
     pub name: String,
@@ -786,6 +790,15 @@ mod tests {
             assert!(rule.contains("Agent"));
             assert!(rule.len() > 100);
         }
+    }
+
+    #[test]
+    fn project_manifest_defaults_a_missing_schema_version_to_one() {
+        let manifest: ProjectManifest = serde_json::from_str(
+            r#"{"id":"legacy-project","name":"Legacy","customerName":"","authorName":"","version":"V1.0","createdAt":"2026-06-14T00:00:00Z","updatedAt":"2026-06-14T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.schema_version, PROJECT_SCHEMA_VERSION);
     }
 
     #[test]

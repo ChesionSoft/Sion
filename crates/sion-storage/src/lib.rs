@@ -1,4 +1,4 @@
-//! Filesystem-backed `.sion` project storage.
+//! Filesystem-backed direct project storage.
 
 use std::{
     fs,
@@ -18,12 +18,14 @@ use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
-    #[error("project already contains .sion")]
+    #[error("project destination already exists")]
     AlreadyInitialized,
-    #[error("project does not contain .sion")]
+    #[error("project is not initialized")]
     NotInitialized,
     #[error("project {0} is not registered")]
     NotRegistered(String),
+    #[error("project id is unsafe: {0}")]
+    UnsafeProjectId(String),
     #[error("chat session id is unsafe: {0}")]
     UnsafeSessionId(String),
     #[error("chat session {0} does not exist")]
@@ -101,6 +103,17 @@ pub struct RecentProject {
     pub opened_at: String,
 }
 
+/// Disk-first discovery result. `projects` are the readable project directories
+/// found inside the configured container; `warnings` lists unreadable or
+/// inconsistent entries without aborting the whole listing. The registry only
+/// contributes recent-open timestamps; it never hides an unregistered project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDiscovery {
+    pub projects: Vec<RecentProject>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectRegistry {
     app_data_root: PathBuf,
@@ -140,12 +153,62 @@ impl ProjectRegistry {
         atomic_write_json(&self.file_path(), &projects)
     }
 
-    pub fn resolve(&self, project_id: &str) -> Result<PathBuf> {
-        self.list()?
+    pub fn discover(&self, projects_directory: &Path) -> Result<ProjectDiscovery> {
+        let recent: std::collections::HashMap<_, _> = self
+            .list()?
             .into_iter()
-            .find(|project| project.id == project_id)
-            .map(|project| project.root_path)
-            .ok_or_else(|| StorageError::NotRegistered(project_id.to_string()))
+            .map(|item| (item.id, item.opened_at))
+            .collect();
+        let entries = fs::read_dir(projects_directory).map_err(|source| StorageError::Io {
+            path: projects_directory.to_path_buf(),
+            source,
+        })?;
+        let mut projects = Vec::new();
+        let mut warnings = Vec::new();
+        for entry in entries.flatten() {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) || !is_safe_file_component(&id) {
+                continue;
+            }
+            if !entry.path().join("project.json").is_file() {
+                continue;
+            }
+            let Ok(manifest) = ProjectStore::at(entry.path()).manifest() else {
+                if warnings.len() < 20 {
+                    warnings.push(format!("无法读取项目：{id}"));
+                }
+                continue;
+            };
+            if manifest.id != id {
+                if warnings.len() < 20 {
+                    warnings.push(format!("项目 ID 与目录不一致：{id}"));
+                }
+                continue;
+            }
+            projects.push(RecentProject {
+                id: manifest.id.clone(),
+                name: manifest.name,
+                root_path: entry.path(),
+                opened_at: recent
+                    .get(&manifest.id)
+                    .cloned()
+                    .unwrap_or(manifest.updated_at),
+            });
+        }
+        projects.sort_by(|a, b| b.opened_at.cmp(&a.opened_at));
+        Ok(ProjectDiscovery { projects, warnings })
+    }
+
+    pub fn resolve(&self, projects_directory: &Path, project_id: &str) -> Result<PathBuf> {
+        if !is_safe_file_component(project_id) {
+            return Err(StorageError::NotRegistered(project_id.to_string()));
+        }
+        let root = projects_directory.join(project_id);
+        let manifest = ProjectStore::at(&root).manifest()?;
+        if manifest.id != project_id {
+            return Err(StorageError::NotRegistered(project_id.to_string()));
+        }
+        Ok(root)
     }
 
     fn file_path(&self) -> PathBuf {
@@ -160,14 +223,19 @@ impl ProjectStore {
         }
     }
 
-    pub fn create(&self, input: CreateProjectInput) -> Result<ProjectManifest> {
-        let destination = self.sion_dir();
+    pub fn create_in(
+        projects_directory: &Path,
+        input: CreateProjectInput,
+    ) -> Result<ProjectManifest> {
+        if !is_safe_file_component(&input.id) {
+            return Err(StorageError::UnsafeProjectId(input.id));
+        }
+        create_dir_all(projects_directory)?;
+        let destination = projects_directory.join(&input.id);
         if destination.exists() {
             return Err(StorageError::AlreadyInitialized);
         }
-        let staging = self
-            .project_root
-            .join(format!(".sion.creating-{}", Uuid::new_v4()));
+        let staging = projects_directory.join(format!(".{}.creating-{}", input.id, Uuid::new_v4()));
         create_dir_all(&staging)?;
         let result = (|| {
             let manifest = ProjectManifest {
@@ -180,7 +248,7 @@ impl ProjectStore {
                 created_at: input.now.clone(),
                 updated_at: input.now.clone(),
             };
-            atomic_write_json(&staging.join("manifest.json"), &manifest)?;
+            atomic_write_json(&staging.join("project.json"), &manifest)?;
             for node in default_nodes(input.now) {
                 atomic_write_json(
                     &staging
@@ -197,7 +265,7 @@ impl ProjectStore {
                     &staging
                         .join("chat")
                         .join(node_id.as_str())
-                        .join("sessions.json"),
+                        .join("index.json"),
                     &Vec::<ChatSession>::new(),
                 )?;
             }
@@ -206,11 +274,13 @@ impl ProjectStore {
                 &Vec::<serde_json::Value>::new(),
             )?;
             sync_directory(&staging)?;
+            ProjectStore::at(&staging).manifest()?;
+            ProjectStore::at(&staging).list_nodes()?;
             fs::rename(&staging, &destination).map_err(|source| StorageError::Io {
                 path: destination.clone(),
                 source,
             })?;
-            sync_directory(&self.project_root)?;
+            sync_directory(projects_directory)?;
             Ok(manifest)
         })();
         if result.is_err() {
@@ -220,7 +290,7 @@ impl ProjectStore {
     }
 
     pub fn manifest(&self) -> Result<ProjectManifest> {
-        let manifest: ProjectManifest = read_json(&self.sion_dir().join("manifest.json"))?;
+        let manifest: ProjectManifest = read_json(&self.project_root.join("project.json"))?;
         if manifest.schema_version > PROJECT_SCHEMA_VERSION {
             return Err(StorageError::UnsupportedSchema {
                 found: manifest.schema_version,
@@ -632,24 +702,21 @@ impl ProjectStore {
         read_json(&path)
     }
 
-    fn sion_dir(&self) -> PathBuf {
-        self.project_root.join(".sion")
-    }
     fn node_path(&self, id: WorkflowNodeId) -> PathBuf {
-        self.sion_dir()
+        self.project_root
             .join("nodes")
             .join(format!("{}.json", id.as_str()))
     }
     fn agent_override_path(&self, id: WorkflowNodeId) -> PathBuf {
-        self.sion_dir()
+        self.project_root
             .join("agent-overrides")
             .join(format!("{}.md", id.as_str()))
     }
     fn chat_node_dir(&self, id: WorkflowNodeId) -> PathBuf {
-        self.sion_dir().join("chat").join(id.as_str())
+        self.project_root.join("chat").join(id.as_str())
     }
     fn sessions_path(&self, id: WorkflowNodeId) -> PathBuf {
-        self.chat_node_dir(id).join("sessions.json")
+        self.chat_node_dir(id).join("index.json")
     }
     fn messages_path(&self, id: WorkflowNodeId, session_id: &str) -> Result<PathBuf> {
         if !is_safe_file_component(session_id) {
@@ -661,13 +728,13 @@ impl ProjectStore {
         self.chat_node_dir(id).join(".append-journal.json")
     }
     fn files_dir(&self) -> PathBuf {
-        self.sion_dir().join("files")
+        self.project_root.join("files")
     }
     fn files_index_path(&self) -> PathBuf {
         self.files_dir().join("index.json")
     }
     fn runs_dir(&self) -> PathBuf {
-        self.sion_dir().join("runs")
+        self.project_root.join("runs")
     }
     fn run_path(&self, run_id: &str) -> Result<PathBuf> {
         if !is_safe_file_component(run_id) {
@@ -986,28 +1053,90 @@ mod tests {
     }
 
     #[test]
-    fn creates_full_sion_layout_and_reopens_it() {
-        let root = temp_project();
-        let store = ProjectStore::at(&root);
-        let manifest = store.create(input()).unwrap();
-        assert_eq!(manifest.schema_version, PROJECT_SCHEMA_VERSION);
-        assert!(root.join(".sion/runs").is_dir());
-        assert_eq!(store.list_nodes().unwrap().len(), 12);
-        assert!(
-            store
-                .list_sessions(WorkflowNodeId::Goals)
+    fn creates_two_direct_projects_inside_one_container() {
+        let container = temp_project();
+        fs::create_dir_all(&container).unwrap();
+        let first = ProjectStore::create_in(&container, input()).unwrap();
+        let mut second_input = input();
+        second_input.id = "project-2".to_string();
+        let second = ProjectStore::create_in(&container, second_input).unwrap();
+        assert!(container.join(&first.id).join("project.json").is_file());
+        assert!(container.join(&second.id).join("project.json").is_file());
+        assert!(container.join(&first.id).join("runs").is_dir());
+        assert_eq!(
+            ProjectStore::at(container.join(&first.id))
+                .list_nodes()
                 .unwrap()
-                .is_empty()
+                .len(),
+            12
         );
-        assert_eq!(ProjectStore::at(&root).manifest().unwrap().name, "项目");
+        fs::remove_dir_all(container).unwrap();
+    }
+
+    #[test]
+    fn discovers_legacy_projects_without_registry_entries() {
+        let root = temp_project();
+        let projects = root.join("projects");
+        let id = "427dcaeb-54c8-4b66-8c14-ac80d7560630";
+        fs::create_dir_all(projects.join(id)).unwrap();
+        fs::write(
+            projects.join(id).join("project.json"),
+            r#"{
+          "id":"427dcaeb-54c8-4b66-8c14-ac80d7560630",
+          "name":"浏览器验证项目","customerName":"验证客户","authorName":"验证团队",
+          "version":"V1.0","createdAt":"2026-06-14T13:44:32.616Z","updatedAt":"2026-06-14T13:44:32.616Z"
+        }"#,
+        )
+        .unwrap();
+        let found = ProjectRegistry::at(root.join("global"))
+            .discover(&projects)
+            .unwrap();
+        assert_eq!(found.projects.len(), 1);
+        assert_eq!(found.projects[0].name, "浏览器验证项目");
+        assert_eq!(found.projects[0].root_path, projects.join(id));
+        assert!(found.warnings.is_empty());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reads_legacy_session_indexes_in_place() {
+        let container = temp_project();
+        fs::create_dir_all(&container).unwrap();
+        ProjectStore::create_in(&container, input()).unwrap();
+        let root = container.join("project-1");
+        fs::write(
+            root.join("chat/goals/index.json"),
+            r#"[{
+          "id":"session-1","nodeId":"goals","name":"旧会话","messageCount":1,
+          "webSearchEnabled":false,"createdAt":"2026-06-14T00:00:00Z","updatedAt":"2026-06-14T00:01:00Z"
+        }]"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("chat/goals/session-1.json"),
+            r#"[{
+          "id":"message-1","role":"user","content":"旧消息","createdAt":"2026-06-14T00:00:00Z"
+        }]"#,
+        )
+        .unwrap();
+        let store = ProjectStore::at(&root);
+        assert_eq!(
+            store.list_sessions(WorkflowNodeId::Goals).unwrap()[0].name,
+            "旧会话"
+        );
+        assert_eq!(
+            store.messages(WorkflowNodeId::Goals, "session-1").unwrap()[0].content,
+            "旧消息"
+        );
+        fs::remove_dir_all(container).unwrap();
     }
 
     #[test]
     fn stale_revision_returns_latest_without_overwriting_it() {
         let root = temp_project();
-        let store = ProjectStore::at(&root);
-        store.create(input()).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
         let first = store
             .save_node_if_revision(
                 WorkflowNodeId::Goals,
@@ -1036,12 +1165,13 @@ mod tests {
     #[test]
     fn refuses_to_write_a_project_with_a_future_schema() {
         let root = temp_project();
-        let store = ProjectStore::at(&root);
-        store.create(input()).unwrap();
-        let manifest = root.join(".sion/manifest.json");
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
+        let manifest = root.join("project-1/project.json");
         let mut raw: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
-        raw["schema_version"] = serde_json::json!(PROJECT_SCHEMA_VERSION + 1);
+        raw["schemaVersion"] = serde_json::json!(PROJECT_SCHEMA_VERSION + 1);
         fs::write(&manifest, serde_json::to_vec(&raw).unwrap()).unwrap();
         assert!(matches!(
             store.node(WorkflowNodeId::Goals),
@@ -1053,28 +1183,26 @@ mod tests {
     #[test]
     fn registry_persists_recent_projects_without_storing_project_contents() {
         let root = temp_project();
-        let registry = ProjectRegistry::at(&root);
-        let manifest = ProjectManifest {
-            schema_version: PROJECT_SCHEMA_VERSION,
-            id: "project-1".to_string(),
-            name: "项目一".to_string(),
-            customer_name: "客户".to_string(),
-            author_name: "作者".to_string(),
-            version: "V1.0".to_string(),
-            created_at: "2026-07-15T00:00:00.000Z".to_string(),
-            updated_at: "2026-07-15T00:00:00.000Z".to_string(),
-        };
-        let project_root = PathBuf::from("/Users/test/Documents/Sion/项目一");
+        let container = root.join("projects");
+        fs::create_dir_all(&container).unwrap();
+        let manifest = ProjectStore::create_in(&container, input()).unwrap();
+        let registry = ProjectRegistry::at(root.join("global"));
         registry
             .register(
                 &manifest,
-                project_root.clone(),
+                container.join(&manifest.id),
                 "2026-07-15T00:02:00.000Z".to_string(),
             )
             .unwrap();
 
-        assert_eq!(registry.resolve("project-1").unwrap(), project_root);
-        let raw = fs::read_to_string(root.join("registry.json")).unwrap();
+        let recent = registry.list().unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].id, "project-1");
+        assert_eq!(
+            registry.resolve(&container, "project-1").unwrap(),
+            container.join("project-1")
+        );
+        let raw = fs::read_to_string(root.join("global/registry.json")).unwrap();
         assert!(!raw.contains("customerName"));
         assert!(!raw.contains("authorName"));
         fs::remove_dir_all(root).unwrap();
@@ -1097,8 +1225,9 @@ mod tests {
     #[test]
     fn persists_sessions_and_messages_inside_the_project_state() {
         let root = temp_project();
-        let store = ProjectStore::at(&root);
-        store.create(input()).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
         let session = store
             .create_session(
                 WorkflowNodeId::Goals,
@@ -1124,7 +1253,7 @@ mod tests {
             1
         );
         assert!(
-            root.join(format!(".sion/chat/goals/{}.json", session.id))
+            root.join(format!("project-1/chat/goals/{}.json", session.id))
                 .is_file()
         );
         fs::remove_dir_all(root).unwrap();
@@ -1133,8 +1262,9 @@ mod tests {
     #[test]
     fn recovers_an_interrupted_message_append_without_duplication() {
         let root = temp_project();
-        let store = ProjectStore::at(&root);
-        store.create(input()).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
         let session = store
             .create_session(
                 WorkflowNodeId::Goals,
@@ -1179,9 +1309,9 @@ mod tests {
         let source = root.join("brief.md");
         fs::create_dir_all(&root).unwrap();
         fs::write(&source, "# 需求\n\n你好，Sion。\n").unwrap();
-        let project = root.join("project");
-        let store = ProjectStore::at(&project);
-        store.create(input()).unwrap();
+        let container = root.join("projects");
+        ProjectStore::create_in(&container, input()).unwrap();
+        let store = ProjectStore::at(container.join("project-1"));
 
         let file = store
             .import_file(&source, "2026-07-15T00:05:00.000Z".to_string())
@@ -1193,7 +1323,12 @@ mod tests {
             store.read_file_text(&file.id).unwrap().unwrap(),
             "# 需求\n\n你好，Sion。\n"
         );
-        assert!(project.join(".sion/files").join(file.stored_name).is_file());
+        assert!(
+            container
+                .join("project-1/files")
+                .join(file.stored_name)
+                .is_file()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1211,9 +1346,9 @@ mod tests {
             .write_all(b"<w:document><w:body><w:p><w:r><w:t>Sion &amp; DOCX</w:t></w:r></w:p></w:body></w:document>")
             .unwrap();
         archive.finish().unwrap();
-        let project = root.join("project");
-        let store = ProjectStore::at(&project);
-        store.create(input()).unwrap();
+        let container = root.join("projects");
+        ProjectStore::create_in(&container, input()).unwrap();
+        let store = ProjectStore::at(container.join("project-1"));
 
         let imported = store
             .import_file(&source, "2026-07-15T00:05:00.000Z".to_string())
@@ -1268,9 +1403,9 @@ mod tests {
             archive.write_all(xml.as_bytes()).unwrap();
         }
         archive.finish().unwrap();
-        let project = root.join("project");
-        let store = ProjectStore::at(&project);
-        store.create(input()).unwrap();
+        let container = root.join("projects");
+        ProjectStore::create_in(&container, input()).unwrap();
+        let store = ProjectStore::at(container.join("project-1"));
 
         let imported = store
             .import_file(&source, "2026-07-15T00:05:00.000Z".to_string())
@@ -1294,9 +1429,9 @@ mod tests {
         let source = root.join("reference.pdf");
         fs::create_dir_all(&root).unwrap();
         fs::write(&source, b"%PDF-not-a-real-document").unwrap();
-        let project = root.join("project");
-        let store = ProjectStore::at(&project);
-        store.create(input()).unwrap();
+        let container = root.join("projects");
+        ProjectStore::create_in(&container, input()).unwrap();
+        let store = ProjectStore::at(container.join("project-1"));
 
         let file = store
             .import_file(&source, "2026-07-15T00:05:00.000Z".to_string())
@@ -1312,8 +1447,9 @@ mod tests {
     #[test]
     fn previews_extracted_text_without_exposing_other_project_files() {
         let root = temp_project();
-        let store = ProjectStore::at(&root);
-        store.create(input()).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
         let source = root.join("source.md");
         fs::write(&source, "甲".repeat(40)).unwrap();
         let file = store
@@ -1333,8 +1469,9 @@ mod tests {
     #[test]
     fn persists_run_summaries_without_assistant_message_contents() {
         let root = temp_project();
-        let store = ProjectStore::at(&root);
-        store.create(input()).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
         let run = AgentRun {
             id: "run-1".to_string(),
             project_id: "project-1".to_string(),
@@ -1355,9 +1492,10 @@ mod tests {
     #[test]
     fn reads_only_the_current_nodes_project_override() {
         let root = temp_project();
-        let store = ProjectStore::at(&root);
-        store.create(input()).unwrap();
-        let overrides = store.sion_dir().join("agent-overrides");
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
+        let overrides = root.join("project-1").join("agent-overrides");
         fs::write(overrides.join("basic-info.md"), "仅写确认信息").unwrap();
         assert_eq!(
             store.agent_override(WorkflowNodeId::BasicInfo).unwrap(),
@@ -1370,8 +1508,9 @@ mod tests {
     #[test]
     fn saves_and_clears_a_project_agent_override_atomically() {
         let root = temp_project();
-        let store = ProjectStore::at(&root);
-        store.create(input()).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
         let saved = store
             .save_agent_override(WorkflowNodeId::Goals, "只使用确认的目标。".to_string())
             .unwrap();
