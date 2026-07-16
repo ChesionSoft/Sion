@@ -11,11 +11,12 @@ use sion_core::{
     WorkflowNodeId, apply_agent_delivery,
 };
 use sion_storage::{
-    CreateProjectInput, FilePreview, ProjectRegistry, ProjectStore, RecentProject, SaveNodeResult,
+    CreateProjectInput, FilePreview, ProjectDiscovery, ProjectRegistry, ProjectStore,
+    RecentProject, SaveNodeResult,
 };
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use tauri::{Emitter, Manager};
@@ -96,12 +97,12 @@ struct SpikeCheck {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SettingsSummary {
-    default_project_directory: Option<String>,
+    projects_directory: Option<String>,
 }
 
 fn settings_summary(settings: &app_settings::AppSettings) -> SettingsSummary {
     SettingsSummary {
-        default_project_directory: settings
+        projects_directory: settings
             .projects_directory
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
@@ -128,6 +129,67 @@ fn sion_root(app: &tauri::AppHandle) -> Result<PathBuf, ApiError> {
         ApiError::CheckFailed(format!("cannot determine user home directory: {error}"))
     })?;
     Ok(app_paths::global_sion_root(&home))
+}
+
+/// Returns the configured projects container, rejecting a missing or stale
+/// directory so the caller can prompt the user to choose one.
+fn configured_projects_directory(settings: &app_settings::AppSettings) -> Result<&Path, ApiError> {
+    app_settings::usable_projects_directory(settings).ok_or_else(|| {
+        ApiError::CheckFailed("choose an available project container first".to_string())
+    })
+}
+
+/// Creates a project inside the saved container and records a recent-open
+/// timestamp. Project creation never opens a folder picker: the container is
+/// chosen once and reused, so multiple projects become UUID siblings.
+fn create_project_from_settings(
+    root: &Path,
+    request: ProjectCreateRequest,
+) -> Result<ProjectManifest, ApiError> {
+    let settings = app_settings::load(root).map_err(ApiError::CheckFailed)?;
+    let directory = configured_projects_directory(&settings)?;
+    let manifest = ProjectStore::create_in(
+        directory,
+        CreateProjectInput {
+            id: request.id,
+            name: request.name,
+            customer_name: request.customer_name,
+            author_name: request.author_name,
+            now: request.now,
+        },
+    )
+    .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    ProjectRegistry::at(root)
+        .register(
+            &manifest,
+            directory.join(&manifest.id),
+            manifest.updated_at.clone(),
+        )
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(manifest)
+}
+
+/// Lists projects by discovering directories on disk under the saved container.
+/// The registry only contributes recent-open timestamps; unregistered projects
+/// are still listed. An unset container yields an empty list rather than an
+/// error so the UI can prompt the user to choose one.
+fn list_projects_from_settings(root: &Path) -> Result<ProjectDiscovery, ApiError> {
+    let settings = app_settings::load(root).map_err(ApiError::CheckFailed)?;
+    let Some(configured) = settings.projects_directory.as_deref() else {
+        return Ok(ProjectDiscovery {
+            projects: Vec::new(),
+            warnings: Vec::new(),
+        });
+    };
+    if !configured.is_dir() {
+        return Err(ApiError::CheckFailed(format!(
+            "configured project container is unavailable: {}",
+            configured.display()
+        )));
+    }
+    ProjectRegistry::at(root)
+        .discover(configured)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -234,6 +296,7 @@ struct ProjectCreateResult {
 #[serde(rename_all = "camelCase")]
 struct ProjectList {
     projects: Vec<RecentProject>,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -495,9 +558,7 @@ fn provider_list(
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<ProviderList>, ApiError> {
     assert_api_version(&request.version)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
+    let app_data_root = sion_root(&app)?;
     let providers = provider_settings::list(&app_data_root).map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
@@ -511,9 +572,7 @@ fn provider_save(
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<provider_settings::ProviderSummary>, ApiError> {
     assert_api_version(&request.version)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
+    let app_data_root = sion_root(&app)?;
     let provider =
         provider_settings::save(&app_data_root, request.provider).map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
@@ -528,9 +587,7 @@ fn provider_set_default(
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<provider_settings::ProviderSummary>, ApiError> {
     assert_api_version(&request.version)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
+    let app_data_root = sion_root(&app)?;
     let provider = provider_settings::set_default(&app_data_root, &request.provider_id)
         .map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
@@ -545,9 +602,7 @@ fn provider_delete(
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<()>, ApiError> {
     assert_api_version(&request.version)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
+    let app_data_root = sion_root(&app)?;
     provider_settings::delete(&app_data_root, &request.provider_id)
         .map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
@@ -563,9 +618,7 @@ fn agent_run_start(
     state: tauri::State<'_, Arc<AgentState>>,
 ) -> Result<VersionedResponse<sion_agent::AgentRun>, ApiError> {
     assert_api_version(&request.version)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
+    let app_data_root = sion_root(&app)?;
     let model =
         provider_settings::resolve_default_model(&app_data_root).map_err(ApiError::CheckFailed)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
@@ -697,10 +750,8 @@ fn settings_get(
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
     assert_api_version(&request)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
-    let settings = app_settings::load(&app_data_root).map_err(ApiError::CheckFailed)?;
+    let global = sion_root(&app)?;
+    let settings = app_settings::load(&global).map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: settings_summary(&settings),
@@ -708,15 +759,13 @@ fn settings_get(
 }
 
 #[tauri::command]
-async fn settings_pick_default_project_directory(
+async fn settings_pick_projects_directory(
     request: VersionedRequest,
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
     assert_api_version(&request)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
-    let settings = app_settings::load(&app_data_root).map_err(ApiError::CheckFailed)?;
+    let global = sion_root(&app)?;
+    let settings = app_settings::load(&global).map_err(ApiError::CheckFailed)?;
     let Some(directory) = project_directory_dialog(&app, &settings).blocking_pick_folder() else {
         return Ok(VersionedResponse {
             api_version: API_VERSION,
@@ -727,7 +776,7 @@ async fn settings_pick_default_project_directory(
         ApiError::CheckFailed(format!("selected directory is not a local path: {error}"))
     })?;
     let updated = app_settings::save(
-        &app_data_root,
+        &global,
         app_settings::AppSettings::with_projects_directory(Some(directory)),
     )
     .map_err(ApiError::CheckFailed)?;
@@ -738,16 +787,14 @@ async fn settings_pick_default_project_directory(
 }
 
 #[tauri::command]
-fn settings_clear_default_project_directory(
+fn settings_clear_projects_directory(
     request: VersionedRequest,
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
     assert_api_version(&request)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
+    let global = sion_root(&app)?;
     let cleared = app_settings::save(
-        &app_data_root,
+        &global,
         app_settings::AppSettings::with_projects_directory(None),
     )
     .map_err(ApiError::CheckFailed)?;
@@ -763,37 +810,8 @@ async fn project_create(
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<ProjectCreateResult>, ApiError> {
     assert_api_version(&request.version)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
-    let settings = app_settings::load(&app_data_root).map_err(ApiError::CheckFailed)?;
-    let Some(project_root) = project_directory_dialog(&app, &settings).blocking_pick_folder()
-    else {
-        return Ok(VersionedResponse {
-            api_version: API_VERSION,
-            payload: ProjectCreateResult {
-                created: false,
-                project: None,
-            },
-        });
-    };
-    let project_root = project_root.into_path().map_err(|error| {
-        ApiError::CheckFailed(format!(
-            "selected project directory is not a local path: {error}"
-        ))
-    })?;
-    let manifest = ProjectStore::at(&project_root)
-        .create(CreateProjectInput {
-            id: request.id,
-            name: request.name,
-            customer_name: request.customer_name,
-            author_name: request.author_name,
-            now: request.now,
-        })
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    ProjectRegistry::at(app_data_root)
-        .register(&manifest, project_root, manifest.updated_at.clone())
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let global = sion_root(&app)?;
+    let manifest = create_project_from_settings(&global, request)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: ProjectCreateResult {
@@ -809,15 +827,14 @@ fn project_list(
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<ProjectList>, ApiError> {
     assert_api_version(&request.version)?;
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
-    let projects = ProjectRegistry::at(app_data_root)
-        .list()
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let global = sion_root(&app)?;
+    let discovery = list_projects_from_settings(&global)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
-        payload: ProjectList { projects },
+        payload: ProjectList {
+            projects: discovery.projects,
+            warnings: discovery.warnings,
+        },
     })
 }
 
@@ -1434,11 +1451,11 @@ fn resolve_registered_project_root(
     app: &tauri::AppHandle,
     project_id: &str,
 ) -> Result<std::path::PathBuf, ApiError> {
-    let app_data_root = app.path().app_data_dir().map_err(|error| {
-        ApiError::CheckFailed(format!("cannot determine app data directory: {error}"))
-    })?;
-    ProjectRegistry::at(app_data_root)
-        .resolve(project_id)
+    let global = sion_root(app)?;
+    let settings = app_settings::load(&global).map_err(ApiError::CheckFailed)?;
+    let directory = configured_projects_directory(&settings)?;
+    ProjectRegistry::at(&global)
+        .resolve(directory, project_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))
 }
 
@@ -1451,8 +1468,8 @@ pub fn run() {
             spike_docx_check,
             spike_keyring_check,
             settings_get,
-            settings_pick_default_project_directory,
-            settings_clear_default_project_directory,
+            settings_pick_projects_directory,
+            settings_clear_projects_directory,
             provider_list,
             provider_save,
             provider_set_default,
@@ -1484,6 +1501,71 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_command_root() -> PathBuf {
+        std::env::temp_dir().join(format!("sion-cmd-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn project_request(id: &str) -> ProjectCreateRequest {
+        ProjectCreateRequest {
+            version: VersionedRequest {
+                api_version: API_VERSION,
+            },
+            id: id.to_string(),
+            name: "项目".to_string(),
+            customer_name: "客户".to_string(),
+            author_name: "作者".to_string(),
+            now: "2026-07-15T00:00:00.000Z".to_string(),
+        }
+    }
+
+    fn create_input(id: &str) -> CreateProjectInput {
+        CreateProjectInput {
+            id: id.to_string(),
+            name: "项目".to_string(),
+            customer_name: "客户".to_string(),
+            author_name: "作者".to_string(),
+            now: "2026-07-15T00:00:00.000Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn creates_multiple_projects_from_one_saved_container() {
+        let root = temp_command_root();
+        let global = root.join("global");
+        let projects = root.join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        app_settings::save(
+            &global,
+            app_settings::AppSettings::with_projects_directory(Some(projects.clone())),
+        )
+        .unwrap();
+        create_project_from_settings(&global, project_request("project-1")).unwrap();
+        create_project_from_settings(&global, project_request("project-2")).unwrap();
+        assert!(projects.join("project-1/project.json").is_file());
+        assert!(projects.join("project-2/project.json").is_file());
+        assert!(!projects.join(".sion").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lists_disk_projects_without_registry_json() {
+        let root = temp_command_root();
+        let global = root.join("global");
+        let projects = root.join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        app_settings::save(
+            &global,
+            app_settings::AppSettings::with_projects_directory(Some(projects.clone())),
+        )
+        .unwrap();
+        ProjectStore::create_in(&projects, create_input("project-1")).unwrap();
+        assert_eq!(
+            list_projects_from_settings(&global).unwrap().projects.len(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn rejects_an_unknown_ipc_version() {
