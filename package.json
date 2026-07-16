@@ -11,6 +11,7 @@
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:no-browser-runtime": "node scripts/verify-no-browser-runtime.mjs",
     "test:no-legacy-migration-runtime": "node scripts/verify-no-legacy-migration-runtime.mjs",
+    "test:storage-contract": "node scripts/verify-storage-contract.mjs",
     "build:desktop": "tauri build --no-bundle",
     "bundle": "npm run bundle:mac",
     "bundle:mac": "tauri build --bundles app,dmg",

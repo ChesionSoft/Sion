@@ -24,20 +24,20 @@ export function LandingPage({
         <div><p className="kicker">SION / LOCAL DESKTOP</p><h1>设计文档<br /><em>落在你的手里。</em></h1></div>
         <div className="run-mark">01<span>WORKBENCH</span></div>
       </header>
-      <section className="landing-intro"><span>本地优先 / Rust 核心 / 无浏览器自动化</span><p>每个项目都以可携带的 <code>.sion/</code> 目录保存。选择目录后，Sion 会创建 12 个可编辑的设计节点。</p></section>
+      <section className="landing-intro"><span>本地优先 / Rust 核心 / 无浏览器自动化</span><p>所有项目都保存在你选择的项目目录下，以独立的项目文件夹存放。Sion 会为每个项目创建 12 个可编辑的设计节点。</p></section>
       <section className="landing-grid">
         <form className="new-project-card" onSubmit={(event) => { event.preventDefault(); onCreate(newName, newCustomer, newAuthor); }}>
           <p className="panel-kicker">新建项目</p><h2>开始一份<br />可迁移的设计稿</h2>
           <label>项目名称<input value={newName} onChange={(event) => setNewName(event.target.value)} /></label>
           <div className="field-row"><label>客户<input value={newCustomer} onChange={(event) => setNewCustomer(event.target.value)} /></label><label>作者<input value={newAuthor} onChange={(event) => setNewAuthor(event.target.value)} /></label></div>
-          <button className="primary-action" disabled={creating} type="submit">{creating ? "正在打开目录选择…" : "选择目录并创建"}<b>↗</b></button>
+          <button className="primary-action" disabled={creating || !settings.projectsDirectory} type="submit">{creating ? "正在创建…" : "创建项目"}<b>↗</b></button>
         </form>
         <section className="recent-projects" aria-label="最近项目"><div className="section-head"><p className="panel-kicker">最近打开</p><span>{projects.length.toString().padStart(2, "0")}</span></div>
-          {projects.length === 0 ? <div className="empty-projects"><strong>还没有登记的项目</strong><span>选择目录创建你的第一份本地项目。</span></div> : projects.map((item) => <button key={item.id} className="project-row" onClick={() => onOpenProject(item)} type="button"><span className="project-dot" /><span><strong>{item.name}</strong><small>{item.rootPath}</small></span><b>↗</b></button>)}
+          {projects.length === 0 ? <div className="empty-projects"><strong>{settings.projectsDirectory ? "还没有项目" : "请先设置项目目录"}</strong><span>{settings.projectsDirectory ? "创建你的第一份本地项目。" : "选择一个项目目录后，Sion 会在此自动创建并发现项目。"}</span></div> : projects.map((item) => <button key={item.id} className="project-row" onClick={() => onOpenProject(item)} type="button"><span className="project-dot" /><span><strong>{item.name}</strong><small>{item.rootPath}</small></span><b>↗</b></button>)}
         </section>
       </section>
       <section className="provider-settings">
-        <div className="provider-copy"><p className="panel-kicker">模型连接</p><h2>把密钥留给<br /><em>操作系统。</em></h2><p>配置元数据保存在应用目录；API Key 只写入 macOS Keychain 或 Windows Credential Manager，界面永不回显。</p></div>
+        <div className="provider-copy"><p className="panel-kicker">模型连接</p><h2>密钥留在本机<br /><em>不再回显。</em></h2><p>API Key 保存在本机 ~/.sion/providers.json，保存后不会回显。</p></div>
         <div className="provider-summary">
           <p className="provider-summary-state">
             {providers.length === 0
@@ -46,10 +46,10 @@ export function LandingPage({
           </p>
           <div className="provider-summary-actions">
             <button className="provider-manage" onClick={onOpenProviders} type="button">管理模型连接<b>↗</b></button>
-            <button className="settings-open" onClick={onOpenSettings} type="button">默认目录设置<b>↗</b></button>
+            <button className="settings-open" onClick={onOpenSettings} type="button">项目目录设置<b>↗</b></button>
           </div>
           <small className="provider-summary-directory">
-            {settings.defaultProjectDirectory ? `默认项目目录：${settings.defaultProjectDirectory}` : "未设置默认项目目录；创建项目时将使用系统默认位置。"}
+            {settings.projectsDirectory ? `项目目录：${settings.projectsDirectory}` : "未设置项目目录；请先选择一个项目目录。"}
           </small>
         </div>
       </section>

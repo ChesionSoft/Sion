@@ -75,7 +75,7 @@ export function ProviderManager({ providers, onSave, onSetDefault, onDelete, onC
   }
 
   function remove(provider: Provider) {
-    if (!window.confirm(`删除"${provider.name}"吗？这会同时删除它保存在系统凭据库中的 API Key。`)) return;
+    if (!window.confirm(`删除"${provider.name}"吗？这会同时删除 providers.json 中保存的 API Key。`)) return;
     onDelete(provider.id);
     if (editId === provider.id) resetForm();
   }
@@ -96,9 +96,9 @@ export function ProviderManager({ providers, onSave, onSetDefault, onDelete, onC
           </div>
           <small className="provider-help">{apiUrlMode === "base" ? "base 模式：填写到版本号的根地址（如 https://api.openai.com/v1），Sion 按协议拼接 /chat/completions 或 /responses。" : "full 模式：填写完整 endpoint 地址，Sion 原样使用，不再拼接路径。"}</small>
           <label>默认模型<input value={model} onChange={(event) => setModel(event.target.value)} placeholder="gpt-5" /></label>
-          <label>API Key<input type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} placeholder={editing ? "保留已保存密钥（留空即不更换）" : "仅写入系统凭据库"} /></label>
+          <label>API Key<input type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} placeholder={editing ? "保留已保存密钥（留空即不更换）" : "保存到 ~/.sion/providers.json"} /></label>
           <div className="provider-form-actions">
-            <button className="provider-save" type="submit">{editing ? "保存修改" : "保存安全配置"}<b>↗</b></button>
+            <button className="provider-save" type="submit">{editing ? "保存修改" : "保存配置"}<b>↗</b></button>
             {editing ? <button type="button" onClick={resetForm}>取消编辑</button> : null}
           </div>
         </form>

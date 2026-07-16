@@ -52,7 +52,7 @@ export type ProjectFile = {
   truncated?: boolean;
 };
 
-export type AppSettings = { defaultProjectDirectory: string | null };
+export type AppSettings = { projectsDirectory: string | null };
 export type FilePreview = { file: ProjectFile; text?: string; truncated: boolean };
 
 export type ProviderModel = { name: string; isDefault: boolean; toolCalling: boolean };

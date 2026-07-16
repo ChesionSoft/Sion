@@ -43,13 +43,13 @@ const invokePayload = async <T>(
 export const getAppVersion = () => invokePayload<AppVersion>("app_get_version", {});
 
 export const getSettings = () => invokePayload<AppSettings>("settings_get", {});
-export const pickDefaultProjectDirectory = () =>
-  invokePayload<AppSettings>("settings_pick_default_project_directory", {});
-export const clearDefaultProjectDirectory = () =>
-  invokePayload<AppSettings>("settings_clear_default_project_directory", {});
+export const pickProjectsDirectory = () =>
+  invokePayload<AppSettings>("settings_pick_projects_directory", {});
+export const clearProjectsDirectory = () =>
+  invokePayload<AppSettings>("settings_clear_projects_directory", {});
 
-export const getProjects = async (): Promise<RecentProject[]> =>
-  (await invokePayload<{ projects: RecentProject[] }>("project_list", {})).projects;
+export const getProjects = () =>
+  invokePayload<{ projects: RecentProject[]; warnings: string[] }>("project_list", {});
 export const createProject = (
   id: string,
   name: string,

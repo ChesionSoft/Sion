@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState } from "react";
 import {
   cancelAgentRun,
-  clearDefaultProjectDirectory,
+  clearProjectsDirectory,
   applyAssistant as applyAssistantApi,
   appendMessage,
   createProject,
@@ -21,7 +21,7 @@ import {
   listProviders,
   listRuns,
   listSessions,
-  pickDefaultProjectDirectory,
+  pickProjectsDirectory,
   previewAssistantDelivery,
   saveAgentOverride,
   saveNode,
@@ -60,7 +60,7 @@ export function App() {
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
   const [importingFile, setImportingFile] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
-  const [settings, setSettings] = useState<AppSettings>({ defaultProjectDirectory: null });
+  const [settings, setSettings] = useState<AppSettings>({ projectsDirectory: null });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [providersOpen, setProvidersOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -147,9 +147,11 @@ export function App() {
 
   async function loadProjects() {
     try {
-      setProjects(await getProjects());
+      const result = await getProjects();
+      setProjects(result.projects);
+      if (result.warnings.length > 0) setNotice(result.warnings[0]);
     } catch (error) {
-      setNotice(`读取项目注册表失败：${String(error)}`);
+      setNotice(`读取项目目录失败：${String(error)}`);
     }
   }
 
@@ -171,20 +173,26 @@ export function App() {
 
   async function chooseDefaultDirectory() {
     try {
-      const updated = await pickDefaultProjectDirectory();
+      const updated = await pickProjectsDirectory();
       setSettings(updated);
-      setNotice(updated.defaultProjectDirectory ? "默认项目目录已更新" : "未更改默认项目目录");
+      if (updated.projectsDirectory) {
+        setNotice("项目目录已更新；Sion 会在此目录自动创建并发现多个项目");
+        void loadProjects();
+      } else {
+        setNotice("未更改项目目录");
+      }
     } catch (error) {
-      setNotice(`设置默认目录失败：${String(error)}`);
+      setNotice(`设置项目目录失败：${String(error)}`);
     }
   }
 
   async function resetDefaultDirectory() {
     try {
-      setSettings(await clearDefaultProjectDirectory());
-      setNotice("已清除默认项目目录；下次将使用系统默认位置");
+      setSettings(await clearProjectsDirectory());
+      setProjects([]);
+      setNotice("已清除项目目录；请重新选择一个项目目录");
     } catch (error) {
-      setNotice(`清除默认目录失败：${String(error)}`);
+      setNotice(`清除项目目录失败：${String(error)}`);
     }
   }
 
@@ -192,7 +200,7 @@ export function App() {
     try {
       const saved = await saveProvider(draft);
       setProviders(await listProviders());
-      setNotice(`${saved.name} 已保存；密钥仅保存在系统钥匙串`);
+      setNotice(`${saved.name} 已保存；API Key 保存在本机 ~/.sion/providers.json，不会回显`);
     } catch (error) {
       setNotice(`保存模型配置失败：${String(error)}`);
     }
@@ -212,7 +220,7 @@ export function App() {
     try {
       await deleteProvider(providerId);
       setProviders(await listProviders());
-      setNotice("配置和系统凭据已删除");
+      setNotice("已删除本地模型配置；providers.json 中的 API Key 已一并删除");
     } catch (error) {
       setNotice(`删除模型配置失败：${String(error)}`);
     }
@@ -228,15 +236,12 @@ export function App() {
 
   async function createProjectFromForm(name: string, customer: string, author: string) {
     setCreating(true);
-    setNotice("请选择用于保存此项目的目录");
+    setNotice("正在创建本地项目");
     try {
       const response = await createProject(crypto.randomUUID(), name.trim() || "未命名项目", customer.trim(), author.trim(), now());
-      if (!response.created || !response.project) {
-        setNotice("已取消目录选择，未写入任何项目数据");
-        return;
-      }
+      if (!response.created || !response.project) throw new Error("项目创建未完成");
       await loadProjects();
-      setNotice(`已创建 ${response.project.name}；节点初稿已写入 .sion/`);
+      setNotice(`已创建 ${response.project.name}`);
     } catch (error) {
       setNotice(`创建项目失败：${String(error)}`);
     } finally {
