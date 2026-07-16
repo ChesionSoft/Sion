@@ -1,3 +1,4 @@
+mod app_paths;
 mod app_settings;
 mod docx_check;
 mod keyring_check;
@@ -101,23 +102,32 @@ struct SettingsSummary {
 fn settings_summary(settings: &app_settings::AppSettings) -> SettingsSummary {
     SettingsSummary {
         default_project_directory: settings
-            .default_project_directory
+            .projects_directory
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
     }
 }
 
-/// Builds the native folder picker for choosing a project directory, seeded
-/// with the saved default directory when it still exists on disk. A stale
-/// default falls back to the operating system's default location.
+/// Builds the native folder picker for choosing a projects container, seeded
+/// with the saved projects directory when it still exists on disk. A stale
+/// directory falls back to the operating system's default location.
 fn project_directory_dialog(
     app: &tauri::AppHandle,
     settings: &app_settings::AppSettings,
 ) -> tauri_plugin_dialog::FileDialogBuilder<tauri::Wry> {
-    match app_settings::usable_default_directory(settings) {
+    match app_settings::usable_projects_directory(settings) {
         Some(path) => app.dialog().file().set_directory(path),
         None => app.dialog().file(),
     }
+}
+
+/// Resolves the single global Sion configuration root (`~/.sion/`) for the
+/// current user. All application-level state lives here; project data does not.
+fn sion_root(app: &tauri::AppHandle) -> Result<PathBuf, ApiError> {
+    let home = app.path().home_dir().map_err(|error| {
+        ApiError::CheckFailed(format!("cannot determine user home directory: {error}"))
+    })?;
+    Ok(app_paths::global_sion_root(&home))
 }
 
 #[derive(Debug, Deserialize)]
@@ -718,7 +728,7 @@ async fn settings_pick_default_project_directory(
     })?;
     let updated = app_settings::save(
         &app_data_root,
-        app_settings::AppSettings::with_default_directory(Some(directory)),
+        app_settings::AppSettings::with_projects_directory(Some(directory)),
     )
     .map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
@@ -738,7 +748,7 @@ fn settings_clear_default_project_directory(
     })?;
     let cleared = app_settings::save(
         &app_data_root,
-        app_settings::AppSettings::with_default_directory(None),
+        app_settings::AppSettings::with_projects_directory(None),
     )
     .map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {

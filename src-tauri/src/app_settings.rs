@@ -1,8 +1,8 @@
 //! Atomic application-level settings storage. Today this only remembers the
-//! optional default project directory used to seed the native folder picker
-//! when creating a project. Writes follow the same staging-and-rename pattern
-//! as provider metadata: a unique temp file is written, then renamed onto
-//! `settings.json`, so a crashed write never leaves a half-written file.
+//! optional projects directory: the single container where Sion creates and
+//! discovers project directories. Writes follow the same staging-and-rename
+//! pattern as provider metadata: a unique temp file is written, then renamed
+//! onto `settings.json`, so a crashed write never leaves a half-written file.
 
 use std::{
     fs,
@@ -18,14 +18,14 @@ const SETTINGS_SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub schema_version: u32,
-    pub default_project_directory: Option<PathBuf>,
+    pub projects_directory: Option<PathBuf>,
 }
 
 impl AppSettings {
-    pub fn with_default_directory(default_project_directory: Option<PathBuf>) -> Self {
+    pub fn with_projects_directory(projects_directory: Option<PathBuf>) -> Self {
         Self {
             schema_version: SETTINGS_SCHEMA_VERSION,
-            default_project_directory,
+            projects_directory,
         }
     }
 }
@@ -33,7 +33,7 @@ impl AppSettings {
 pub fn load(app_data_root: &Path) -> Result<AppSettings, String> {
     let target = app_data_root.join("settings.json");
     if !target.exists() {
-        return Ok(AppSettings::with_default_directory(None));
+        return Ok(AppSettings::with_projects_directory(None));
     }
     let raw = fs::read_to_string(&target)
         .map_err(|error| format!("cannot read {}: {error}", target.display()))?;
@@ -63,12 +63,13 @@ pub fn save(app_data_root: &Path, settings: AppSettings) -> Result<AppSettings, 
     result.map(|()| settings)
 }
 
-/// Returns the configured default directory only when it still exists on disk.
-/// A stale path (deleted between sessions) must not pin the native picker to a
-/// missing folder, so callers fall back to the system default location.
-pub fn usable_default_directory(settings: &AppSettings) -> Option<&Path> {
+/// Returns the configured projects directory only when it still exists on disk.
+/// A stale path (deleted between sessions) must not be treated as a usable
+/// container, so callers can detect the missing directory and ask the user to
+/// choose one again.
+pub fn usable_projects_directory(settings: &AppSettings) -> Option<&Path> {
     settings
-        .default_project_directory
+        .projects_directory
         .as_deref()
         .filter(|path| path.is_dir())
 }
@@ -85,33 +86,33 @@ mod tests {
     #[test]
     fn loads_empty_settings_when_the_file_is_absent() {
         let root = temp_root();
-        assert_eq!(load(&root).unwrap().default_project_directory, None);
+        assert_eq!(load(&root).unwrap().projects_directory, None);
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn saves_and_reloads_the_default_project_directory() {
+    fn saves_and_reloads_the_projects_directory() {
         let root = temp_root();
-        let directory = PathBuf::from("/Users/test/Documents/Sion");
+        let directory = PathBuf::from("/Users/test/Documents/Sion/projects");
         save(
             &root,
-            AppSettings::with_default_directory(Some(directory.clone())),
+            AppSettings::with_projects_directory(Some(directory.clone())),
         )
         .unwrap();
-        assert_eq!(
-            load(&root).unwrap().default_project_directory,
-            Some(directory)
+        assert_eq!(load(&root).unwrap().projects_directory, Some(directory));
+        assert!(
+            fs::read_to_string(root.join("settings.json"))
+                .unwrap()
+                .contains("projectsDirectory")
         );
-        let raw = fs::read_to_string(root.join("settings.json")).unwrap();
-        assert!(raw.contains("schemaVersion"));
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn ignores_a_default_directory_that_no_longer_exists() {
+    fn ignores_a_projects_directory_that_no_longer_exists() {
         let root = temp_root();
-        let settings = AppSettings::with_default_directory(Some(root.join("missing")));
-        assert_eq!(usable_default_directory(&settings), None);
+        let settings = AppSettings::with_projects_directory(Some(root.join("missing")));
+        assert_eq!(usable_projects_directory(&settings), None);
         let _ = fs::remove_dir_all(root);
     }
 }
