@@ -48,8 +48,8 @@ Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x6
 | **Markdown working papers** | Edit, save, and track the state of every node directly. |
 | **Project rule overrides** | Add project-specific instructions per node without changing bundled defaults. |
 | **Local file pool** | Import TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX, then select files as Agent context. |
-| **Secure model settings** | OpenAI-compatible Chat Completions and Responses providers; editable, with an explicit default. Keys live only in the OS credential store and cannot be recovered. |
-| **Default project directory** | Users choose the project directory; a starting directory can be saved in Settings so the folder picker opens there. |
+| **Local model settings** | OpenAI-compatible Chat Completions and Responses providers; editable, with an explicit default. API keys are stored as plaintext in ~/.sion/providers.json (restricted permissions) and never echoed in the UI. |
+| **One project container** | Choose a project directory once; Sion creates and discovers multiple projects inside it without prompting again. |
 | **File preview** | The right-hand attachments pane previews extracted file text (text only); only checked files become Agent context. |
 | **Structured Word export** | Export Markdown nodes as DOCX with headings, a table of contents, lists, and tables. |
 
@@ -78,7 +78,7 @@ npm run test:no-browser-runtime
 
 ## Workflow
 
-1. Choose a local directory on the landing screen and create a project. Sion creates only `.sion/` in that directory. You may save a starting directory in **Default Directory Settings**; the folder picker then opens there for new projects.
+1. In **Project Directory Settings** on the landing screen, choose a directory to hold your projects (you only do this once); then choose **Create Project** and Sion creates it as its own folder inside that directory.
 2. Configure a provider and a default model in **Model Connection**. Offline editing works without one.
 3. Work through the twelve nodes. Import files and select only the references relevant to the current Agent conversation. The workbench center has two tabs: **Chat** to talk with the node Agent and **Draft** to edit Markdown; the right-hand attachments pane previews extracted file text.
 4. Chat with the current-node Agent, review its delivery patch, then explicitly apply it to the Markdown working paper.
@@ -146,9 +146,9 @@ These show endpoint and protocol shapes only. Available models, account access, 
 
 ### Confirm the configuration
 
-1. Select **Save Secure Configuration**. Seeing the provider in the list with a configured state means its key was saved to Keychain / Credential Manager.
+1. Select **Save Configuration**. Seeing the provider in the list with a configured state means its API key was saved to ~/.sion/providers.json.
 2. Open or create a project and send an Agent message in any node. A streaming reply confirms the connection.
-3. The first provider saved is the current default provider. In **Manage Model Connections** you can edit any provider's name, URL, protocol, or model without re-entering its API Key (leave the key blank to keep the stored secret), or enter a new key to replace it. Any provider can be set as the default. Deleting a provider also removes its key from the system credential store, and the key cannot be recovered.
+3. The first provider saved is the current default provider. In **Manage Model Connections** you can edit any provider's name, URL, protocol, or model without re-entering its API Key (leave the key blank to keep the stored secret), or enter a new key to replace it. Any provider can be set as the default. Deleting a provider also removes its record and API key from providers.json.
 
 Common issues:
 
@@ -157,13 +157,13 @@ Common issues:
 - **Model not found**: use the provider console's exact model ID in **Default Model**.
 - **Can I work offline?** Yes. A model connection is needed only for Agent runs; Markdown editing, project creation, and DOCX export work offline.
 
-Provider metadata is stored in the application-data directory. API keys are stored only in macOS Keychain or Windows Credential Manager and are never echoed back in the UI.
+Provider metadata and API keys are stored together in ~/.sion/providers.json (restricted permissions). The UI never echoes the key, and the key never enters project data, exports, or logs.
 
 > The desktop runtime has no browser search, browser automation, Playwright, or web-fetch subsystem. Agents work only from the current node, selected attachments, and the conversation.
 
 ## Attachments and Agent deliveries
 
-Imported files are copied into `.sion/files/` alongside extracted text. TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX are extractable. Failed extraction is visible as a failure; it is never presented as usable text. The right-hand attachments pane previews the extracted text of an imported file (text only; it never renders web pages or opens external links). Previewing a file is independent of selecting it as Agent context; only checked files become Agent context.
+Imported files are copied into the project's `files/` directory alongside extracted text. TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX are extractable. Failed extraction is visible as a failure; it is never presented as usable text. The right-hand attachments pane previews the extracted text of an imported file (text only; it never renders web pages or opens external links). Previewing a file is independent of selecting it as Agent context; only checked files become Agent context.
 
 Writeable Agent output must be fenced `delivery` JSON. By default it patches existing second-level sections only; a full rewrite requires an explicit user request. Sion validates the node structure, previews changes, and saves with the current revision, so a partial streaming response cannot become project content.
 
@@ -175,20 +175,26 @@ The chosen destination receives the export. Sion does not automatically write it
 
 ## Local data and privacy
 
-Project data is written only beneath the directory selected by the user:
+Global configuration lives in `~/.sion/`; project data lives under the project directory you choose, one folder per project ID:
 
 ```text
-<project root>/
-└── .sion/
-    ├── manifest.json
+~/.sion/
+├── settings.json
+├── providers.json
+└── registry.json
+
+<projects directory>/
+└── <project id>/
+    ├── project.json
     ├── nodes/
     ├── chat/
     ├── files/
     ├── agent-overrides/
+    ├── exports/
     └── runs/
 ```
 
-Project content, attachments, chat history, and exports can contain client information and should not be committed to a public repository. Recent-project registration and provider metadata are stored in OS application data; secrets remain in Keychain / Credential Manager.
+The project directory is chosen once; Sion creates and discovers multiple projects inside it. Project content, attachments, chat history, and exports can contain client information and should not be committed to a public repository. The settings, registry, and providers.json (which contains API keys) under `~/.sion/` should not be committed either.
 
 ## Build and release
 
