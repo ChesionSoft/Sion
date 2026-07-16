@@ -103,9 +103,61 @@ npm run test:no-browser-runtime
 
 ## Model configuration
 
-Sion supports OpenAI-compatible **Chat Completions** and **OpenAI Responses**. Configure OpenAI, DeepSeek, Qwen, SiliconFlow, or another compatible provider according to the protocol it exposes.
+Sion supports OpenAI-compatible **Chat Completions** and **OpenAI Responses**. Configure OpenAI, DeepSeek, Qwen, SiliconFlow, or another compatible provider according to the API protocol and model IDs it actually exposes.
 
-In **Model Connection**, supply a provider name, API base URL, protocol, default model, and API key. Provider metadata is stored in the application-data directory. API keys are stored only in macOS Keychain or Windows Credential Manager and are never echoed back in the UI.
+Complete every field in **Model Connection**:
+
+| Field | What to enter |
+|---|---|
+| **Provider Name** | A UI label, such as `OpenAI`, `DeepSeek`, or `Qwen`. |
+| **API Base URL** | The provider's **version root**, including its version prefix but not the final endpoint path. It commonly ends in `/v1`. |
+| **Protocol** | Use **Chat Completions** for most OpenAI-compatible services. Use **Responses** only when the provider explicitly supports the OpenAI Responses API. |
+| **Default Model** | The exact model ID in the provider documentation, for example `gpt-5` or `deepseek-chat`; it is not a marketing display name. |
+| **API Key** | A key issued by that provider. It is required for a new provider and is never echoed after saving. |
+
+### How to enter the URL
+
+The current UI uses **Base URL mode**. Sion appends the final path for the selected protocol:
+
+| Protocol | You enter | Sion requests |
+|---|---|---|
+| Chat Completions | `https://api.example.com/v1` | `https://api.example.com/v1/chat/completions` |
+| Responses | `https://api.example.com/v1` | `https://api.example.com/v1/responses` |
+
+For example, if a provider documents the full URL as `https://api.example.com/v1/chat/completions`, enter only:
+
+```text
+https://api.example.com/v1
+```
+
+Do not include `/chat/completions` or `/responses` in the Base URL: Sion would append it again. Use `http://` only for a compatible service you run locally or on a trusted private network; production services should use `https://`.
+
+### Ready-to-adapt examples
+
+These show endpoint and protocol shapes only. Available models, account access, and billing are determined by the provider.
+
+| Provider | API Base URL | Protocol | Example default model |
+|---|---|---|---|
+| OpenAI (Chat) | `https://api.openai.com/v1` | Chat Completions | `gpt-5` |
+| OpenAI (Responses) | `https://api.openai.com/v1` | Responses | `gpt-5` |
+| DeepSeek | `https://api.deepseek.com/v1` | Chat Completions | `deepseek-chat` |
+| Qwen compatible mode | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Chat Completions | Use the model ID in your console |
+| SiliconFlow | `https://api.siliconflow.cn/v1` | Chat Completions | Use the model ID in your console |
+
+### Confirm the configuration
+
+1. Select **Save Secure Configuration**. Seeing the provider in the list with a configured state means its key was saved to Keychain / Credential Manager.
+2. Open or create a project and send an Agent message in any node. A streaming reply confirms the connection.
+3. The first provider saved is the current default provider. This version has no default-provider switcher; to switch, delete existing providers and save the preferred provider first. Deletion also removes that provider's system credential.
+
+Common issues:
+
+- **401 / unauthorized**: the API key is incorrect, lacks access, or belongs to a different service than the Base URL.
+- **404 / missing endpoint**: the Base URL probably includes `/chat/completions` or `/responses`, or the selected protocol is wrong.
+- **Model not found**: use the provider console's exact model ID in **Default Model**.
+- **Can I work offline?** Yes. A model connection is needed only for Agent runs; Markdown editing, project creation, migration, and DOCX export work offline.
+
+Provider metadata is stored in the application-data directory. API keys are stored only in macOS Keychain or Windows Credential Manager and are never echoed back in the UI.
 
 > The desktop runtime has no browser search, browser automation, Playwright, or web-fetch subsystem. Agents work only from the current node, selected attachments, and the conversation.
 

@@ -103,16 +103,61 @@ npm run test:no-browser-runtime
 
 ## 模型配置
 
-Sion 支持 OpenAI-compatible **Chat Completions** 与 **OpenAI Responses** 协议。可配置 OpenAI、DeepSeek、通义千问、硅基流动及其他兼容服务，具体以提供商支持的协议为准。
+Sion 支持 OpenAI-compatible **Chat Completions** 与 **OpenAI Responses** 协议。可配置 OpenAI、DeepSeek、通义千问、硅基流动及其他兼容服务；请以服务商实际提供的 API 协议与模型 ID 为准。
 
-在启动页的“模型连接”中填写：
+在启动页的“模型连接”中逐项填写：
 
-- 提供商名称与 API Base URL；
-- 协议：Chat Completions 或 Responses；
-- 默认模型；
-- API Key。
+| 字段 | 填写方式 |
+|---|---|
+| **提供商名称** | 只用于界面识别，例如 `OpenAI`、`DeepSeek`、`通义千问`。 |
+| **API Base URL** | 填服务商的**版本根地址**，包含版本前缀但不包含最终接口路径。通常以 `/v1` 结尾。 |
+| **协议** | 大多数 OpenAI 兼容服务选择 **Chat Completions**；只有服务商明确支持 OpenAI Responses API 时才选择 **Responses**。 |
+| **默认模型** | 填服务商文档中的准确模型 ID，例如 `gpt-5`、`deepseek-chat`。模型名区分服务商规则，不是产品展示名称。 |
+| **API Key** | 填服务商发放的密钥。新提供商必须填写；保存后界面不会再回显它。 |
 
-配置元数据保存在应用数据目录；API Key 只写入 macOS Keychain 或 Windows Credential Manager，界面不会回显密钥。
+### URL 应该怎么填
+
+Sion 当前使用 **Base URL 模式**：应用会根据协议自动补全最后一段路径。
+
+| 你选择的协议 | 你填写 | Sion 实际请求 |
+|---|---|---|
+| Chat Completions | `https://api.example.com/v1` | `https://api.example.com/v1/chat/completions` |
+| Responses | `https://api.example.com/v1` | `https://api.example.com/v1/responses` |
+
+因此，如果服务商文档给出完整地址 `https://api.example.com/v1/chat/completions`，在 Sion 中应填写：
+
+```text
+https://api.example.com/v1
+```
+
+不要把 `/chat/completions` 或 `/responses` 一起填入 Base URL，否则会被重复拼接。`http://` 仅适用于你自己在本机或内网运行的兼容服务；生产服务应使用 `https://`。
+
+### 可直接参考的配置
+
+以下示例只说明 URL 和协议形态；模型可用性、账户权限和计费以服务商后台为准。
+
+| 提供商 | API Base URL | 协议 | 默认模型示例 |
+|---|---|---|---|
+| OpenAI（Chat） | `https://api.openai.com/v1` | Chat Completions | `gpt-5` |
+| OpenAI（Responses） | `https://api.openai.com/v1` | Responses | `gpt-5` |
+| DeepSeek | `https://api.deepseek.com/v1` | Chat Completions | `deepseek-chat` |
+| 通义千问兼容模式 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Chat Completions | 以控制台给出的模型 ID 为准 |
+| 硅基流动 | `https://api.siliconflow.cn/v1` | Chat Completions | 以控制台给出的模型 ID 为准 |
+
+### 保存后如何确认
+
+1. 点击“保存安全配置”。列表出现该提供商并显示“已配置”，表示 Keychain / Credential Manager 已保存密钥。
+2. 新建或打开项目，在任一节点发送一条 Agent 消息；能收到流式回复即连接成功。
+3. 第一个保存的提供商会成为当前默认提供商。当前版本没有“切换默认提供商”控件；如需切换，请删除现有提供商后先保存希望使用的那个。删除会同时移除该提供商的系统凭据。
+
+常见问题：
+
+- **401 / 未授权**：通常是 API Key 错误、账户无权限，或 Key 与 Base URL 不属于同一服务商。
+- **404 / endpoint 不存在**：检查是否把 `/chat/completions` 或 `/responses` 填进了 Base URL，或协议选错。
+- **模型不存在**：将“默认模型”改为服务商控制台显示的精确模型 ID。
+- **离线也能编辑吗？** 可以。模型连接只在运行 Agent 时需要，Markdown 编辑、项目创建、迁移和 DOCX 导出都可离线完成。
+
+提供商元数据保存在应用数据目录；API Key 只写入 macOS Keychain 或 Windows Credential Manager，界面不会回显密钥。
 
 > Sion 桌面运行时没有浏览器搜索、浏览器自动化、Playwright 或网页抓取子系统。Agent 只基于当前节点、已选择附件和会话工作。
 
