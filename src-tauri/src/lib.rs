@@ -12,7 +12,7 @@ use sion_core::{
     WorkflowNodeId, apply_agent_delivery,
 };
 use sion_storage::{
-    CreateProjectInput, ProjectRegistry, ProjectStore, RecentProject, SaveNodeResult,
+    CreateProjectInput, FilePreview, ProjectRegistry, ProjectStore, RecentProject, SaveNodeResult,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -447,6 +447,15 @@ struct FileImportRequest {
     version: VersionedRequest,
     project_id: String,
     now: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FilePreviewRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    file_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1377,6 +1386,22 @@ async fn file_import(
     })
 }
 
+#[tauri::command]
+fn file_preview(
+    request: FilePreviewRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<FilePreview>, ApiError> {
+    assert_api_version(&request.version)?;
+    let root = resolve_registered_project_root(&app, &request.project_id)?;
+    let preview = ProjectStore::at(root)
+        .file_preview(&request.file_id, 24_000)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: preview,
+    })
+}
+
 fn agent_prompt(
     node: &WorkflowNode,
     messages: &[ChatMessage],
@@ -1670,7 +1695,8 @@ pub fn run() {
             message_list,
             message_append,
             file_list,
-            file_import
+            file_import,
+            file_preview
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Sion desktop spike");

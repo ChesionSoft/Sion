@@ -68,6 +68,17 @@ pub enum SaveNodeResult {
     Conflict { latest: WorkflowNode },
 }
 
+/// A bounded, metadata-preserving preview of a project attachment's extracted
+/// text. `text` is `None` when the file had no extractor; `truncated` is true
+/// when the preview was cut short of the full extracted text.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePreview {
+    pub file: ProjectFile,
+    pub text: Option<String>,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PendingMessageAppend {
@@ -440,6 +451,32 @@ impl ProjectStore {
                 path: self.files_dir().join(file.id),
                 source,
             })
+    }
+
+    /// Returns a bounded preview of an attachment's extracted text. The caller
+    /// supplies `max_chars` (the IPC layer caps this for the UI); the store
+    /// resolves the file by id only, so a path-traversal id cannot escape the
+    /// project's file index.
+    pub fn file_preview(&self, file_id: &str, max_chars: usize) -> Result<FilePreview> {
+        let file = self
+            .list_files()?
+            .into_iter()
+            .find(|file| file.id == file_id)
+            .ok_or_else(|| StorageError::ProjectFileNotFound(file_id.to_string()))?;
+        let text = self.read_file_text(file_id)?;
+        let (text, truncated) = match text {
+            Some(value) => {
+                let preview = value.chars().take(max_chars).collect::<String>();
+                let truncated = preview.chars().count() < value.chars().count();
+                (Some(preview), truncated)
+            }
+            None => (None, false),
+        };
+        Ok(FilePreview {
+            file,
+            text,
+            truncated,
+        })
     }
 
     /// Returns a project-specific Agent rule only when one exists. The caller
@@ -1269,6 +1306,27 @@ mod tests {
         assert_eq!(file.extraction_status, Some(FileExtractionStatus::Failed));
         assert!(file.extraction_error.is_some());
         assert_eq!(store.read_file_text(&file.id).unwrap(), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn previews_extracted_text_without_exposing_other_project_files() {
+        let root = temp_project();
+        let store = ProjectStore::at(&root);
+        store.create(input()).unwrap();
+        let source = root.join("source.md");
+        fs::write(&source, "甲".repeat(40)).unwrap();
+        let file = store
+            .import_file(&source, "2026-07-16T00:00:00.000Z".to_string())
+            .unwrap();
+        let preview = store.file_preview(&file.id, 16).unwrap();
+        assert_eq!(preview.file.id, file.id);
+        assert_eq!(preview.text.unwrap().chars().count(), 16);
+        assert!(preview.truncated);
+        assert!(matches!(
+            store.file_preview("../outside", 16),
+            Err(StorageError::ProjectFileNotFound(_))
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 
