@@ -144,6 +144,7 @@ export type FilePreviewPaneProps = {
   selectedFileIds: string[];
   preview?: FilePreview | null;
   importing: boolean;
+  isFileDrawerOpen?: boolean;
   onImport: () => void;
   onSelectPreview?: (fileId: string) => void;
   onToggleContext: (fileId: string) => void;
