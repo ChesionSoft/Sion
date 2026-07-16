@@ -24,6 +24,8 @@ cargo clippy --workspace -- -D warnings
 
 `npm run bundle` 在当前平台生成安装包。macOS 最低版本为 11；Intel 和 Windows x64 由 GitHub Actions 的对应 runner 构建验证。
 
+面向普通用户的安装包还需要平台代码签名；macOS 直链分发还需要 Apple 公证。开发包与正式发布包的差异、机密边界和验收步骤见[发布清单](RELEASE.md)。
+
 ## 数据迁移
 
 首次打开时可从旧 Sion 工作区选择项目迁移。迁移读取旧 `projects/` 和 `settings/model-providers.json`，写入新的 `.sion/` 目录并以临时目录校验后原子提交。
