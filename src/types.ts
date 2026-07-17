@@ -138,18 +138,6 @@ export const statusLabel: Record<NodeStatus, string> = {
 
 // --- Component prop contracts -------------------------------------------------
 
-export type LandingPageProps = {
-  projects: RecentProject[];
-  providers: Provider[];
-  settings: AppSettings;
-  creating: boolean;
-  onCreate: (name: string, customer: string, author: string) => void;
-  onOpenProject: (project: RecentProject) => void;
-  onOpenSettings: () => void;
-  onOpenProviders: () => void;
-  notice: string;
-};
-
 export type SettingsDialogProps = {
   settings: AppSettings;
   onPickDirectory: () => void;

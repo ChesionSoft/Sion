@@ -10,7 +10,6 @@ import {
   deleteProvider,
   exportDocx as exportDocxApi,
   getAgentOverride,
-  getAppVersion,
   getFilePreview,
   getNode,
   getProjects,
@@ -23,6 +22,7 @@ import {
   listSessions,
   pickProjectsDirectory,
   previewAssistantDelivery,
+  revealProject,
   saveAgentOverride,
   saveNode,
   saveProvider,
@@ -30,19 +30,18 @@ import {
   setDefaultProvider,
   startAgentRun,
 } from "./api";
-import { LandingPage } from "./components/LandingPage";
 import { AppShell } from "./components/app/AppShell";
+import { ProjectHome } from "./components/app/ProjectHome";
 import { ProviderManager } from "./components/ProviderManager";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Workbench } from "./components/Workbench";
 import { EmptyState } from "./components/ui";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AppVersion, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type UiSettings, type WorkflowNode, type WorkbenchTab } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type UiSettings, type WorkflowNode, type WorkbenchTab } from "./types";
 import { closeNode as closeUiNode, initialProjectUi, initialUiSettings, openNode as openUiNode, sanitizeUiSettings } from "./ui-state.ts";
 
 const now = () => new Date().toISOString();
 
 export function App() {
-  const [version, setVersion] = useState<AppVersion | null>(null);
   const [projects, setProjects] = useState<RecentProject[]>([]);
   const [project, setProject] = useState<RecentProject | null>(null);
   const [node, setNode] = useState<WorkflowNode | null>(null);
@@ -98,7 +97,7 @@ export function App() {
   }
 
   useEffect(() => {
-    void Promise.all([loadVersion(), loadProjects(), loadProviders(), loadSettings()]);
+    void Promise.all([loadProjects(), loadProviders(), loadSettings()]);
   }, []);
 
   useEffect(() => {
@@ -163,22 +162,15 @@ export function App() {
     return () => window.removeEventListener("keydown", saveWithShortcut);
   }, [project, node, draft, dirty, saving]);
 
-  async function loadVersion() {
-    try {
-      setVersion(await getAppVersion());
-      setNotice("本机应用服务已就绪");
-    } catch (error) {
-      setNotice(`IPC 不可用：${String(error)}`);
-    }
-  }
-
-  async function loadProjects() {
+  async function loadProjects(): Promise<RecentProject[]> {
     try {
       const result = await getProjects();
       setProjects(result.projects);
       if (result.warnings.length > 0) setNotice(result.warnings[0]);
+      return result.projects;
     } catch (error) {
       setNotice(`读取项目目录失败：${String(error)}`);
+      return [];
     }
   }
 
@@ -268,18 +260,31 @@ export function App() {
     }
   }
 
-  async function createProjectFromForm(name: string, customer: string, author: string) {
+  async function createProjectFromForm(name: string, customer: string, author: string): Promise<boolean> {
     setCreating(true);
     setNotice("正在创建本地项目");
     try {
       const response = await createProject(crypto.randomUUID(), name.trim() || "未命名项目", customer.trim(), author.trim(), now());
       if (!response.created || !response.project) throw new Error("项目创建未完成");
-      await loadProjects();
+      const registry = await loadProjects();
+      const created = registry.find((item) => item.id === response.project!.id);
       setNotice(`已创建 ${response.project.name}`);
+      if (created) openProject(created);
+      return true;
     } catch (error) {
       setNotice(`创建项目失败：${String(error)}`);
+      return false;
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function revealProjectInFileManager(projectId: string) {
+    try {
+      const result = await revealProject(projectId);
+      setNotice(result.revealed ? "已在文件管理器中显示项目" : "未能在文件管理器中显示项目");
+    } catch (error) {
+      setNotice(`显示项目位置失败：${String(error)}`);
     }
   }
 
@@ -577,17 +582,16 @@ export function App() {
   }
 
   const pageContent = destination === "projects" || !project ? (
-    <LandingPage
+    <ProjectHome
       projects={projects}
-      providers={providers}
       settings={settings}
+      hasProvider={providers.length > 0}
       creating={creating}
       onCreate={createProjectFromForm}
-      onOpenProject={openProject}
+      onOpen={openProject}
+      onReveal={(projectId) => void revealProjectInFileManager(projectId)}
       onOpenSettings={() => setSettingsOpen(true)}
-      onOpenProviders={() => setProvidersOpen(true)}
-      notice={notice?.message ?? ""}
-      appVersion={version}
+      notice={null}
     />
   ) : destination === "exports" ? (
     <EmptyState title="导出中心" description="导出任务将在后续迁移到这里；当前项目仍可从交付稿中导出。" />

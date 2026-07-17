@@ -1,9 +1,20 @@
 import { NODES } from "./types.ts";
-import type { NodeId, ProjectUiSettings, RightTabId, UiSettings } from "./types.ts";
+import type { NodeId, ProjectUiSettings, RecentProject, RightTabId, UiSettings } from "./types.ts";
 
 const NODE_IDS = new Set<string>(NODES.map(([id]) => id));
 const MIN_PANE_WIDTH = 320;
 const MAX_PANE_WIDTH = 720;
+
+export type ProjectSort = "recent" | "name";
+
+export function filterAndSortProjects(projects: RecentProject[], query: string, sort: ProjectSort): RecentProject[] {
+  const normalized = query.trim().toLocaleLowerCase("zh-CN");
+  return projects
+    .filter((project) => !normalized || project.name.toLocaleLowerCase("zh-CN").includes(normalized))
+    .sort((left, right) => sort === "name"
+      ? left.name.localeCompare(right.name, "zh-CN", { sensitivity: "base" })
+      : Date.parse(right.openedAt) - Date.parse(left.openedAt));
+}
 
 function isNodeId(value: unknown): value is NodeId {
   return typeof value === "string" && NODE_IDS.has(value);

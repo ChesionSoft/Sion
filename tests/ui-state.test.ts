@@ -4,10 +4,28 @@ import {
   closeNode,
   closeRightTab,
   durableUiSettings,
+  filterAndSortProjects,
   initialProjectUi,
   openNode,
   openRightTab,
 } from "../src/ui-state.ts";
+
+test("filters project names case-insensitively and sorts recent projects descending", () => {
+  const projects = [
+    { id: "1", name: "Alpha Brief", rootPath: "/alpha", openedAt: "2026-07-15T08:00:00Z" },
+    { id: "2", name: "beta Launch", rootPath: "/beta", openedAt: "2026-07-17T08:00:00Z" },
+    { id: "3", name: "ALPHA Archive", rootPath: "/archive", openedAt: "2026-07-16T08:00:00Z" },
+  ];
+
+  assert.deepEqual(
+    filterAndSortProjects(projects, "alpha", "recent").map((project) => project.id),
+    ["3", "1"],
+  );
+  assert.deepEqual(
+    filterAndSortProjects(projects, "", "name").map((project) => project.name),
+    ["ALPHA Archive", "Alpha Brief", "beta Launch"],
+  );
+});
 
 test("first project open initializes basic info and delivery", () => {
   assert.deepEqual(initialProjectUi(), {
