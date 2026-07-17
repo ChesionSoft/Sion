@@ -6,8 +6,9 @@ mod provider_settings;
 
 use serde::{Deserialize, Serialize};
 use sion_core::{
-    ChatMessage, ChatRole, ChatSession, NodeStatus, ProjectFile, ProjectManifest, WorkflowNode,
-    WorkflowNodeId, apply_agent_delivery,
+    ChatMessage, ChatModelSelection, ChatRole, ChatSession, ContextEstimate, NodeStatus,
+    ProjectFile, ProjectManifest, ReasoningEffort, WorkflowNode, WorkflowNodeId,
+    apply_agent_delivery,
 };
 use sion_storage::{
     CreateProjectInput, FilePreview, ProjectDiscovery, ProjectRegistry, ProjectStore,
@@ -467,7 +468,33 @@ struct SessionCreateRequest {
     project_id: String,
     node_id: WorkflowNodeId,
     name: String,
+    model_selection: Option<ChatModelSelection>,
     now: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionModelUpdateRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    model_selection: ChatModelSelection,
+    now: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentContextEstimateRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: Option<String>,
+    model_selection: ChatModelSelection,
+    message: String,
+    file_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1216,6 +1243,16 @@ async fn project_export_docx(
     })
 }
 
+fn selection_for_new_session<F>(
+    explicit: Option<ChatModelSelection>,
+    load_default: F,
+) -> Result<ChatModelSelection, String>
+where
+    F: FnOnce() -> Result<ChatModelSelection, String>,
+{
+    explicit.map(Ok).unwrap_or_else(load_default)
+}
+
 #[tauri::command]
 fn session_list(
     request: SessionListRequest,
@@ -1238,13 +1275,78 @@ fn session_create(
     app: tauri::AppHandle,
 ) -> Result<VersionedResponse<ChatSession>, ApiError> {
     assert_api_version(&request.version)?;
+    let app_data_root = sion_root(&app)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let selection = selection_for_new_session(request.model_selection, || {
+        provider_settings::default_selection(&app_data_root)
+    })
+    .map_err(ApiError::CheckFailed)?;
+    provider_settings::resolve_model(&app_data_root, &selection.provider_id, &selection.model)
+        .map_err(ApiError::CheckFailed)?;
     let session = ProjectStore::at(project_root)
-        .create_session(request.node_id, request.name, None, request.now)
+        .create_session(request.node_id, request.name, Some(selection), request.now)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: session,
+    })
+}
+
+#[tauri::command]
+fn session_model_update(
+    request: SessionModelUpdateRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ChatSession>, ApiError> {
+    assert_api_version(&request.version)?;
+    let app_data_root = sion_root(&app)?;
+    provider_settings::resolve_model(
+        &app_data_root,
+        &request.model_selection.provider_id,
+        &request.model_selection.model,
+    )
+    .map_err(ApiError::CheckFailed)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let session = ProjectStore::at(project_root)
+        .update_session_model(
+            request.node_id,
+            &request.session_id,
+            request.model_selection,
+            request.now,
+        )
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: session,
+    })
+}
+
+#[tauri::command]
+fn agent_context_estimate(
+    request: AgentContextEstimateRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ContextEstimate>, ApiError> {
+    assert_api_version(&request.version)?;
+    let app_data_root = sion_root(&app)?;
+    let resolved = provider_settings::resolve_model(
+        &app_data_root,
+        &request.model_selection.provider_id,
+        &request.model_selection.model,
+    )
+    .map_err(ApiError::CheckFailed)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(&project_root);
+    let prepared = conversation_runtime::prepare_conversation(
+        &store,
+        request.node_id,
+        request.session_id.as_deref(),
+        &request.message,
+        &request.file_ids,
+        resolved.context_window_tokens,
+    )
+    .map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: prepared.estimate,
     })
 }
 
@@ -1554,6 +1656,8 @@ pub fn run() {
             project_export_docx,
             session_list,
             session_create,
+            session_model_update,
+            agent_context_estimate,
             message_list,
             message_append,
             file_list,
@@ -1567,6 +1671,47 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_selection_prefers_explicit_then_default() {
+        let explicit = ChatModelSelection {
+            provider_id: "p".into(),
+            model: "m".into(),
+            reasoning_effort: ReasoningEffort::Off,
+        };
+        assert_eq!(
+            selection_for_new_session(Some(explicit.clone()), || panic!()).unwrap(),
+            explicit
+        );
+        assert_eq!(
+            selection_for_new_session(None, || {
+                Ok(ChatModelSelection {
+                    provider_id: "default".into(),
+                    model: "m".into(),
+                    reasoning_effort: ReasoningEffort::Medium,
+                })
+            })
+            .unwrap()
+            .provider_id,
+            "default"
+        );
+    }
+
+    #[test]
+    fn context_estimate_request_accepts_an_unsaved_session() {
+        let request: AgentContextEstimateRequest = serde_json::from_value(serde_json::json!({
+            "apiVersion": API_VERSION,
+            "projectId": "project-1",
+            "nodeId": "goals",
+            "sessionId": null,
+            "modelSelection": { "providerId": "p", "model": "m", "reasoningEffort": "medium" },
+            "message": "draft",
+            "fileIds": []
+        }))
+        .unwrap();
+        assert_eq!(request.session_id, None);
+        assert_eq!(request.model_selection.model, "m");
+    }
 
     fn temp_command_root() -> PathBuf {
         std::env::temp_dir().join(format!("sion-cmd-{}", uuid::Uuid::new_v4()))
