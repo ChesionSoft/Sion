@@ -1,5 +1,8 @@
-import type { ChatMessage } from "../../types";
+import type { ChatMessage, ChatModelSelection, ContextEstimate, ProjectFile, Provider } from "../../types";
 import { Button } from "../ui";
+import { ConversationModelMenu } from "./ConversationModelMenu";
+import { ConversationFileMenu } from "./ConversationFileMenu";
+import { ContextUsageIndicator } from "./ContextUsageIndicator";
 
 export type ConversationPaneProps = {
   nodeAvailable: boolean;
@@ -12,27 +15,44 @@ export type ConversationPaneProps = {
   onSend: () => void;
   onCancel: () => void;
   onPreviewAssistant: (messageId: string) => void;
+  providers: Provider[];
+  files: ProjectFile[];
+  selectedFileIds: string[];
+  importing: boolean;
+  modelSelection: ChatModelSelection | null;
+  savingModelSelection: boolean;
+  contextEstimate: ContextEstimate | null;
+  estimatingContext: boolean;
+  contextEstimateError: string | null;
+  onModelSelection: (selection: ChatModelSelection) => Promise<void>;
+  onToggleFile: (fileId: string) => void;
+  onImportFile: () => Promise<ProjectFile | null>;
 };
 
-export function ConversationPane({
-  nodeAvailable,
-  messages,
-  activeRunId,
-  sendingMessage,
-  previewingMessageId,
-  messageDraft,
-  onMessageDraft,
-  onSend,
-  onCancel,
-  onPreviewAssistant,
-}: ConversationPaneProps) {
+const reasoningLabel: Record<string, string> = { off: "关闭", low: "低", medium: "中", high: "高" };
+
+export function ConversationPane(props: ConversationPaneProps) {
+  const {
+    nodeAvailable, messages, activeRunId, sendingMessage, previewingMessageId, messageDraft,
+    onMessageDraft, onSend, onCancel, onPreviewAssistant,
+    providers, files, selectedFileIds, importing, modelSelection, savingModelSelection,
+    contextEstimate, estimatingContext, contextEstimateError, onModelSelection, onToggleFile, onImportFile,
+  } = props;
   const composerMode = activeRunId ? "stop" : sendingMessage ? "sending" : "send";
-  const sendDisabled = !nodeAvailable || composerMode === "sending" || (composerMode === "send" && !messageDraft.trim());
+  const sendDisabled = !nodeAvailable
+    || composerMode === "sending"
+    || (composerMode === "send" && !messageDraft.trim())
+    || !modelSelection
+    || savingModelSelection
+    || contextEstimate?.status === "blocked"
+    || Boolean(contextEstimateError);
 
   function submit() {
     if (composerMode === "stop") onCancel();
     else if (!sendDisabled) onSend();
   }
+
+  const selectedFiles = files.filter((file) => selectedFileIds.includes(file.id));
 
   return (
     <section className="conversation-pane" aria-label="节点对话">
@@ -49,6 +69,14 @@ export function ConversationPane({
             <article className={`conversation-message is-${message.role} ${streaming ? "is-streaming" : ""}`} key={message.id}>
               <div className="conversation-message-meta"><strong>{message.role === "user" ? "你" : message.role === "assistant" ? "Sion" : "系统"}</strong><time>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div>
               <div className="conversation-message-copy">{message.content}</div>
+              {message.role === "user" && message.attachments && message.attachments.length > 0 ? (
+                <div className="conversation-message-attachments">
+                  {message.attachments.map((attachment) => <span key={attachment.fileId}>{attachment.originalName}</span>)}
+                </div>
+              ) : null}
+              {message.role === "assistant" && message.modelExecution ? (
+                <div className="conversation-message-execution">{message.modelExecution.providerId} · {message.modelExecution.model} · 推理：{reasoningLabel[message.modelExecution.reasoningEffort] ?? message.modelExecution.reasoningEffort}</div>
+              ) : null}
               {message.role === "assistant" && !streaming ? (
                 <Button variant="ghost" loading={previewingMessageId === message.id} onClick={() => onPreviewAssistant(message.id)}>预览修改</Button>
               ) : null}
@@ -57,6 +85,13 @@ export function ConversationPane({
         })}
       </div>
       <form className="conversation-composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+        {selectedFiles.length > 0 ? (
+          <div className="conversation-attachment-chips">
+            {selectedFiles.map((file) => (
+              <button key={file.id} type="button" onClick={() => onToggleFile(file.id)}>{file.originalName}<span aria-hidden="true">×</span></button>
+            ))}
+          </div>
+        ) : null}
         <textarea
           aria-label="发送给当前节点的消息"
           disabled={!nodeAvailable}
@@ -71,10 +106,27 @@ export function ConversationPane({
           }}
         />
         <div className="conversation-composer-toolbar">
-          <span>{activeRunId ? "Agent 正在运行，可随时停止" : "Enter 发送 · Shift+Enter 换行"}</span>
-          <Button variant={composerMode === "stop" ? "danger" : "primary"} disabled={sendDisabled} loading={composerMode === "sending"} type="submit">
-            {composerMode === "stop" ? "停止" : "发送"}
-          </Button>
+          <ConversationFileMenu
+            files={files}
+            selectedFileIds={selectedFileIds}
+            disabled={!nodeAvailable || Boolean(activeRunId)}
+            importing={importing}
+            onToggle={onToggleFile}
+            onImport={onImportFile}
+          />
+          <div className="conversation-composer-actions">
+            <ContextUsageIndicator estimate={contextEstimate} loading={estimatingContext} error={contextEstimateError} />
+            <ConversationModelMenu
+              providers={providers}
+              selection={modelSelection}
+              disabled={!nodeAvailable || Boolean(activeRunId)}
+              saving={savingModelSelection}
+              onSelection={onModelSelection}
+            />
+            <Button variant={composerMode === "stop" ? "danger" : "primary"} disabled={sendDisabled} loading={composerMode === "sending"} type="submit">
+              {composerMode === "stop" ? "停止" : "发送"}
+            </Button>
+          </div>
         </div>
       </form>
     </section>

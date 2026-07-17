@@ -8,6 +8,7 @@ import {
   createProject,
   createSession as createSessionApi,
   deleteProvider,
+  estimateAgentContext,
   exportDocx as exportDocxApi,
   getAgentRules,
   getFilePreview,
@@ -29,6 +30,7 @@ import {
   saveUiSettings,
   setDefaultProvider,
   startAgentRun,
+  updateSessionModel,
 } from "./api";
 import { AppShell } from "./components/app/AppShell";
 import { DirtyNavigationDialog } from "./components/app/DirtyNavigationDialog";
@@ -43,8 +45,9 @@ import { DeliveryWorkspace } from "./components/workspace/DeliveryWorkspace";
 import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
 import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatModelSelection, type ChatSession, type ContextEstimate, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
+import { defaultModelSelection } from "./conversation-controls";
 
 const now = () => new Date().toISOString();
 
@@ -70,6 +73,11 @@ export function App() {
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
   const [importingFile, setImportingFile] = useState(false);
+  const [modelSelection, setModelSelection] = useState<ChatModelSelection | null>(null);
+  const [savingModelSelection, setSavingModelSelection] = useState(false);
+  const [contextEstimate, setContextEstimate] = useState<ContextEstimate | null>(null);
+  const [estimatingContext, setEstimatingContext] = useState(false);
+  const [contextEstimateError, setContextEstimateError] = useState<string | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [settings, setSettings] = useState<AppSettings>({ projectsDirectory: null, ui: initialUiSettings() });
   const [ui, setUi] = useState<UiSettings>(initialUiSettings);
@@ -102,6 +110,7 @@ export function App() {
   const messageMutationScopeRef = useRef<string | null>(null);
   const fileImportScopeRef = useRef<string | null>(null);
   const projectsRequestScopeRef = useRef<string | null>(null);
+  const contextEstimateScopeRef = useRef<string | null>(null);
 
   const projectUi = project ? ui.projects[project.id] : undefined;
   const activeNodeId = projectUi?.activeNodeId ?? null;
@@ -607,7 +616,7 @@ export function App() {
     const scope = requestScope(project.id, nodeId, "create-session", crypto.randomUUID());
     sessionMutationScopeRef.current = scope;
     try {
-      const session = await createSessionApi(project.id, nodeId, `会话 ${new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`, now());
+      const session = await createSessionApi(project.id, nodeId, `会话 ${new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`, now(), modelSelection ?? undefined);
       if (!isLatestRequest(scope, sessionMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return null;
       setSessions((current) => [session, ...current]);
       setSessionId(session.id);
@@ -634,9 +643,56 @@ export function App() {
     }
   }
 
+  useEffect(() => {
+    if (!project) { setModelSelection(null); return; }
+    const active = sessionId ? sessions.find((item) => item.id === sessionId) ?? null : null;
+    if (active?.modelSelection) setModelSelection(active.modelSelection);
+    else setModelSelection(defaultModelSelection(providers));
+  }, [project, sessionId, sessions, providers]);
+
+  useEffect(() => {
+    if (!project || !modelSelection || !messageDraft.trim()) {
+      contextEstimateScopeRef.current = null;
+      setContextEstimate(null);
+      setContextEstimateError(null);
+      return;
+    }
+    const scope = requestScope(project.id, nodeId, sessionId ?? "draft", modelSelection.providerId, modelSelection.model, modelSelection.reasoningEffort, messageDraft, ...selectedFileIds);
+    contextEstimateScopeRef.current = scope;
+    const timer = window.setTimeout(() => {
+      setEstimatingContext(true);
+      void estimateAgentContext(project.id, nodeId, sessionId, modelSelection, messageDraft, selectedFileIds).then((estimate) => {
+        if (contextEstimateScopeRef.current !== scope) return;
+        setContextEstimate(estimate);
+        setContextEstimateError(null);
+      }).catch((error) => {
+        if (contextEstimateScopeRef.current !== scope) return;
+        setContextEstimate(null);
+        setContextEstimateError(String(error));
+      }).finally(() => {
+        if (contextEstimateScopeRef.current === scope) setEstimatingContext(false);
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [project, nodeId, sessionId, modelSelection, messageDraft, selectedFileIds]);
+
+  async function changeModelSelection(selection: ChatModelSelection) {
+    if (!project || !sessionId) { setModelSelection(selection); return; }
+    setSavingModelSelection(true);
+    try {
+      const updated = await updateSessionModel(project.id, nodeId, sessionId, selection, now());
+      setSessions((current) => current.map((item) => item.id === sessionId ? updated : item));
+      setModelSelection(selection);
+    } catch (error) {
+      setNotice(`保存模型选择失败：${String(error)}`);
+    } finally {
+      setSavingModelSelection(false);
+    }
+  }
+
   async function sendMessage() {
     const content = messageDraft.trim();
-    if (!project || !content) return;
+    if (!project || !modelSelection || !content || contextEstimate?.status === "blocked") return;
     const contextScope = requestScope(project.id, nodeId);
     const scope = requestScope(project.id, nodeId, sessionId ?? "new-session", "send-message", crypto.randomUUID());
     messageMutationScopeRef.current = scope;
@@ -704,29 +760,29 @@ export function App() {
     }
   }
 
-  async function importFile() {
-    if (!project) return;
+  async function importFile(): Promise<ProjectFile | null> {
+    if (!project) return null;
     const contextScope = project.id;
     const scope = requestScope(project.id, "import-file", crypto.randomUUID());
     fileImportScopeRef.current = scope;
     setImportingFile(true);
     try {
       const result = await importFileApi(project.id, now());
-      if (!isLatestRequest(scope, fileImportScopeRef.current) || projectScopeRef.current !== contextScope) return;
+      if (!isLatestRequest(scope, fileImportScopeRef.current) || projectScopeRef.current !== contextScope) return null;
       if (!result.imported || !result.file) {
         setNotice("已取消文件选择，项目未改变");
-        return;
+        return null;
       }
       setFiles((current) => [...current, result.file!]);
-      setWorkspaceView((current) => ({
-        ...current,
-        rightSurface: { kind: "file", fileId: result.file!.id },
-      }));
-      void selectFilePreview(result.file!.id);
-      setNotice(result.file.extractionStatus === "available" ? `已导入并提取 ${result.file.originalName}` : `已导入 ${result.file.originalName}；该格式尚未提取文本`);
+      setNotice(result.file.extractionStatus === "available"
+        ? `已导入并提取 ${result.file.originalName}`
+        : `已导入 ${result.file.originalName}；该格式尚未提取文本`);
+      return result.file;
     } catch (error) {
-      if (!isLatestRequest(scope, fileImportScopeRef.current) || projectScopeRef.current !== contextScope) return;
-      setNotice(`导入文件失败：${String(error)}`);
+      if (isLatestRequest(scope, fileImportScopeRef.current) && projectScopeRef.current === contextScope) {
+        setNotice(`导入文件失败：${String(error)}`);
+      }
+      return null;
     } finally {
       if (isLatestRequest(scope, fileImportScopeRef.current)) setImportingFile(false);
     }
@@ -1071,6 +1127,18 @@ export function App() {
       onMessageDraft={setMessageDraft}
       onSendMessage={() => void sendMessage()}
       sendingMessage={sendingMessage}
+      providers={providers}
+      files={files}
+      selectedFileIds={selectedFileIds}
+      importingFile={importingFile}
+      modelSelection={modelSelection}
+      savingModelSelection={savingModelSelection}
+      contextEstimate={contextEstimate}
+      estimatingContext={estimatingContext}
+      contextEstimateError={contextEstimateError}
+      onModelSelection={changeModelSelection}
+      onToggleFile={toggleFileContext}
+      onImportFile={() => importFile()}
     />
   );
 

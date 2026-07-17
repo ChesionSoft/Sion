@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { AgentRun, ChatMessage, ChatSession, NodeStatus, RecentProject, RightSurface, WorkflowNode } from "../../types";
+import type { AgentRun, ChatMessage, ChatModelSelection, ChatSession, ContextEstimate, NodeStatus, ProjectFile, Provider, RecentProject, RightSurface, WorkflowNode } from "../../types";
 import { statusLabel } from "../../types";
 import { Button, IconButton, Popover, StatusDot, Icon } from "../ui";
 import { WORKSPACE_HEADER_ACTIONS } from "../../workspace-config";
@@ -22,6 +22,15 @@ type ProjectWorkspaceProps = {
   sendingMessage: boolean;
   rightSurface: RightSurface | null;
   workPane: ReactNode;
+  providers: Provider[];
+  files: ProjectFile[];
+  selectedFileIds: string[];
+  importingFile: boolean;
+  modelSelection: ChatModelSelection | null;
+  savingModelSelection: boolean;
+  contextEstimate: ContextEstimate | null;
+  estimatingContext: boolean;
+  contextEstimateError: string | null;
   onBack: () => void;
   onRightSurface: (surface: RightSurface) => void;
   onSelectSession: (sessionId: string) => void;
@@ -30,6 +39,9 @@ type ProjectWorkspaceProps = {
   onPreviewAssistant: (messageId: string) => void;
   onMessageDraft: (value: string) => void;
   onSendMessage: () => void;
+  onModelSelection: (selection: ChatModelSelection) => Promise<void>;
+  onToggleFile: (fileId: string) => void;
+  onImportFile: () => Promise<ProjectFile | null>;
 };
 
 const runLabel: Record<AgentRun["status"], string> = {
@@ -135,6 +147,18 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             onSend={props.onSendMessage}
             onCancel={props.onCancelAgent}
             onPreviewAssistant={props.onPreviewAssistant}
+            providers={props.providers}
+            files={props.files}
+            selectedFileIds={props.selectedFileIds}
+            importing={props.importingFile}
+            modelSelection={props.modelSelection}
+            savingModelSelection={props.savingModelSelection}
+            contextEstimate={props.contextEstimate}
+            estimatingContext={props.estimatingContext}
+            contextEstimateError={props.contextEstimateError}
+            onModelSelection={props.onModelSelection}
+            onToggleFile={props.onToggleFile}
+            onImportFile={props.onImportFile}
           />
           <ConversationHistoryDrawer
             open={historyOpen}

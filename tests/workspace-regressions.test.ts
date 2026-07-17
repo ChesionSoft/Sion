@@ -88,3 +88,21 @@ test("conversation controls are accessible and never invoke Tauri directly", asy
   assert.match(indicator, /aria-label/);
   assert.doesNotMatch([modelMenu, fileMenu, indicator].join("\n"), /invoke\(/);
 });
+
+test("conversation pane composes controls and app uses combined send", async () => {
+  const [conversationPane, appSource] = await Promise.all([
+    readFile("src/components/workspace/ConversationPane.tsx", "utf8"),
+    readFile("src/App.tsx", "utf8"),
+  ]);
+  const sendStart = appSource.indexOf("async function sendMessage");
+  const sendEnd = appSource.indexOf("async function cancelAgent", sendStart);
+  const sendMessageSource = appSource.slice(sendStart, sendEnd);
+  assert.match(conversationPane, /ConversationModelMenu/);
+  assert.match(conversationPane, /ConversationFileMenu/);
+  assert.match(conversationPane, /ContextUsageIndicator/);
+  assert.match(conversationPane, /message\.attachments/);
+  assert.match(conversationPane, /message\.modelExecution/);
+  assert.match(appSource, /estimateAgentContext/);
+  assert.doesNotMatch(sendMessageSource, /appendMessage\(/);
+  assert.match(sendMessageSource, /startAgentRun\([^)]*content[^)]*selectedFileIds/s);
+});
