@@ -33,9 +33,9 @@ import {
 import { AppShell } from "./components/app/AppShell";
 import { ProjectHome } from "./components/app/ProjectHome";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
-import { Workbench } from "./components/Workbench";
+import { ProjectWorkspace } from "./components/workspace/ProjectWorkspace";
 import { EmptyState } from "./components/ui";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type UiSettings, type WorkflowNode, type WorkbenchTab } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type UiSettings, type WorkflowNode } from "./types";
 import { closeNode as closeUiNode, initialProjectUi, initialUiSettings, openNode as openUiNode, sanitizeUiSettings } from "./ui-state.ts";
 
 const now = () => new Date().toISOString();
@@ -70,10 +70,8 @@ export function App() {
   const [exporting, setExporting] = useState(false);
   const [deliveryPreview, setDeliveryPreview] = useState<AssistantDeliveryPreview | null>(null);
   const [previewingMessageId, setPreviewingMessageId] = useState<string | null>(null);
-  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>("chat");
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
-  const [isFileDrawerOpen, setIsFileDrawerOpen] = useState(false);
 
   const projectUi = project ? ui.projects[project.id] : undefined;
   const activeNodeId = projectUi?.activeNodeId ?? null;
@@ -541,10 +539,6 @@ export function App() {
     }
   }
 
-  function toggleFileDrawer() {
-    setIsFileDrawerOpen((current) => !current);
-  }
-
   function exitProject() {
     setDeliveryPreview(null);
     setFilePreview(null);
@@ -600,38 +594,20 @@ export function App() {
   ) : destination === "exports" ? (
     <EmptyState title="导出中心" description="导出任务将在后续迁移到这里；当前项目仍可从交付稿中导出。" />
   ) : (
-    <Workbench
+    <ProjectWorkspace
       project={project}
       node={node}
       nodeTitle={nodeTitle}
-      draft={draft}
-      setDraft={setDraft}
-      dirty={dirty}
-      saving={saving}
-      exporting={exporting}
-      onExit={exitProject}
-      onSave={() => void saveNodeDraft()}
-      onExportDocx={() => void exportDocx()}
-      onSelectNode={selectNode}
-      tab={workbenchTab}
-      onSelectTab={setWorkbenchTab}
-      files={files}
-      selectedFileIds={selectedFileIds}
-      importingFile={importingFile}
-      onImport={() => void importFile()}
-      onToggleFile={toggleFileContext}
-      preview={filePreview}
-      onSelectPreview={(id) => void selectFilePreview(id)}
-      isFileDrawerOpen={isFileDrawerOpen}
-      onToggleFileDrawer={toggleFileDrawer}
+      onBack={exitProject}
+      onOpenMaterials={() => setNotice("资料将在右侧工作区打开")}
       agentOverride={agentOverride}
       agentOverrideOpen={agentOverrideOpen}
       agentOverrideDraft={agentOverrideDraft}
-      setAgentOverrideDraft={setAgentOverrideDraft}
-      openAgentOverride={openAgentOverride}
-      closeAgentOverride={() => setAgentOverrideOpen(false)}
       savingAgentOverride={savingAgentOverride}
-      saveAgentOverride={() => void saveAgentOverrideDraft()}
+      onAgentOverrideDraft={setAgentOverrideDraft}
+      onOpenAgentOverride={openAgentOverride}
+      onCloseAgentOverride={() => setAgentOverrideOpen(false)}
+      onSaveAgentOverride={() => void saveAgentOverrideDraft()}
       sessions={sessions}
       sessionId={sessionId}
       onSelectSession={selectSession}
@@ -643,10 +619,9 @@ export function App() {
       previewingMessageId={previewingMessageId}
       onPreviewAssistant={(id) => void previewAssistant(id)}
       messageDraft={messageDraft}
-      setMessageDraft={setMessageDraft}
+      onMessageDraft={setMessageDraft}
       onSendMessage={() => void sendMessage()}
       sendingMessage={sendingMessage}
-      notice={notice?.message ?? ""}
       deliveryPreview={deliveryPreview}
       onCloseDeliveryPreview={() => setDeliveryPreview(null)}
       onApplyAssistant={(id) => void applyAssistant(id)}
