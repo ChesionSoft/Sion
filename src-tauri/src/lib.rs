@@ -15,7 +15,9 @@ use sion_storage::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsString,
     path::{Path, PathBuf},
+    process::Command,
     sync::{Arc, Mutex},
 };
 use tauri::{Emitter, Manager};
@@ -97,6 +99,7 @@ struct SpikeCheck {
 #[serde(rename_all = "camelCase")]
 struct SettingsSummary {
     projects_directory: Option<String>,
+    ui: app_settings::UiSettings,
 }
 
 fn settings_summary(settings: &app_settings::AppSettings) -> SettingsSummary {
@@ -105,7 +108,37 @@ fn settings_summary(settings: &app_settings::AppSettings) -> SettingsSummary {
             .projects_directory
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
+        ui: settings.ui.clone(),
     }
+}
+
+#[derive(Debug)]
+struct FileManagerCommand {
+    program: &'static str,
+    arguments: Vec<OsString>,
+}
+
+#[cfg(target_os = "macos")]
+fn file_manager_command(path: &Path) -> Result<FileManagerCommand, ApiError> {
+    Ok(FileManagerCommand {
+        program: "open",
+        arguments: vec![path.as_os_str().to_owned()],
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn file_manager_command(path: &Path) -> Result<FileManagerCommand, ApiError> {
+    Ok(FileManagerCommand {
+        program: "explorer",
+        arguments: vec![path.as_os_str().to_owned()],
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn file_manager_command(_path: &Path) -> Result<FileManagerCommand, ApiError> {
+    Err(ApiError::CheckFailed(
+        "revealing projects is unsupported on this platform".to_string(),
+    ))
 }
 
 /// Builds the native folder picker for choosing a projects container, seeded
@@ -282,6 +315,28 @@ struct ProjectCreateRequest {
 struct ProjectListRequest {
     #[serde(flatten)]
     version: VersionedRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectRevealRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectRevealResult {
+    revealed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsSaveUiRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    ui: app_settings::UiSettings,
 }
 
 #[derive(Debug, Serialize)]
@@ -743,6 +798,22 @@ fn settings_get(
 }
 
 #[tauri::command]
+fn settings_save_ui(
+    request: SettingsSaveUiRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
+    assert_api_version(&request.version)?;
+    let global = sion_root(&app)?;
+    let mut settings = app_settings::load(&global).map_err(ApiError::CheckFailed)?;
+    settings.ui = request.ui;
+    let saved = app_settings::save(&global, settings).map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: settings_summary(&saved),
+    })
+}
+
+#[tauri::command]
 async fn settings_pick_projects_directory(
     request: VersionedRequest,
     app: tauri::AppHandle,
@@ -761,7 +832,7 @@ async fn settings_pick_projects_directory(
     })?;
     let updated = app_settings::save(
         &global,
-        app_settings::AppSettings::with_projects_directory(Some(directory)),
+        settings.with_updated_projects_directory(Some(directory)),
     )
     .map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
@@ -777,11 +848,9 @@ fn settings_clear_projects_directory(
 ) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
     assert_api_version(&request)?;
     let global = sion_root(&app)?;
-    let cleared = app_settings::save(
-        &global,
-        app_settings::AppSettings::with_projects_directory(None),
-    )
-    .map_err(ApiError::CheckFailed)?;
+    let settings = app_settings::load(&global).map_err(ApiError::CheckFailed)?;
+    let cleared = app_settings::save(&global, settings.with_updated_projects_directory(None))
+        .map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: settings_summary(&cleared),
@@ -819,6 +888,24 @@ fn project_list(
             projects: discovery.projects,
             warnings: discovery.warnings,
         },
+    })
+}
+
+#[tauri::command]
+fn project_reveal(
+    request: ProjectRevealRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ProjectRevealResult>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let command = file_manager_command(&project_root)?;
+    Command::new(command.program)
+        .args(command.arguments)
+        .spawn()
+        .map_err(|error| ApiError::CheckFailed(format!("cannot reveal project: {error}")))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: ProjectRevealResult { revealed: true },
     })
 }
 
@@ -1451,6 +1538,7 @@ pub fn run() {
             app_get_version,
             spike_docx_check,
             settings_get,
+            settings_save_ui,
             settings_pick_projects_directory,
             settings_clear_projects_directory,
             provider_list,
@@ -1462,6 +1550,7 @@ pub fn run() {
             agent_run_cancel,
             project_create,
             project_list,
+            project_reveal,
             project_get_node,
             project_get_agent_override,
             project_save_agent_override,
@@ -1563,6 +1652,25 @@ mod tests {
                 api_version: API_VERSION
             })
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn settings_summary_includes_ui_state() {
+        let mut settings = app_settings::AppSettings::with_projects_directory(None);
+        settings.ui.sidebar_collapsed = true;
+        assert!(settings_summary(&settings).ui.sidebar_collapsed);
+    }
+
+    #[test]
+    fn file_manager_command_targets_project_directory() {
+        let path = Path::new("/tmp/sion-project");
+        let command = file_manager_command(path).unwrap();
+        assert!(
+            command
+                .arguments
+                .iter()
+                .any(|argument| argument == path.as_os_str())
         );
     }
 
