@@ -12,6 +12,7 @@ import {
   resolveNavigationDecision,
   sanitizeUiSettings,
   selectNode,
+  parentSurface,
 } from "../src/ui-state.ts";
 import type { NavigationIntent } from "../src/ui-state.ts";
 import { NODES } from "../src/types.ts";
@@ -98,6 +99,18 @@ test("durable settings never persist file or assistant preview surfaces", () => 
   });
   assert.deepEqual(durable.projects.project.rightTabIds, ["delivery"]);
   assert.equal(durable.projects.project.activeRightTabId, "delivery");
+});
+
+test("nested right surfaces return to their owning workspace", () => {
+  assert.deepEqual(
+    parentSurface({ kind: "file", fileId: "brief" }),
+    { kind: "file-pool" },
+  );
+  assert.deepEqual(
+    parentSurface({ kind: "delivery-preview", messageId: "message" }),
+    { kind: "delivery" },
+  );
+  assert.equal(parentSurface({ kind: "delivery" }), null);
 });
 
 test("clean navigation executes immediately while dirty navigation waits", () => {

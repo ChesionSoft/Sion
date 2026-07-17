@@ -1,5 +1,5 @@
 import { NODES } from "./types.ts";
-import type { NodeId, ProjectUiSettings, RecentProject, RightTabId, UiSettings, WorkspaceView } from "./types.ts";
+import type { NodeId, ProjectUiSettings, RecentProject, RightSurface, RightTabId, UiSettings, WorkspaceView } from "./types.ts";
 
 const NODE_IDS = new Set<string>(NODES.map(([id]) => id));
 const FIXED_NODE_IDS = NODES.map(([id]) => id);
@@ -66,6 +66,12 @@ export const initialWorkspaceView = (): WorkspaceView => ({
 
 export const resetWorkspaceViewForNode = (_current: WorkspaceView): WorkspaceView =>
   initialWorkspaceView();
+
+export function parentSurface(surface: RightSurface): RightSurface | null {
+  if (surface.kind === "file") return { kind: "file-pool" };
+  if (surface.kind === "delivery-preview") return { kind: "delivery" };
+  return null;
+}
 
 export const initialProjectUi = (): ProjectUiSettings => ({
   initialized: true,

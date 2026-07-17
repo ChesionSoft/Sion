@@ -843,9 +843,9 @@ export function App() {
   ) : activeRightTabId === "files" ? (
     <ProjectFilesTab files={files} selectedFileIds={selectedFileIds} importing={importingFile} onImport={() => void importFile()} onToggleContext={toggleFileContext} onPreview={(fileId) => { openWorkspaceTab(`file:${fileId}`); void selectFilePreview(fileId); }} />
   ) : activeRightTabId?.startsWith("file:") ? (
-    <FilePreviewTab file={files.find((file) => file.id === activeRightTabId.slice("file:".length)) ?? null} preview={filePreview?.file.id === activeRightTabId.slice("file:".length) ? filePreview : null} />
+    <FilePreviewTab file={files.find((file) => file.id === activeRightTabId.slice("file:".length)) ?? null} preview={filePreview?.file.id === activeRightTabId.slice("file:".length) ? filePreview : null} onBack={() => openWorkspaceTab("files")} />
   ) : activeRightTabId?.startsWith("delivery-preview:") ? (
-    <DeliveryPreviewTab preview={deliveryPreview} onCancel={() => closeWorkspaceTab(activeRightTabId)} onApply={(messageId) => void applyAssistant(messageId)} />
+    <DeliveryPreviewTab preview={deliveryPreview} onCancel={() => closeWorkspaceTab(activeRightTabId)} onApply={(messageId) => void applyAssistant(messageId)} onBack={() => openWorkspaceTab("delivery")} />
   ) : null;
   const workPane = projectUi ? (
     <WorkspaceTabs tabIds={projectUi.rightTabIds} activeTabId={activeRightTabId} paneWidth={projectUi.rightPaneWidth} labels={rightTabLabels} dirtyTabIds={dirty ? ["delivery"] : []} onSelect={selectWorkspaceTab} onClose={closeWorkspaceTab} onClosePane={closeWorkspacePane} onPaneWidth={setWorkspacePaneWidth}>{activeWorkTab}</WorkspaceTabs>
