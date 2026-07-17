@@ -70,6 +70,20 @@ export type UiSettings = {
   projects: Record<string, ProjectUiSettings>;
 };
 
+export type DeliveryView = "preview" | "source";
+
+export type RightSurface =
+  | { kind: "delivery" }
+  | { kind: "agent-rules" }
+  | { kind: "file-pool" }
+  | { kind: "file"; fileId: string }
+  | { kind: "delivery-preview"; messageId: string };
+
+export type WorkspaceView = {
+  rightSurface: RightSurface | null;
+  deliveryView: DeliveryView;
+};
+
 export type AppSettings = { projectsDirectory: string | null; ui: UiSettings };
 export type NoticeMessage = {
   id: string;

@@ -1,20 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  closeNode,
-  closeRightTab,
   createSerialTaskQueue,
   durableUiSettings,
   filterAndSortProjects,
   initialProjectUi,
+  initialWorkspaceView,
   requestNavigationDecision,
   requestScope,
+  resetWorkspaceViewForNode,
   resolveNavigationDecision,
-  openNode,
-  openRightTab,
   sanitizeUiSettings,
+  selectNode,
 } from "../src/ui-state.ts";
 import type { NavigationIntent } from "../src/ui-state.ts";
+import { NODES } from "../src/types.ts";
 
 test("filters project names case-insensitively and sorts recent projects descending", () => {
   const projects = [
@@ -33,71 +33,71 @@ test("filters project names case-insensitively and sorts recent projects descend
   );
 });
 
-test("first project open initializes basic info and delivery", () => {
-  assert.deepEqual(initialProjectUi(), {
-    initialized: true,
-    openedNodeIds: ["basic-info"],
-    activeNodeId: "basic-info",
-    tabsInitialized: true,
-    rightTabIds: ["delivery"],
-    activeRightTabId: "delivery",
-    rightPaneWidth: 440,
+test("first project open initializes every node in fixed order and delivery preview", () => {
+  const project = initialProjectUi();
+  assert.deepEqual(project.openedNodeIds, NODES.map(([id]) => id));
+  assert.equal(project.activeNodeId, "basic-info");
+  assert.deepEqual(project.rightTabIds, ["delivery"]);
+  assert.equal(project.activeRightTabId, "delivery");
+  assert.deepEqual(initialWorkspaceView(), {
+    rightSurface: { kind: "delivery" },
+    deliveryView: "preview",
   });
 });
 
-test("closing the last node preserves an intentional empty state", () => {
-  const state = closeNode(initialProjectUi(), "basic-info");
-  assert.deepEqual(state.openedNodeIds, []);
-  assert.equal(state.activeNodeId, null);
-  assert.equal(state.initialized, true);
+test("selecting a node changes only the active node and never reorders the directory", () => {
+  const selected = selectNode(initialProjectUi(), "goals");
+  assert.equal(selected.activeNodeId, "goals");
+  assert.deepEqual(selected.openedNodeIds, NODES.map(([id]) => id));
 });
 
-test("closing active node selects the most recent remaining node", () => {
-  let state = openNode(initialProjectUi(), "goals");
-  state = openNode(state, "business-flow");
-  state = closeNode(state, "business-flow");
-  assert.equal(state.activeNodeId, "goals");
+test("legacy opened nodes and tabs normalize to the fixed directory and delivery", () => {
+  const sanitized = sanitizeUiSettings({
+    sidebarCollapsed: false,
+    lastDestination: "projects",
+    projects: {
+      project: {
+        initialized: true,
+        openedNodeIds: ["goals", "basic-info"],
+        activeNodeId: "goals",
+        tabsInitialized: true,
+        rightTabIds: ["files", "file:old"],
+        activeRightTabId: "file:old",
+        rightPaneWidth: 9999,
+      },
+    },
+  });
+  assert.deepEqual(sanitized.projects.project.openedNodeIds, NODES.map(([id]) => id));
+  assert.equal(sanitized.projects.project.activeNodeId, "goals");
+  assert.deepEqual(sanitized.projects.project.rightTabIds, ["delivery"]);
+  assert.equal(sanitized.projects.project.activeRightTabId, "delivery");
+  assert.equal(sanitized.projects.project.rightPaneWidth, 720);
 });
 
-test("closing the final right tab keeps tabs initialized and empty", () => {
-  const state = closeRightTab(initialProjectUi(), "delivery");
-  assert.deepEqual(state.rightTabIds, []);
-  assert.equal(state.activeRightTabId, null);
+test("node change resets transient surfaces to delivery preview", () => {
+  assert.deepEqual(
+    resetWorkspaceViewForNode({
+      rightSurface: { kind: "file", fileId: "brief" },
+      deliveryView: "source",
+    }),
+    initialWorkspaceView(),
+  );
 });
 
-test("closing an inactive right tab preserves the active tab", () => {
-  let state = openRightTab(initialProjectUi(), "files");
-  state = openRightTab(state, "file:brief");
-  state = closeRightTab(state, "files");
-  assert.equal(state.activeRightTabId, "file:brief");
-  assert.deepEqual(state.rightTabIds, ["delivery", "file:brief"]);
-});
-
-test("closing the first active right tab selects its nearest neighbor", () => {
-  let state = openRightTab(initialProjectUi(), "files");
-  state = openRightTab(state, "file:brief");
-  state = openRightTab(state, "delivery");
-  state = closeRightTab(state, "delivery");
-  assert.equal(state.activeRightTabId, "files");
-});
-
-test("durable file tabs persist and pane width clamps", () => {
-  const state = openRightTab(initialProjectUi(), "file:brief");
-  const low = sanitizeUiSettings({ sidebarCollapsed: false, lastDestination: "projects", projects: { p1: { ...state, rightPaneWidth: 10 } } });
-  const high = sanitizeUiSettings({ sidebarCollapsed: false, lastDestination: "projects", projects: { p1: { ...state, rightPaneWidth: 9999 } } });
-  assert.deepEqual(low.projects.p1.rightTabIds, ["delivery", "file:brief"]);
-  assert.equal(low.projects.p1.rightPaneWidth, 320);
-  assert.equal(high.projects.p1.rightPaneWidth, 720);
-});
-
-test("transient preview tabs are excluded from persisted settings", () => {
-  const state = openRightTab(initialProjectUi(), "delivery-preview:message-1");
+test("durable settings never persist file or assistant preview surfaces", () => {
   const durable = durableUiSettings({
     sidebarCollapsed: false,
     lastDestination: "projects",
-    projects: { p1: state },
+    projects: {
+      project: {
+        ...initialProjectUi(),
+        rightTabIds: ["file:brief", "delivery-preview:message"],
+        activeRightTabId: "file:brief",
+      },
+    },
   });
-  assert.deepEqual(durable.projects.p1.rightTabIds, ["delivery"]);
+  assert.deepEqual(durable.projects.project.rightTabIds, ["delivery"]);
+  assert.equal(durable.projects.project.activeRightTabId, "delivery");
 });
 
 test("clean navigation executes immediately while dirty navigation waits", () => {

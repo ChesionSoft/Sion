@@ -1,7 +1,8 @@
 import { NODES } from "./types.ts";
-import type { NodeId, ProjectUiSettings, RecentProject, RightTabId, UiSettings } from "./types.ts";
+import type { NodeId, ProjectUiSettings, RecentProject, RightTabId, UiSettings, WorkspaceView } from "./types.ts";
 
 const NODE_IDS = new Set<string>(NODES.map(([id]) => id));
+const FIXED_NODE_IDS = NODES.map(([id]) => id);
 const MIN_PANE_WIDTH = 320;
 const MAX_PANE_WIDTH = 720;
 
@@ -58,27 +59,35 @@ function isNodeId(value: unknown): value is NodeId {
   return typeof value === "string" && NODE_IDS.has(value);
 }
 
-function isRightTabId(value: unknown): value is RightTabId {
-  return typeof value === "string" && (
-    value === "delivery"
-    || value === "files"
-    || value.startsWith("file:")
-    || value.startsWith("delivery-preview:")
-  );
-}
+export const initialWorkspaceView = (): WorkspaceView => ({
+  rightSurface: { kind: "delivery" },
+  deliveryView: "preview",
+});
 
-function unique<T>(values: T[]): T[] {
-  return values.filter((value, index) => values.indexOf(value) === index);
-}
+export const resetWorkspaceViewForNode = (_current: WorkspaceView): WorkspaceView =>
+  initialWorkspaceView();
 
 export const initialProjectUi = (): ProjectUiSettings => ({
   initialized: true,
-  openedNodeIds: ["basic-info"],
+  openedNodeIds: [...FIXED_NODE_IDS],
   activeNodeId: "basic-info",
   tabsInitialized: true,
   rightTabIds: ["delivery"],
   activeRightTabId: "delivery",
   rightPaneWidth: 440,
+});
+
+export const selectNode = (
+  state: ProjectUiSettings,
+  nodeId: NodeId,
+): ProjectUiSettings => ({
+  ...state,
+  initialized: true,
+  openedNodeIds: [...FIXED_NODE_IDS],
+  activeNodeId: nodeId,
+  tabsInitialized: true,
+  rightTabIds: ["delivery"],
+  activeRightTabId: "delivery",
 });
 
 export const initialUiSettings = (): UiSettings => ({
@@ -88,16 +97,18 @@ export const initialUiSettings = (): UiSettings => ({
 });
 
 function sanitizeProjectUi(value: ProjectUiSettings): ProjectUiSettings {
-  const openedNodeIds = unique((value.openedNodeIds ?? []).filter(isNodeId)).slice(-12);
-  const rightTabIds = unique((value.rightTabIds ?? []).filter(isRightTabId)).slice(-32);
+  const activeNodeId = isNodeId(value.activeNodeId) ? value.activeNodeId : "basic-info";
   return {
-    initialized: Boolean(value.initialized),
-    openedNodeIds,
-    activeNodeId: openedNodeIds.includes(value.activeNodeId as NodeId) ? value.activeNodeId : openedNodeIds.at(-1) ?? null,
-    tabsInitialized: Boolean(value.tabsInitialized),
-    rightTabIds,
-    activeRightTabId: rightTabIds.includes(value.activeRightTabId as RightTabId) ? value.activeRightTabId : rightTabIds.at(-1) ?? null,
-    rightPaneWidth: Math.min(MAX_PANE_WIDTH, Math.max(MIN_PANE_WIDTH, Number(value.rightPaneWidth) || 440)),
+    initialized: true,
+    openedNodeIds: [...FIXED_NODE_IDS],
+    activeNodeId,
+    tabsInitialized: true,
+    rightTabIds: ["delivery"],
+    activeRightTabId: "delivery",
+    rightPaneWidth: Math.min(
+      MAX_PANE_WIDTH,
+      Math.max(MIN_PANE_WIDTH, Number(value.rightPaneWidth) || 440),
+    ),
   };
 }
 
@@ -148,16 +159,4 @@ export const closeRightTab = (state: ProjectUiSettings, tabId: RightTabId): Proj
   };
 };
 
-export const durableUiSettings = (state: UiSettings): UiSettings => sanitizeUiSettings({
-  ...state,
-  projects: Object.fromEntries(Object.entries(state.projects).map(([projectId, project]) => {
-    const rightTabIds = project.rightTabIds.filter((id) => !id.startsWith("delivery-preview:"));
-    return [projectId, {
-      ...project,
-      rightTabIds,
-      activeRightTabId: rightTabIds.includes(project.activeRightTabId as RightTabId)
-        ? project.activeRightTabId
-        : rightTabIds.at(-1) ?? null,
-    }];
-  })),
-});
+export const durableUiSettings = (state: UiSettings): UiSettings => sanitizeUiSettings(state);
