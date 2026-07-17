@@ -10,7 +10,7 @@ import {
   createSession as createSessionApi,
   deleteProvider,
   exportDocx as exportDocxApi,
-  getAgentOverride,
+  getAgentRules,
   getFilePreview,
   getNode,
   getProjects,
@@ -38,14 +38,14 @@ import { ProjectHome } from "./components/app/ProjectHome";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectWorkspace } from "./components/workspace/ProjectWorkspace";
 import { RevisionConflictDialog } from "./components/workspace/RevisionConflictDialog";
-import { AgentRuleDialog } from "./components/workspace/AgentRuleDialog";
+import { AgentRulesWorkspace } from "./components/workspace/AgentRulesWorkspace";
 import { DeliveryPreviewTab } from "./components/workspace/DeliveryPreviewTab";
-import { DeliveryTab } from "./components/workspace/DeliveryTab";
+import { DeliveryWorkspace } from "./components/workspace/DeliveryWorkspace";
 import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
-import { ProjectFilesTab } from "./components/workspace/ProjectFilesTab";
-import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightTabId, type UiSettings, type WorkflowNode } from "./types";
-import { closeNode as closeUiNode, closeRightTab as closeUiRightTab, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, openNode as openUiNode, openRightTab as openUiRightTab, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, type NavigationIntent, type SaveResult } from "./ui-state.ts";
+import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
+import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
+import { createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, requestNavigationDecision, requestScope, resetWorkspaceViewForNode, resolveNavigationDecision, sanitizeUiSettings, selectNode, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 
 const now = () => new Date().toISOString();
 
@@ -54,10 +54,11 @@ export function App() {
   const [project, setProject] = useState<RecentProject | null>(null);
   const [node, setNode] = useState<WorkflowNode | null>(null);
   const [draft, setDraft] = useState("");
-  const [agentOverride, setAgentOverride] = useState<string | null>(null);
   const [agentOverrideDraft, setAgentOverrideDraft] = useState("");
-  const [agentOverrideOpen, setAgentOverrideOpen] = useState(false);
   const [savingAgentOverride, setSavingAgentOverride] = useState(false);
+  const [workspaceView, setWorkspaceView] = useState(initialWorkspaceView);
+  const [agentRules, setAgentRules] = useState<EffectiveAgentRules | null>(null);
+  const [loadingAgentRules, setLoadingAgentRules] = useState(false);
   const [notice, setNoticeState] = useState<NoticeMessage | null>({ id: "startup", kind: "warning", message: "正在连接本机应用服务", dismissAfterMs: null });
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -157,7 +158,7 @@ export function App() {
   useEffect(() => {
     if (project && activeNodeId) {
       void loadNode(project.id, activeNodeId);
-      void loadAgentOverride(project.id, activeNodeId);
+      void loadAgentRules(project.id, activeNodeId);
       void loadSessions(project.id, activeNodeId);
     } else if (project) {
       setNode(null);
@@ -387,6 +388,7 @@ export function App() {
     setDeliveryPreview(null);
     setSelectedFileIds([]);
     setFilePreview(null);
+    setWorkspaceView(initialWorkspaceView());
     const existing = ui.projects[item.id];
     const nextProjectUi = existing?.initialized ? existing : initialProjectUi();
     if (item.id !== project?.id) {
@@ -417,32 +419,30 @@ export function App() {
     }
   }
 
-  async function loadAgentOverride(projectId: string, nextNodeId: NodeId) {
+  async function loadAgentRules(projectId: string, nextNodeId: NodeId) {
     const scope = requestScope(projectId, nextNodeId);
-    setAgentOverride(null);
+    setLoadingAgentRules(true);
+    setAgentRules(null);
     try {
-      const response = await getAgentOverride(projectId, nextNodeId);
+      const loaded = await getAgentRules(projectId, nextNodeId);
       if (workspaceScopeRef.current !== scope) return;
-      setAgentOverride(response.markdown ?? null);
+      setAgentRules(loaded);
+      setAgentOverrideDraft(loaded.customMarkdown ?? "");
     } catch (error) {
       if (workspaceScopeRef.current !== scope) return;
-      setNotice(`读取节点自定义规则失败：${String(error)}`);
+      setNotice("读取 agent.md 失败：" + String(error));
+    } finally {
+      if (workspaceScopeRef.current === scope) setLoadingAgentRules(false);
     }
-  }
-
-  function openAgentOverride() {
-    setAgentOverrideDraft(agentOverride ?? "");
-    setAgentOverrideOpen(true);
   }
 
   async function saveAgentOverrideDraft() {
     if (!project) return;
     setSavingAgentOverride(true);
     try {
-      const response = await saveAgentOverride(project.id, nodeId, agentOverrideDraft);
-      setAgentOverride(response.markdown ?? null);
-      setAgentOverrideOpen(false);
-      setNotice(response.markdown ? "节点自定义规则已保存；它会追加到内置规则后" : "已清除节点自定义规则；Agent 将只使用内置规则");
+      await saveAgentOverride(project.id, nodeId, agentOverrideDraft);
+      setNotice(agentOverrideDraft.trim() ? "节点自定义规则已保存；它会追加到内置规则后" : "已清除节点自定义规则；Agent 将只使用内置规则");
+      await loadAgentRules(project.id, nodeId);
     } catch (error) {
       setNotice(`保存节点自定义规则失败：${String(error)}`);
     } finally {
@@ -486,7 +486,10 @@ export function App() {
     try {
       const preview = await previewAssistantDelivery(project.id, nodeId, sessionId, messageId);
       setDeliveryPreview(preview);
-      openWorkspaceTab(`delivery-preview:${messageId}`);
+      setWorkspaceView((current) => ({
+        ...current,
+        rightSurface: { kind: "delivery-preview", messageId: preview.assistantMessageId },
+      }));
       setNotice(`已生成修改预览：+${preview.additions} / -${preview.deletions} / ${preview.unchanged} 行保留`);
     } catch (error) {
       setNotice(`预览 Assistant 修改失败：${String(error)}`);
@@ -506,12 +509,12 @@ export function App() {
       if (result.conflict) {
         setNode(result.conflict.latest); setDraft(result.conflict.latest.markdown);
         setDeliveryPreview(null);
-        closeWorkspaceTab(`delivery-preview:${messageId}`);
+        setWorkspaceView({ rightSurface: { kind: "delivery" }, deliveryView: "preview" });
         setNotice("节点在确认前已被修改；已显示最新版本，未覆盖它");
       } else if (result.saved) {
         setNode(result.saved); setDraft(result.saved.markdown);
         setDeliveryPreview(null);
-        closeWorkspaceTab(`delivery-preview:${messageId}`);
+        setWorkspaceView({ rightSurface: { kind: "delivery" }, deliveryView: "preview" });
         setNotice(`已应用 Assistant 修改到节点 revision ${result.saved.revision}`);
       }
     } catch (error) {
@@ -646,7 +649,10 @@ export function App() {
         return;
       }
       setFiles((current) => [...current, result.file!]);
-      openWorkspaceTab(`file:${result.file.id}`);
+      setWorkspaceView((current) => ({
+        ...current,
+        rightSurface: { kind: "file", fileId: result.file!.id },
+      }));
       void selectFilePreview(result.file!.id);
       setNotice(result.file.extractionStatus === "available" ? `已导入并提取 ${result.file.originalName}` : `已导入 ${result.file.originalName}；该格式尚未提取文本`);
     } catch (error) {
@@ -682,29 +688,19 @@ export function App() {
 
   function selectNodeImmediate(id: NodeId) {
     if (!project) return;
-    if (id !== activeNodeId) {
+    const sameNode = id === activeNodeId;
+    if (!sameNode) {
       setNode(null);
       setDraft("");
     }
     setDeliveryPreview(null);
+    setFilePreview(null);
+    setWorkspaceView((current) => resetWorkspaceViewForNode(current, { sameNode }));
     const current = ui.projects[project.id] ?? initialProjectUi();
     workspaceScopeRef.current = requestScope(project.id, id);
     messageScopeRef.current = null;
-    updateUi({ ...ui, projects: { ...ui.projects, [project.id]: openUiNode(current, id) } });
+    updateUi({ ...ui, projects: { ...ui.projects, [project.id]: selectNode(current, id) } });
     setDestination("workspace");
-  }
-
-  function closeNodeImmediate(id: NodeId) {
-    if (!project) return;
-    const current = ui.projects[project.id] ?? initialProjectUi();
-    const next = closeUiNode(current, id);
-    if (id === activeNodeId) {
-      setNode(null);
-      setDraft("");
-    }
-    workspaceScopeRef.current = requestScope(project.id, next.activeNodeId);
-    messageScopeRef.current = null;
-    updateUi({ ...ui, projects: { ...ui.projects, [project.id]: next } });
   }
 
   function updateActiveProjectUi(transform: (current: ReturnType<typeof initialProjectUi>) => ReturnType<typeof initialProjectUi>) {
@@ -713,27 +709,30 @@ export function App() {
     updateUi({ ...ui, projects: { ...ui.projects, [project.id]: transform(current) } });
   }
 
-  function openWorkspaceTab(tabId: RightTabId) {
-    updateActiveProjectUi((current) => openUiRightTab(current, tabId));
-  }
-
-  function selectWorkspaceTab(tabId: RightTabId) {
-    openWorkspaceTab(tabId);
-    if (tabId.startsWith("file:")) void selectFilePreview(tabId.slice("file:".length));
-  }
-
-  function closeWorkspaceTab(tabId: RightTabId) {
-    updateActiveProjectUi((current) => closeUiRightTab(current, tabId));
-    if (tabId.startsWith("delivery-preview:")) setDeliveryPreview(null);
-  }
-
-  function closeWorkspacePane() {
-    updateActiveProjectUi((current) => ({ ...current, tabsInitialized: true, rightTabIds: [], activeRightTabId: null }));
-    setDeliveryPreview(null);
-  }
-
   function setWorkspacePaneWidth(width: number) {
     updateActiveProjectUi((current) => ({ ...current, rightPaneWidth: width }));
+  }
+
+  function rightSurfaceTitle(surface: RightSurface): string {
+    if (surface.kind === "delivery") return "交付稿";
+    if (surface.kind === "agent-rules") return "agent.md";
+    if (surface.kind === "file-pool") return "文件池";
+    if (surface.kind === "file") {
+      return files.find((file) => file.id === surface.fileId)?.originalName ?? "文件预览";
+    }
+    return "Assistant 修改预览";
+  }
+
+  function closeRightSurface() {
+    const surface = workspaceView.rightSurface;
+    const kind = surface?.kind;
+    const action = kind === "file" ? "file-pool" : kind === "delivery-preview" ? "delivery" : kind;
+    setWorkspaceView((current) => ({ ...current, rightSurface: null }));
+    if (action) {
+      window.requestAnimationFrame(() => {
+        document.querySelector<HTMLButtonElement>(`[data-workspace-action="${action}"]`)?.focus();
+      });
+    }
   }
 
   function selectDestinationImmediate(nextDestination: "projects" | "exports") {
@@ -756,10 +755,6 @@ export function App() {
       selectNodeImmediate(intent.nodeId);
       return;
     }
-    if (intent.kind === "close-node") {
-      closeNodeImmediate(intent.nodeId);
-      return;
-    }
     void closeWindowSafely();
   }
 
@@ -775,7 +770,6 @@ export function App() {
     const threatensDraft = intent.kind === "close-window"
       || (intent.kind === "project" && intent.projectId !== project?.id)
       || (intent.kind === "node" && intent.nodeId !== activeNodeId)
-      || (intent.kind === "close-node" && intent.nodeId === activeNodeId)
       || (intent.kind === "destination" && intent.destination !== destination);
     const decision = requestNavigationDecision(dirty && threatensDraft, intent);
     if (decision.pending) setPendingNavigation(decision.pending);
@@ -832,23 +826,66 @@ export function App() {
     setSessionId(nextSessionId);
   }
 
-  const rightTabLabels = Object.fromEntries((projectUi?.rightTabIds ?? []).map((tabId) => {
-    if (tabId === "delivery") return [tabId, "交付稿"];
-    if (tabId === "files") return [tabId, "资料"];
-    if (tabId.startsWith("file:")) return [tabId, files.find((file) => file.id === tabId.slice("file:".length))?.originalName ?? "文件预览"];
-    return [tabId, "修改预览"];
-  }));
-  const activeWorkTab = activeRightTabId === "delivery" ? (
-    <DeliveryTab node={node} nodeTitle={nodeTitle} markdown={draft} dirty={dirty} saving={saving} exporting={exporting} hasCustomRule={Boolean(agentOverride)} onMarkdown={setDraft} onSave={() => void saveNodeDraft()} onExport={() => { if (project) void exportDocx(project.id); }} onOpenRule={openAgentOverride} />
-  ) : activeRightTabId === "files" ? (
-    <ProjectFilesTab files={files} selectedFileIds={selectedFileIds} importing={importingFile} onImport={() => void importFile()} onToggleContext={toggleFileContext} onPreview={(fileId) => { openWorkspaceTab(`file:${fileId}`); void selectFilePreview(fileId); }} />
-  ) : activeRightTabId?.startsWith("file:") ? (
-    <FilePreviewTab file={files.find((file) => file.id === activeRightTabId.slice("file:".length)) ?? null} preview={filePreview?.file.id === activeRightTabId.slice("file:".length) ? filePreview : null} onBack={() => openWorkspaceTab("files")} />
-  ) : activeRightTabId?.startsWith("delivery-preview:") ? (
-    <DeliveryPreviewTab preview={deliveryPreview} onCancel={() => closeWorkspaceTab(activeRightTabId)} onApply={(messageId) => void applyAssistant(messageId)} onBack={() => openWorkspaceTab("delivery")} />
+  const surface = workspaceView.rightSurface;
+  const rightWorkContent = surface?.kind === "delivery" ? (
+    <DeliveryWorkspace
+      node={node}
+      nodeTitle={nodeTitle}
+      markdown={draft}
+      view={workspaceView.deliveryView}
+      dirty={dirty}
+      saving={saving}
+      exporting={exporting}
+      onView={(deliveryView) => setWorkspaceView((current) => ({ ...current, deliveryView }))}
+      onMarkdown={setDraft}
+      onSave={() => void saveNodeDraft()}
+      onExport={() => { if (project) void exportDocx(project.id); }}
+    />
+  ) : surface?.kind === "agent-rules" ? (
+    <AgentRulesWorkspace
+      rules={agentRules}
+      loading={loadingAgentRules}
+      saving={savingAgentOverride}
+      customDraft={agentOverrideDraft}
+      onCustomDraft={setAgentOverrideDraft}
+      onSave={() => void saveAgentOverrideDraft()}
+      onRetry={() => { if (project && activeNodeId) void loadAgentRules(project.id, activeNodeId); }}
+    />
+  ) : surface?.kind === "file-pool" ? (
+    <FilePoolWorkspace
+      files={files}
+      selectedFileIds={selectedFileIds}
+      importing={importingFile}
+      onImport={() => void importFile()}
+      onToggleContext={toggleFileContext}
+      onPreview={(fileId) => {
+        setWorkspaceView((current) => ({ ...current, rightSurface: { kind: "file", fileId } }));
+        void selectFilePreview(fileId);
+      }}
+    />
+  ) : surface?.kind === "file" ? (
+    <FilePreviewTab
+      file={files.find((file) => file.id === surface.fileId) ?? null}
+      preview={filePreview?.file.id === surface.fileId ? filePreview : null}
+      onBack={() => setWorkspaceView((current) => ({ ...current, rightSurface: { kind: "file-pool" } }))}
+    />
+  ) : surface?.kind === "delivery-preview" ? (
+    <DeliveryPreviewTab
+      preview={deliveryPreview}
+      onCancel={() => { setDeliveryPreview(null); setWorkspaceView({ rightSurface: { kind: "delivery" }, deliveryView: "preview" }); }}
+      onApply={(messageId) => void applyAssistant(messageId)}
+      onBack={() => setWorkspaceView({ rightSurface: { kind: "delivery" }, deliveryView: "preview" })}
+    />
   ) : null;
-  const workPane = projectUi ? (
-    <WorkspaceTabs tabIds={projectUi.rightTabIds} activeTabId={activeRightTabId} paneWidth={projectUi.rightPaneWidth} labels={rightTabLabels} dirtyTabIds={dirty ? ["delivery"] : []} onSelect={selectWorkspaceTab} onClose={closeWorkspaceTab} onClosePane={closeWorkspacePane} onPaneWidth={setWorkspacePaneWidth}>{activeWorkTab}</WorkspaceTabs>
+  const workPane = surface ? (
+    <RightWorkspacePane
+      title={rightSurfaceTitle(surface)}
+      paneWidth={projectUi?.rightPaneWidth ?? 440}
+      onClose={closeRightSurface}
+      onPaneWidth={setWorkspacePaneWidth}
+    >
+      {rightWorkContent}
+    </RightWorkspacePane>
   ) : null;
 
   const pageContent = destination === "projects" ? (
@@ -884,12 +921,8 @@ export function App() {
       nodeTitle={nodeTitle}
       workPane={workPane}
       onBack={exitProject}
-      rightSurface={null}
-      onRightSurface={(surface) => {
-        if (surface.kind === "delivery") openWorkspaceTab("delivery");
-        else if (surface.kind === "file-pool") openWorkspaceTab("files");
-        else if (surface.kind === "agent-rules") openAgentOverride();
-      }}
+      rightSurface={workspaceView.rightSurface}
+      onRightSurface={(nextSurface) => setWorkspaceView((current) => ({ ...current, rightSurface: nextSurface }))}
       sessions={sessions}
       sessionId={sessionId}
       onSelectSession={selectSession}
@@ -914,19 +947,16 @@ export function App() {
         projects={projects}
         activeProject={project}
         ui={ui}
-        dirty={dirty}
         notice={notice}
         onDismissNotice={dismissNotice}
         onDestination={(nextDestination) => requestNavigation({ kind: "destination", destination: nextDestination })}
         onProject={(item) => requestNavigation({ kind: "project", projectId: item.id })}
         onNode={(id) => requestNavigation({ kind: "node", nodeId: id })}
-        onCloseNode={(id) => requestNavigation({ kind: "close-node", nodeId: id })}
         onToggleSidebar={toggleSidebar}
         onOpenSettings={() => setSettingsOpen(true)}
       >
         {pageContent}
       </AppShell>
-      <AgentRuleDialog open={agentOverrideOpen} nodeTitle={nodeTitle} value={agentOverrideDraft} saving={savingAgentOverride} onChange={setAgentOverrideDraft} onClose={() => setAgentOverrideOpen(false)} onSave={() => void saveAgentOverrideDraft()} />
       <DirtyNavigationDialog open={pendingNavigation !== null && conflictLatest === null} saving={saving} onSave={() => void saveAndNavigate()} onDiscard={discardAndNavigate} onCancel={cancelPendingNavigation} />
       <RevisionConflictDialog latest={conflictLatest} onKeepDraft={keepConflictedDraft} onLoadLatest={loadLatestAfterConflict} />
       {settingsOpen ? (

@@ -1,5 +1,5 @@
 import { NODES } from "./types.ts";
-import type { NodeId, ProjectUiSettings, RecentProject, RightSurface, RightTabId, UiSettings, WorkspaceView } from "./types.ts";
+import type { NodeId, ProjectUiSettings, RecentProject, RightSurface, UiSettings, WorkspaceView } from "./types.ts";
 
 const NODE_IDS = new Set<string>(NODES.map(([id]) => id));
 const FIXED_NODE_IDS = NODES.map(([id]) => id);
@@ -64,8 +64,10 @@ export const initialWorkspaceView = (): WorkspaceView => ({
   deliveryView: "preview",
 });
 
-export const resetWorkspaceViewForNode = (_current: WorkspaceView): WorkspaceView =>
-  initialWorkspaceView();
+export const resetWorkspaceViewForNode = (
+  current: WorkspaceView,
+  options: { sameNode: boolean },
+): WorkspaceView => (options.sameNode ? current : initialWorkspaceView());
 
 export function parentSurface(surface: RightSurface): RightSurface | null {
   if (surface.kind === "file") return { kind: "file-pool" };
@@ -127,42 +129,5 @@ export const sanitizeUiSettings = (value: UiSettings): UiSettings => ({
       .map(([projectId, project]) => [projectId, sanitizeProjectUi(project)]),
   ),
 });
-
-export const openNode = (state: ProjectUiSettings, nodeId: NodeId): ProjectUiSettings => ({
-  ...state,
-  initialized: true,
-  openedNodeIds: [...state.openedNodeIds.filter((id) => id !== nodeId), nodeId],
-  activeNodeId: nodeId,
-});
-
-export const closeNode = (state: ProjectUiSettings, nodeId: NodeId): ProjectUiSettings => {
-  const openedNodeIds = state.openedNodeIds.filter((id) => id !== nodeId);
-  return {
-    ...state,
-    initialized: true,
-    openedNodeIds,
-    activeNodeId: state.activeNodeId === nodeId ? openedNodeIds.at(-1) ?? null : state.activeNodeId,
-  };
-};
-
-export const openRightTab = (state: ProjectUiSettings, tabId: RightTabId): ProjectUiSettings => ({
-  ...state,
-  tabsInitialized: true,
-  rightTabIds: state.rightTabIds.includes(tabId) ? state.rightTabIds : [...state.rightTabIds, tabId],
-  activeRightTabId: tabId,
-});
-
-export const closeRightTab = (state: ProjectUiSettings, tabId: RightTabId): ProjectUiSettings => {
-  const closedIndex = state.rightTabIds.indexOf(tabId);
-  const rightTabIds = state.rightTabIds.filter((id) => id !== tabId);
-  return {
-    ...state,
-    tabsInitialized: true,
-    rightTabIds,
-    activeRightTabId: state.activeRightTabId === tabId
-      ? rightTabIds[Math.min(Math.max(closedIndex, 0), rightTabIds.length - 1)] ?? null
-      : state.activeRightTabId,
-  };
-};
 
 export const durableUiSettings = (state: UiSettings): UiSettings => sanitizeUiSettings(state);

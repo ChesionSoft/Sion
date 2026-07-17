@@ -9,13 +9,11 @@ export type AppShellProps = {
   projects: RecentProject[];
   activeProject: RecentProject | null;
   ui: UiSettings;
-  dirty: boolean;
   notice: NoticeMessage | null;
   onDismissNotice: () => void;
   onDestination: (destination: "projects" | "exports") => void;
   onProject: (project: RecentProject) => void;
   onNode: (nodeId: NodeId) => void;
-  onCloseNode: (nodeId: NodeId) => void;
   onToggleSidebar: () => void;
   onOpenSettings: () => void;
   children: ReactNode;

@@ -77,11 +77,25 @@ test("legacy opened nodes and tabs normalize to the fixed directory and delivery
 
 test("node change resets transient surfaces to delivery preview", () => {
   assert.deepEqual(
-    resetWorkspaceViewForNode({
-      rightSurface: { kind: "file", fileId: "brief" },
-      deliveryView: "source",
-    }),
+    resetWorkspaceViewForNode(
+      {
+        rightSurface: { kind: "file", fileId: "brief" },
+        deliveryView: "source",
+      },
+      { sameNode: false },
+    ),
     initialWorkspaceView(),
+  );
+});
+
+test("same-node selection preserves the current transient workspace", () => {
+  const current = {
+    rightSurface: { kind: "agent-rules" } as const,
+    deliveryView: "preview" as const,
+  };
+  assert.equal(
+    resetWorkspaceViewForNode(current, { sameNode: true }),
+    current,
   );
 });
 
