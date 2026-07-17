@@ -33,6 +33,7 @@ import {
 } from "./api";
 import { AppShell } from "./components/app/AppShell";
 import { DirtyNavigationDialog } from "./components/app/DirtyNavigationDialog";
+import { ExportCenter, type ExportResult } from "./components/app/ExportCenter";
 import { ProjectHome } from "./components/app/ProjectHome";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectWorkspace } from "./components/workspace/ProjectWorkspace";
@@ -43,7 +44,6 @@ import { DeliveryTab } from "./components/workspace/DeliveryTab";
 import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { ProjectFilesTab } from "./components/workspace/ProjectFilesTab";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
-import { EmptyState } from "./components/ui";
 import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightTabId, type UiSettings, type WorkflowNode } from "./types";
 import { closeNode as closeUiNode, closeRightTab as closeUiRightTab, durableUiSettings, initialProjectUi, initialUiSettings, openNode as openUiNode, openRightTab as openUiRightTab, requestNavigationDecision, resolveNavigationDecision, sanitizeUiSettings, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 
@@ -77,6 +77,8 @@ export function App() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [exporting, setExporting] = useState(false);
+  const [exportProjectId, setExportProjectId] = useState<string | null>(null);
+  const [lastExportResult, setLastExportResult] = useState<ExportResult | null>(null);
   const [deliveryPreview, setDeliveryPreview] = useState<AssistantDeliveryPreview | null>(null);
   const [previewingMessageId, setPreviewingMessageId] = useState<string | null>(null);
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
@@ -220,6 +222,7 @@ export function App() {
     try {
       const result = await getProjects();
       setProjects(result.projects);
+      setExportProjectId((current) => result.projects.some((item) => item.id === current) ? current : result.projects[0]?.id ?? null);
       if (result.warnings.length > 0) setNotice(result.warnings[0]);
       return result.projects;
     } catch (error) {
@@ -548,15 +551,23 @@ export function App() {
     }
   }
 
-  async function exportDocx() {
-    if (!project) return;
+  async function exportDocx(projectId: string) {
     setExporting(true);
+    setExportProjectId(projectId);
     setNotice("请选择 DOCX 保存位置");
     try {
-      const result = await exportDocxApi(project.id);
-      setNotice(result.exported ? `DOCX 已导出到 ${result.path}` : "已取消 DOCX 导出");
+      const result = await exportDocxApi(projectId);
+      if (result.exported && result.path) {
+        setLastExportResult({ status: "success", projectId, path: result.path });
+        setNotice(`DOCX 已导出到 ${result.path}`);
+      } else {
+        setLastExportResult({ status: "cancelled", projectId });
+        setNotice("已取消 DOCX 导出");
+      }
     } catch (error) {
-      setNotice(`DOCX 导出失败：${String(error)}`);
+      const message = String(error);
+      setLastExportResult({ status: "error", projectId, message });
+      setNotice(`DOCX 导出失败：${message}`);
     } finally {
       setExporting(false);
     }
@@ -757,7 +768,7 @@ export function App() {
     return [tabId, "修改预览"];
   }));
   const activeWorkTab = activeRightTabId === "delivery" ? (
-    <DeliveryTab node={node} nodeTitle={nodeTitle} markdown={draft} dirty={dirty} saving={saving} exporting={exporting} hasCustomRule={Boolean(agentOverride)} onMarkdown={setDraft} onSave={() => void saveNodeDraft()} onExport={() => void exportDocx()} onOpenRule={openAgentOverride} />
+    <DeliveryTab node={node} nodeTitle={nodeTitle} markdown={draft} dirty={dirty} saving={saving} exporting={exporting} hasCustomRule={Boolean(agentOverride)} onMarkdown={setDraft} onSave={() => void saveNodeDraft()} onExport={() => { if (project) void exportDocx(project.id); }} onOpenRule={openAgentOverride} />
   ) : activeRightTabId === "files" ? (
     <ProjectFilesTab files={files} selectedFileIds={selectedFileIds} importing={importingFile} onImport={() => void importFile()} onToggleContext={toggleFileContext} onPreview={(fileId) => { openWorkspaceTab(`file:${fileId}`); void selectFilePreview(fileId); }} />
   ) : activeRightTabId?.startsWith("file:") ? (
@@ -769,7 +780,7 @@ export function App() {
     <WorkspaceTabs tabIds={projectUi.rightTabIds} activeTabId={activeRightTabId} paneWidth={projectUi.rightPaneWidth} labels={rightTabLabels} dirtyTabIds={dirty ? ["delivery"] : []} onSelect={selectWorkspaceTab} onClose={closeWorkspaceTab} onClosePane={closeWorkspacePane} onPaneWidth={setWorkspacePaneWidth}>{activeWorkTab}</WorkspaceTabs>
   ) : null;
 
-  const pageContent = destination === "projects" || !project ? (
+  const pageContent = destination === "projects" ? (
     <ProjectHome
       projects={projects}
       settings={settings}
@@ -782,7 +793,19 @@ export function App() {
       notice={null}
     />
   ) : destination === "exports" ? (
-    <EmptyState title="导出中心" description="导出任务将在后续迁移到这里；当前项目仍可从交付稿中导出。" />
+    <ExportCenter projects={projects} selectedProjectId={exportProjectId} exporting={exporting} lastResult={lastExportResult} onSelect={setExportProjectId} onExport={(projectId) => void exportDocx(projectId)} />
+  ) : !project ? (
+    <ProjectHome
+      projects={projects}
+      settings={settings}
+      hasProvider={providers.length > 0}
+      creating={creating}
+      onCreate={createProjectFromForm}
+      onOpen={(item) => requestNavigation({ kind: "project", projectId: item.id })}
+      onReveal={(projectId) => void revealProjectInFileManager(projectId)}
+      onOpenSettings={() => setSettingsOpen(true)}
+      notice={null}
+    />
   ) : (
     <ProjectWorkspace
       project={project}
