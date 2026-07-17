@@ -32,8 +32,7 @@ import {
 } from "./api";
 import { AppShell } from "./components/app/AppShell";
 import { ProjectHome } from "./components/app/ProjectHome";
-import { ProviderManager } from "./components/ProviderManager";
-import { SettingsDialog } from "./components/SettingsDialog";
+import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { Workbench } from "./components/Workbench";
 import { EmptyState } from "./components/ui";
 import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type UiSettings, type WorkflowNode, type WorkbenchTab } from "./types";
@@ -66,7 +65,6 @@ export function App() {
   const [ui, setUi] = useState<UiSettings>(initialUiSettings);
   const [destination, setDestination] = useState<MainDestination>("projects");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [providersOpen, setProvidersOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [exporting, setExporting] = useState(false);
@@ -222,33 +220,39 @@ export function App() {
     }
   }
 
-  async function handleSaveProvider(draft: ProviderDraft) {
+  async function handleSaveProvider(draft: ProviderDraft): Promise<boolean> {
     try {
       const saved = await saveProvider(draft);
       setProviders(await listProviders());
       setNotice(`${saved.name} 已保存；API Key 保存在本机 ~/.sion/providers.json，不会回显`);
+      return true;
     } catch (error) {
       setNotice(`保存模型配置失败：${String(error)}`);
+      return false;
     }
   }
 
-  async function handleSetDefaultProvider(providerId: string) {
+  async function handleSetDefaultProvider(providerId: string): Promise<boolean> {
     try {
       await setDefaultProvider(providerId);
       setProviders(await listProviders());
       setNotice("已设为默认提供商");
+      return true;
     } catch (error) {
       setNotice(`设置默认提供商失败：${String(error)}`);
+      return false;
     }
   }
 
-  async function handleDeleteProvider(providerId: string) {
+  async function handleDeleteProvider(providerId: string): Promise<boolean> {
     try {
       await deleteProvider(providerId);
       setProviders(await listProviders());
       setNotice("已删除本地模型配置；providers.json 中的 API Key 已一并删除");
+      return true;
     } catch (error) {
       setNotice(`删除模型配置失败：${String(error)}`);
+      return false;
     }
   }
 
@@ -671,18 +675,13 @@ export function App() {
       {settingsOpen ? (
         <SettingsDialog
           settings={settings}
-          onPickDirectory={() => void chooseDefaultDirectory()}
-          onClearDirectory={() => void resetDefaultDirectory()}
-          onClose={() => setSettingsOpen(false)}
-        />
-      ) : null}
-      {providersOpen ? (
-        <ProviderManager
           providers={providers}
-          onSave={(providerDraft) => void handleSaveProvider(providerDraft)}
-          onSetDefault={(id) => void handleSetDefaultProvider(id)}
-          onDelete={(id) => void handleDeleteProvider(id)}
-          onClose={() => setProvidersOpen(false)}
+          onPickDirectory={chooseDefaultDirectory}
+          onClearDirectory={resetDefaultDirectory}
+          onSaveProvider={handleSaveProvider}
+          onSetDefaultProvider={handleSetDefaultProvider}
+          onDeleteProvider={handleDeleteProvider}
+          onClose={() => setSettingsOpen(false)}
         />
       ) : null}
     </>

@@ -138,21 +138,6 @@ export const statusLabel: Record<NodeStatus, string> = {
 
 // --- Component prop contracts -------------------------------------------------
 
-export type SettingsDialogProps = {
-  settings: AppSettings;
-  onPickDirectory: () => void;
-  onClearDirectory: () => void;
-  onClose: () => void;
-};
-
-export type ProviderManagerProps = {
-  providers: Provider[];
-  onSave: (draft: ProviderDraft) => void;
-  onSetDefault: (providerId: string) => void;
-  onDelete: (providerId: string) => void;
-  onClose: () => void;
-};
-
 export type FilePreviewPaneProps = {
   files: ProjectFile[];
   selectedFileIds: string[];

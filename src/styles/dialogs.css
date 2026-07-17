@@ -28,3 +28,50 @@
 .ui-dialog-header p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
 .ui-dialog-body { min-height: 0; overflow: auto; padding: var(--space-4); }
 .ui-dialog-footer { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); padding: 12px var(--space-4); border-top: 1px solid var(--border); }
+
+.settings-layout { display: grid; grid-template-columns: 150px minmax(0, 1fr); min-height: 470px; margin: calc(var(--space-4) * -1); }
+.settings-section-nav { display: grid; align-content: start; gap: 2px; padding: 14px 10px; border-right: 1px solid var(--border); background: var(--bg-subtle); }
+.settings-section-nav button { border: 0; border-radius: var(--radius-md); padding: 8px 10px; color: var(--text-muted); background: transparent; text-align: left; }
+.settings-section-nav button:hover, .settings-section-nav button.is-active { color: var(--text); background: var(--bg-hover); }
+.settings-section-nav button.is-active { font-weight: 550; }
+.settings-section-content { min-width: 0; padding: 25px 26px; }
+.settings-section-content h3 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.02em; }
+.settings-section-content header p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
+
+.settings-general { display: grid; gap: 22px; }
+.settings-directory-card { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.settings-directory-card > div:first-child { min-width: 0; }
+.settings-directory-card span, .settings-directory-card strong { display: block; }
+.settings-directory-card span { color: var(--text-muted); font-size: 11px; }
+.settings-directory-card strong { overflow: hidden; margin-top: 4px; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.settings-directory-card > div:last-child { display: flex; gap: 5px; }
+.settings-boundary-note { margin: -11px 2px 0; color: var(--text-muted); font-size: 11px; line-height: 1.55; }
+
+.settings-models { display: grid; gap: 20px; }
+.settings-models > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.settings-models > .ui-empty-state { min-height: 330px; padding: 12px 0; }
+.settings-provider-list { display: grid; border-top: 1px solid var(--border); }
+.settings-provider-list article { display: grid; grid-template-columns: minmax(180px, 1fr) 100px auto; align-items: center; gap: 16px; min-height: 76px; border-bottom: 1px solid var(--border); }
+.settings-provider-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.settings-provider-main .ui-status-dot { margin: 0; }
+.settings-provider-main > div { min-width: 0; }
+.settings-provider-main strong, .settings-provider-main small, .settings-provider-status strong, .settings-provider-status small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-provider-main strong { font-size: 13px; font-weight: 550; }
+.settings-provider-main strong span { margin-left: 7px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 6px; color: var(--text-muted); font-size: 9px; font-weight: 500; }
+.settings-provider-main small, .settings-provider-status small { margin-top: 4px; color: var(--text-muted); font-size: 10px; }
+.settings-provider-status strong { color: var(--text-muted); font-size: 11px; font-weight: 500; }
+.settings-provider-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.settings-provider-actions .ui-button { min-height: 29px; padding-inline: 8px; font-size: 11px; }
+
+.provider-editor-form { display: grid; gap: 15px; }
+.provider-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.provider-editor-hint { margin: -7px 1px 0; color: var(--text-muted); font-size: 11px; }
+.confirm-copy { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.55; }
+
+@media (max-width: 680px) {
+  .settings-layout { grid-template-columns: 110px minmax(0, 1fr); }
+  .settings-section-content { padding: 20px 18px; }
+  .settings-provider-list article { grid-template-columns: minmax(160px, 1fr) auto; }
+  .settings-provider-status { display: none; }
+  .provider-editor-grid { grid-template-columns: 1fr; }
+}
