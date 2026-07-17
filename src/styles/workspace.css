@@ -16,17 +16,6 @@
 .conversation-toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
 .conversation-toolbar > .ui-button { min-height: 30px; padding: 5px 8px; font-size: 12px; }
 .workspace-conversation > .conversation-pane { flex: 1; min-height: 0; }
-.workspace-side-pane { flex: 0 0 var(--workspace-pane-width, 440px); min-width: 320px; max-width: 720px; border-left: 1px solid var(--border); }
-.workspace-resizer { position: relative; z-index: 5; flex: 0 0 6px; margin-left: -3px; cursor: col-resize; touch-action: none; }
-.workspace-resizer::after { content: ""; position: absolute; inset: 0 2px; background: transparent; transition: background 120ms ease; }
-.workspace-resizer:hover::after, .workspace-resizer:active::after { background: var(--focus); }
-.workspace-side-pane { display: flex; flex-direction: column; min-height: 0; background: var(--bg-main); }
-.workspace-tabs-header { display: flex; flex: 0 0 42px; align-items: center; gap: 4px; min-width: 0; border-bottom: 1px solid var(--border); padding: 5px 6px; }
-.workspace-tabs-header .ui-tab-list { flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
-.workspace-tabs-header .ui-tab { flex: 0 1 auto; max-width: 190px; }
-.workspace-tabs-header .ui-tab > [role="tab"] { min-width: 42px; }
-.workspace-close-pane { display: none; flex: 0 0 auto; }
-.workspace-tab-panel { flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 
 .conversation-pane { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; }
 .conversation-thread { flex: 1; min-height: 0; overflow-y: auto; padding: 36px max(28px, calc((100% - 760px) / 2)) 24px; scroll-behavior: smooth; }
@@ -54,37 +43,11 @@
 .conversation-composer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 8px 8px 13px; }
 .conversation-composer-toolbar > span { color: var(--text-faint); font-size: 10px; }
 
-.workspace-popover-list { display: grid; gap: 2px; min-width: 250px; max-height: 340px; overflow-y: auto; }
-.workspace-popover-list > .ui-button { justify-content: flex-start; width: 100%; }
-.workspace-popover-list > p { margin: 8px 10px; color: var(--text-muted); font-size: 11px; }
-.workspace-popover-list > button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; border: 0; border-radius: var(--radius-md); padding: 8px 9px; color: var(--text); background: transparent; text-align: left; }
-.workspace-popover-list > button:hover, .workspace-popover-list > button.is-active { background: var(--bg-hover); }
-.workspace-popover-list > button strong, .workspace-popover-list > button small { display: block; }
-.workspace-popover-list > button strong { font-size: 12px; font-weight: 500; }
-.workspace-popover-list > button small { margin-top: 2px; color: var(--text-muted); font-size: 10px; }
-.workspace-popover-list.run-list > div { display: flex; align-items: center; gap: 9px; padding: 7px 9px; }
-.workspace-popover-list.run-list .ui-status-dot { margin: 0; }
-.workspace-popover-list.run-list strong, .workspace-popover-list.run-list small { display: block; }
-.workspace-popover-list.run-list strong { font-size: 11px; font-weight: 500; }
-.workspace-popover-list.run-list small { color: var(--text-muted); font-size: 10px; }
 .workspace-overflow-menu { min-width: 210px; }
 .workspace-overflow-menu button { width: 100%; border: 0; border-radius: var(--radius-md); padding: 8px 10px; color: var(--text); background: transparent; text-align: left; font-size: 12px; }
 .workspace-overflow-menu button:hover { background: var(--bg-hover); }
 
 .workspace-rule-editor { width: 100%; min-height: 390px; resize: vertical; border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 12px; color: var(--text); background: var(--bg-main); font: 12px/1.65 "SFMono-Regular", Consolas, monospace; }
-.delivery-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.delivery-tab-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 18px 18px 13px; border-bottom: 1px solid var(--border); }
-.delivery-tab-header > div { min-width: 0; }
-.delivery-tab-header span { color: var(--text-muted); font-size: 10px; }
-.delivery-tab-header h2 { overflow: hidden; margin: 3px 0 4px; font-size: 16px; font-weight: 600; letter-spacing: -.02em; text-overflow: ellipsis; white-space: nowrap; }
-.delivery-tab-header p { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--text-muted); font-size: 10px; }
-.delivery-tab-header .ui-status-dot { margin: 0; }
-.delivery-tab > textarea { flex: 1; min-height: 0; resize: none; border: 0; outline: 0; padding: 18px; color: var(--text); background: var(--bg-main); font: 12px/1.7 "SFMono-Regular", Consolas, monospace; }
-.delivery-tab > textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.delivery-tab-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--border); }
-.delivery-tab-footer > span { overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.delivery-tab-footer > div { display: flex; gap: 6px; }
-
 .project-files-tab { height: 100%; overflow-y: auto; padding: 18px; }
 .project-files-tab > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
 .project-files-tab h2, .file-preview-tab h2, .delivery-preview-tab h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.02em; }
