@@ -1,5 +1,7 @@
 @media (max-width: 1080px) {
   .workspace-side-pane { position: fixed; z-index: 40; inset: 0 0 0 auto; width: min(520px, calc(100vw - 48px)); max-width: none; box-shadow: -16px 0 48px rgb(0 0 0 / 10%); }
+  .workspace-resizer { display: none; }
+  .workspace-close-pane { display: inline-flex; }
 }
 
 @media (max-width: 960px) {

@@ -20,7 +20,6 @@ export const NODES = [
 
 export type NodeId = (typeof NODES)[number][0];
 export type NodeStatus = "not_started" | "draft" | "generated" | "confirmed" | "needs_confirmation";
-export type WorkbenchTab = "chat" | "draft";
 export type MainDestination = "projects" | "exports" | "workspace";
 export type DurableRightTabId = "delivery" | "files" | `file:${string}`;
 export type TransientRightTabId = `delivery-preview:${string}`;
@@ -137,48 +136,3 @@ export const statusLabel: Record<NodeStatus, string> = {
 };
 
 // --- Component prop contracts -------------------------------------------------
-
-export type FilePreviewPaneProps = {
-  files: ProjectFile[];
-  selectedFileIds: string[];
-  preview?: FilePreview | null;
-  importing: boolean;
-  isFileDrawerOpen?: boolean;
-  onImport: () => void;
-  onSelectPreview?: (fileId: string) => void;
-  onToggleContext: (fileId: string) => void;
-};
-
-export type ChatPaneProps = {
-  sessions: ChatSession[];
-  messages: ChatMessage[];
-  notice: string;
-  onSend: (text: string) => void;
-  onCancel: () => void;
-};
-
-export type DraftPaneProps = {
-  markdown: string;
-  revision: number;
-  status: NodeStatus;
-  customRule: string;
-  onChangeMarkdown: (value: string) => void;
-  onSave: () => void;
-  onExportDocx: () => void;
-};
-
-export type WorkbenchProps = {
-  nodes: Array<{ id: string; title: string; status: NodeStatus }>;
-  selectedNodeId: string;
-  activeNode: { title: string; status: NodeStatus };
-  onSelectNode: (nodeId: string) => void;
-  onSave: () => void;
-  onExportDocx: () => void;
-  tab: WorkbenchTab;
-  onSelectTab: (tab: WorkbenchTab) => void;
-  chat: ChatPaneProps;
-  draft: DraftPaneProps;
-  files: FilePreviewPaneProps;
-  isFileDrawerOpen: boolean;
-  onToggleFileDrawer: () => void;
-};

@@ -34,9 +34,15 @@ import { AppShell } from "./components/app/AppShell";
 import { ProjectHome } from "./components/app/ProjectHome";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectWorkspace } from "./components/workspace/ProjectWorkspace";
+import { AgentRuleDialog } from "./components/workspace/AgentRuleDialog";
+import { DeliveryPreviewTab } from "./components/workspace/DeliveryPreviewTab";
+import { DeliveryTab } from "./components/workspace/DeliveryTab";
+import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
+import { ProjectFilesTab } from "./components/workspace/ProjectFilesTab";
+import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { EmptyState } from "./components/ui";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type UiSettings, type WorkflowNode } from "./types";
-import { closeNode as closeUiNode, initialProjectUi, initialUiSettings, openNode as openUiNode, sanitizeUiSettings } from "./ui-state.ts";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightTabId, type UiSettings, type WorkflowNode } from "./types";
+import { closeNode as closeUiNode, closeRightTab as closeUiRightTab, initialProjectUi, initialUiSettings, openNode as openUiNode, openRightTab as openUiRightTab, sanitizeUiSettings } from "./ui-state.ts";
 
 const now = () => new Date().toISOString();
 
@@ -70,11 +76,11 @@ export function App() {
   const [exporting, setExporting] = useState(false);
   const [deliveryPreview, setDeliveryPreview] = useState<AssistantDeliveryPreview | null>(null);
   const [previewingMessageId, setPreviewingMessageId] = useState<string | null>(null);
-  const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
 
   const projectUi = project ? ui.projects[project.id] : undefined;
   const activeNodeId = projectUi?.activeNodeId ?? null;
+  const activeRightTabId = projectUi?.activeRightTabId ?? null;
   const nodeId: NodeId = activeNodeId ?? "basic-info";
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
@@ -113,6 +119,10 @@ export function App() {
   useEffect(() => {
     if (project) void loadFiles(project.id);
   }, [project]);
+
+  useEffect(() => {
+    if (project && activeRightTabId?.startsWith("file:")) void selectFilePreview(activeRightTabId.slice("file:".length));
+  }, [project, activeRightTabId]);
 
   useEffect(() => {
     if (project) void loadRuns(project.id);
@@ -294,7 +304,6 @@ export function App() {
     setDeliveryPreview(null);
     setSelectedFileIds([]);
     setFilePreview(null);
-    setPreviewFileId(null);
     const existing = ui.projects[item.id];
     const nextProjectUi = existing?.initialized ? existing : initialProjectUi();
     updateUi({ ...ui, projects: { ...ui.projects, [item.id]: nextProjectUi } });
@@ -376,6 +385,7 @@ export function App() {
     try {
       const preview = await previewAssistantDelivery(project.id, nodeId, sessionId, messageId);
       setDeliveryPreview(preview);
+      openWorkspaceTab(`delivery-preview:${messageId}`);
       setNotice(`已生成修改预览：+${preview.additions} / -${preview.deletions} / ${preview.unchanged} 行保留`);
     } catch (error) {
       setNotice(`预览 Assistant 修改失败：${String(error)}`);
@@ -395,10 +405,12 @@ export function App() {
       if (result.conflict) {
         setNode(result.conflict.latest); setDraft(result.conflict.latest.markdown);
         setDeliveryPreview(null);
+        closeWorkspaceTab(`delivery-preview:${messageId}`);
         setNotice("节点在确认前已被修改；已显示最新版本，未覆盖它");
       } else if (result.saved) {
         setNode(result.saved); setDraft(result.saved.markdown);
         setDeliveryPreview(null);
+        closeWorkspaceTab(`delivery-preview:${messageId}`);
         setNotice(`已应用 Assistant 修改到节点 revision ${result.saved.revision}`);
       }
     } catch (error) {
@@ -515,6 +527,7 @@ export function App() {
         return;
       }
       setFiles((current) => [...current, result.file!]);
+      openWorkspaceTab(`file:${result.file.id}`);
       void selectFilePreview(result.file!.id);
       setNotice(result.file.extractionStatus === "available" ? `已导入并提取 ${result.file.originalName}` : `已导入 ${result.file.originalName}；该格式尚未提取文本`);
     } catch (error) {
@@ -530,7 +543,6 @@ export function App() {
 
   async function selectFilePreview(fileId: string) {
     if (!project) return;
-    setPreviewFileId(fileId);
     try {
       setFilePreview(await getFilePreview(project.id, fileId));
     } catch (error) {
@@ -542,7 +554,6 @@ export function App() {
   function exitProject() {
     setDeliveryPreview(null);
     setFilePreview(null);
-    setPreviewFileId(null);
     selectDestination("projects");
   }
 
@@ -565,6 +576,35 @@ export function App() {
     }
   }
 
+  function updateActiveProjectUi(transform: (current: ReturnType<typeof initialProjectUi>) => ReturnType<typeof initialProjectUi>) {
+    if (!project) return;
+    const current = ui.projects[project.id] ?? initialProjectUi();
+    updateUi({ ...ui, projects: { ...ui.projects, [project.id]: transform(current) } });
+  }
+
+  function openWorkspaceTab(tabId: RightTabId) {
+    updateActiveProjectUi((current) => openUiRightTab(current, tabId));
+  }
+
+  function selectWorkspaceTab(tabId: RightTabId) {
+    openWorkspaceTab(tabId);
+    if (tabId.startsWith("file:")) void selectFilePreview(tabId.slice("file:".length));
+  }
+
+  function closeWorkspaceTab(tabId: RightTabId) {
+    updateActiveProjectUi((current) => closeUiRightTab(current, tabId));
+    if (tabId.startsWith("delivery-preview:")) setDeliveryPreview(null);
+  }
+
+  function closeWorkspacePane() {
+    updateActiveProjectUi((current) => ({ ...current, tabsInitialized: true, rightTabIds: [], activeRightTabId: null }));
+    setDeliveryPreview(null);
+  }
+
+  function setWorkspacePaneWidth(width: number) {
+    updateActiveProjectUi((current) => ({ ...current, rightPaneWidth: width }));
+  }
+
   function selectDestination(nextDestination: "projects" | "exports") {
     setDestination(nextDestination);
     updateUi({ ...ui, lastDestination: nextDestination });
@@ -578,6 +618,25 @@ export function App() {
     setDeliveryPreview(null);
     setSessionId(nextSessionId);
   }
+
+  const rightTabLabels = Object.fromEntries((projectUi?.rightTabIds ?? []).map((tabId) => {
+    if (tabId === "delivery") return [tabId, "交付稿"];
+    if (tabId === "files") return [tabId, "资料"];
+    if (tabId.startsWith("file:")) return [tabId, files.find((file) => file.id === tabId.slice("file:".length))?.originalName ?? "文件预览"];
+    return [tabId, "修改预览"];
+  }));
+  const activeWorkTab = activeRightTabId === "delivery" ? (
+    <DeliveryTab node={node} nodeTitle={nodeTitle} markdown={draft} dirty={dirty} saving={saving} exporting={exporting} hasCustomRule={Boolean(agentOverride)} onMarkdown={setDraft} onSave={() => void saveNodeDraft()} onExport={() => void exportDocx()} onOpenRule={openAgentOverride} />
+  ) : activeRightTabId === "files" ? (
+    <ProjectFilesTab files={files} selectedFileIds={selectedFileIds} importing={importingFile} onImport={() => void importFile()} onToggleContext={toggleFileContext} onPreview={(fileId) => { openWorkspaceTab(`file:${fileId}`); void selectFilePreview(fileId); }} />
+  ) : activeRightTabId?.startsWith("file:") ? (
+    <FilePreviewTab file={files.find((file) => file.id === activeRightTabId.slice("file:".length)) ?? null} preview={filePreview?.file.id === activeRightTabId.slice("file:".length) ? filePreview : null} />
+  ) : activeRightTabId?.startsWith("delivery-preview:") ? (
+    <DeliveryPreviewTab preview={deliveryPreview} onCancel={() => closeWorkspaceTab(activeRightTabId)} onApply={(messageId) => void applyAssistant(messageId)} />
+  ) : null;
+  const workPane = projectUi ? (
+    <WorkspaceTabs tabIds={projectUi.rightTabIds} activeTabId={activeRightTabId} paneWidth={projectUi.rightPaneWidth} labels={rightTabLabels} dirtyTabIds={dirty ? ["delivery"] : []} onSelect={selectWorkspaceTab} onClose={closeWorkspaceTab} onClosePane={closeWorkspacePane} onPaneWidth={setWorkspacePaneWidth}>{activeWorkTab}</WorkspaceTabs>
+  ) : null;
 
   const pageContent = destination === "projects" || !project ? (
     <ProjectHome
@@ -598,16 +657,10 @@ export function App() {
       project={project}
       node={node}
       nodeTitle={nodeTitle}
+      workPane={workPane}
       onBack={exitProject}
-      onOpenMaterials={() => setNotice("资料将在右侧工作区打开")}
-      agentOverride={agentOverride}
-      agentOverrideOpen={agentOverrideOpen}
-      agentOverrideDraft={agentOverrideDraft}
-      savingAgentOverride={savingAgentOverride}
-      onAgentOverrideDraft={setAgentOverrideDraft}
-      onOpenAgentOverride={openAgentOverride}
-      onCloseAgentOverride={() => setAgentOverrideOpen(false)}
-      onSaveAgentOverride={() => void saveAgentOverrideDraft()}
+      onOpenMaterials={() => openWorkspaceTab("files")}
+      onOpenDelivery={() => openWorkspaceTab("delivery")}
       sessions={sessions}
       sessionId={sessionId}
       onSelectSession={selectSession}
@@ -622,9 +675,6 @@ export function App() {
       onMessageDraft={setMessageDraft}
       onSendMessage={() => void sendMessage()}
       sendingMessage={sendingMessage}
-      deliveryPreview={deliveryPreview}
-      onCloseDeliveryPreview={() => setDeliveryPreview(null)}
-      onApplyAssistant={(id) => void applyAssistant(id)}
     />
   );
 
@@ -647,6 +697,7 @@ export function App() {
       >
         {pageContent}
       </AppShell>
+      <AgentRuleDialog open={agentOverrideOpen} nodeTitle={nodeTitle} value={agentOverrideDraft} saving={savingAgentOverride} onChange={setAgentOverrideDraft} onClose={() => setAgentOverrideOpen(false)} onSave={() => void saveAgentOverrideDraft()} />
       {settingsOpen ? (
         <SettingsDialog
           settings={settings}

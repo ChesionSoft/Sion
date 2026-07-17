@@ -1,6 +1,7 @@
-import type { AgentRun, AssistantDeliveryPreview, ChatMessage, ChatSession, NodeStatus, RecentProject, WorkflowNode } from "../../types";
+import type { ReactNode } from "react";
+import type { AgentRun, ChatMessage, ChatSession, NodeStatus, RecentProject, WorkflowNode } from "../../types";
 import { statusLabel } from "../../types";
-import { Button, Dialog, IconButton, Popover, StatusDot } from "../ui";
+import { Button, IconButton, Popover, StatusDot } from "../ui";
 import { ConversationPane } from "./ConversationPane";
 
 type ProjectWorkspaceProps = {
@@ -15,25 +16,16 @@ type ProjectWorkspaceProps = {
   previewingMessageId: string | null;
   messageDraft: string;
   sendingMessage: boolean;
-  agentOverride: string | null;
-  agentOverrideOpen: boolean;
-  agentOverrideDraft: string;
-  savingAgentOverride: boolean;
-  deliveryPreview: AssistantDeliveryPreview | null;
+  workPane: ReactNode;
   onBack: () => void;
   onOpenMaterials: () => void;
+  onOpenDelivery: () => void;
   onSelectSession: (sessionId: string) => void;
   onCreateSession: () => void;
   onCancelAgent: () => void;
   onPreviewAssistant: (messageId: string) => void;
   onMessageDraft: (value: string) => void;
   onSendMessage: () => void;
-  onOpenAgentOverride: () => void;
-  onCloseAgentOverride: () => void;
-  onAgentOverrideDraft: (value: string) => void;
-  onSaveAgentOverride: () => void;
-  onCloseDeliveryPreview: () => void;
-  onApplyAssistant: (messageId: string) => void;
 };
 
 const runLabel: Record<AgentRun["status"], string> = {
@@ -86,7 +78,7 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
           </Popover>
           <Popover label="更多节点操作" trigger={<span aria-hidden="true">•••</span>} align="end">
             <div className="workspace-overflow-menu">
-              <button onClick={props.onOpenAgentOverride} type="button">{props.agentOverride ? "编辑节点自定义规则" : "添加节点自定义规则"}</button>
+              <button onClick={props.onOpenDelivery} type="button">打开交付稿</button>
             </div>
           </Popover>
         </div>
@@ -106,13 +98,8 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             onPreviewAssistant={props.onPreviewAssistant}
           />
         </div>
+        {props.workPane}
       </div>
-      <Dialog open={props.agentOverrideOpen} title="节点自定义规则" description="规则会追加在内置节点规则之后；留空保存可恢复默认。" size="large" closeLabel="关闭节点规则" onClose={props.onCloseAgentOverride} footer={<><Button variant="ghost" onClick={props.onCloseAgentOverride}>取消</Button><Button variant="primary" loading={props.savingAgentOverride} onClick={props.onSaveAgentOverride}>{props.agentOverrideDraft.trim() ? "保存规则" : "清除规则"}</Button></>}>
-        <textarea className="workspace-rule-editor" aria-label={`${props.nodeTitle} 自定义规则`} value={props.agentOverrideDraft} onChange={(event) => props.onAgentOverrideDraft(event.target.value)} placeholder="例如：只使用已确认事实，不推断预算或日期。" />
-      </Dialog>
-      <Dialog open={Boolean(props.deliveryPreview)} title="Assistant 修改预览" description={props.deliveryPreview ? `基于 revision ${props.deliveryPreview.currentRevision}` : undefined} size="large" closeLabel="关闭修改预览" onClose={props.onCloseDeliveryPreview} footer={props.deliveryPreview ? <><Button variant="ghost" onClick={props.onCloseDeliveryPreview}>取消</Button><Button variant="primary" onClick={() => props.onApplyAssistant(props.deliveryPreview!.assistantMessageId)}>确认应用修改</Button></> : undefined}>
-        {props.deliveryPreview ? <div className="workspace-delivery-preview"><div><span><strong>+{props.deliveryPreview.additions}</strong> 新增</span><span><strong>-{props.deliveryPreview.deletions}</strong> 删除</span><span><strong>{props.deliveryPreview.unchanged}</strong> 保留</span></div><pre>{props.deliveryPreview.markdown}</pre></div> : null}
-      </Dialog>
     </section>
   );
 }

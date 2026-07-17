@@ -98,12 +98,15 @@ export const openRightTab = (state: ProjectUiSettings, tabId: RightTabId): Proje
 });
 
 export const closeRightTab = (state: ProjectUiSettings, tabId: RightTabId): ProjectUiSettings => {
+  const closedIndex = state.rightTabIds.indexOf(tabId);
   const rightTabIds = state.rightTabIds.filter((id) => id !== tabId);
   return {
     ...state,
     tabsInitialized: true,
     rightTabIds,
-    activeRightTabId: state.activeRightTabId === tabId ? rightTabIds.at(-1) ?? null : state.activeRightTabId,
+    activeRightTabId: state.activeRightTabId === tabId
+      ? rightTabIds[Math.min(Math.max(closedIndex, 0), rightTabIds.length - 1)] ?? null
+      : state.activeRightTabId,
   };
 };
 

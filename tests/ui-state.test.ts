@@ -8,6 +8,7 @@ import {
   initialProjectUi,
   openNode,
   openRightTab,
+  sanitizeUiSettings,
 } from "../src/ui-state.ts";
 
 test("filters project names case-insensitively and sorts recent projects descending", () => {
@@ -57,6 +58,31 @@ test("closing the final right tab keeps tabs initialized and empty", () => {
   const state = closeRightTab(initialProjectUi(), "delivery");
   assert.deepEqual(state.rightTabIds, []);
   assert.equal(state.activeRightTabId, null);
+});
+
+test("closing an inactive right tab preserves the active tab", () => {
+  let state = openRightTab(initialProjectUi(), "files");
+  state = openRightTab(state, "file:brief");
+  state = closeRightTab(state, "files");
+  assert.equal(state.activeRightTabId, "file:brief");
+  assert.deepEqual(state.rightTabIds, ["delivery", "file:brief"]);
+});
+
+test("closing the first active right tab selects its nearest neighbor", () => {
+  let state = openRightTab(initialProjectUi(), "files");
+  state = openRightTab(state, "file:brief");
+  state = openRightTab(state, "delivery");
+  state = closeRightTab(state, "delivery");
+  assert.equal(state.activeRightTabId, "files");
+});
+
+test("durable file tabs persist and pane width clamps", () => {
+  const state = openRightTab(initialProjectUi(), "file:brief");
+  const low = sanitizeUiSettings({ sidebarCollapsed: false, lastDestination: "projects", projects: { p1: { ...state, rightPaneWidth: 10 } } });
+  const high = sanitizeUiSettings({ sidebarCollapsed: false, lastDestination: "projects", projects: { p1: { ...state, rightPaneWidth: 9999 } } });
+  assert.deepEqual(low.projects.p1.rightTabIds, ["delivery", "file:brief"]);
+  assert.equal(low.projects.p1.rightPaneWidth, 320);
+  assert.equal(high.projects.p1.rightPaneWidth, 720);
 });
 
 test("transient preview tabs are excluded from persisted settings", () => {

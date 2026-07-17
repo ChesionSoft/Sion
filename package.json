@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "tsc -b --pretty false",
     "test": "npm run lint",
-    "test:ui": "node --test --experimental-strip-types tests/ui-state.test.ts",
+    "test:ui": "node --test --experimental-strip-types tests/*.test.ts",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:no-browser-runtime": "node scripts/verify-no-browser-runtime.mjs",
     "test:no-legacy-migration-runtime": "node scripts/verify-no-legacy-migration-runtime.mjs",
