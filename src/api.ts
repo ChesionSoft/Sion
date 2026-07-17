@@ -207,7 +207,7 @@ export const saveProvider = (draft: ProviderDraft) =>
     apiBaseUrl: draft.apiBaseUrl,
     apiUrlMode: draft.apiUrlMode,
     protocol: draft.protocol,
-    models: [{ name: draft.model, isDefault: true, toolCalling: false, contextWindowTokens: Number(draft.contextWindow) }],
+    models: draft.models,
     isDefault: draft.isDefault,
     apiKey: draft.apiKey,
     now: draft.now,

@@ -64,3 +64,11 @@ test("leaving the file-pool context invalidates pending import presentation", as
     assert.match(source.slice(start, end), /setImportingFile\(false\)/);
   }
 });
+
+test("provider editor preserves a multi-model draft with context windows", async () => {
+  const source = await readFile("src/components/settings/ProviderEditorDialog.tsx", "utf8");
+  assert.match(source, /models\.map/);
+  assert.match(source, /contextWindowTokens/);
+  assert.match(source, /添加模型/);
+  assert.doesNotMatch(source, /const \[model, setModel\]/);
+});

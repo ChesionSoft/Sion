@@ -82,7 +82,7 @@ export function SettingsDialog({
                       <article key={provider.id}>
                         <div className="settings-provider-main">
                           <StatusDot kind={provider.hasApiKey ? "success" : "warning"} />
-                          <div><strong>{provider.name}{provider.isDefault ? <span>默认</span> : null}</strong><small>{provider.models.map((model) => model.name).join(", ") || "未设置模型"} · {provider.protocol === "openai_responses" ? "Responses" : "Chat Completions"}</small></div>
+                          <div><strong>{provider.name}{provider.isDefault ? <span>默认</span> : null}</strong><small>{provider.models.length} 个模型{provider.models.some((model) => !model.contextWindowTokens) ? ` · ${provider.models.filter((model) => !model.contextWindowTokens).length} 个待补充上下文` : ""} · {provider.protocol === "openai_responses" ? "Responses" : "Chat Completions"}</small></div>
                         </div>
                         <div className="settings-provider-status"><strong>{provider.hasApiKey ? "密钥已保存" : "缺少密钥"}</strong><small>{provider.apiUrlMode === "full" ? "完整 Endpoint" : "Base URL"}</small></div>
                         <div className="settings-provider-actions">

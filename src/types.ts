@@ -137,8 +137,7 @@ export type ProviderDraft = {
   apiBaseUrl: string;
   apiUrlMode: "base" | "full";
   protocol: "chat_completions" | "openai_responses";
-  model: string;
-  contextWindow: string;
+  models: ProviderModel[];
   isDefault: boolean;
   apiKey?: string;
   now: string;
