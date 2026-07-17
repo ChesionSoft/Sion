@@ -29,7 +29,6 @@ export type RightTabId = DurableRightTabId | TransientRightTabId;
 // `{ apiVersion } & T`. `invokePayload` strips the envelope and returns `T`.
 export type VersionedResponse<T> = { apiVersion: number } & T;
 
-export type AppVersion = { appVersion: string; rustTarget: string };
 export type RecentProject = { id: string; name: string; rootPath: string; openedAt: string };
 export type ProjectManifest = { id: string; name: string; customerName: string; authorName: string; version: string };
 export type WorkflowNode = { id: NodeId; status: NodeStatus; markdown: string; revision: number; updatedAt: string };

@@ -41,17 +41,21 @@ Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x6
 
 | Capability | Description |
 |---|---|
+| **Persistent project shell** | A light, Codex-style desktop shell keeps project navigation available while the project hub handles search, sorting, creation, and opening. |
+| **Opened nodes** | The sidebar shows only nodes opened for the current project. Add, switch, or close them freely; dirty drafts are protected by Save, Discard, and Cancel choices. |
 | **12-node design path** | Move from project basics to the final document in dependency-aware stages. |
-| **Per-node Agent chat** | Each node has its own rule set, sessions, and context. |
+| **Central per-node Agent chat** | Each node has its own rule set, sessions, and context, with conversations, run state, and the composer in the center pane. |
 | **Reviewable Agent deliveries** | Agent output is a validated `delivery` patch. Review the full result before saving it. |
 | **Concurrency protection** | Node saves use revision/CAS. Only one mutating Agent task may run for a project node. |
 | **Markdown working papers** | Edit, save, and track the state of every node directly. |
 | **Project rule overrides** | Add project-specific instructions per node without changing bundled defaults. |
 | **Local file pool** | Import TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX, then select files as Agent context. |
-| **Local model settings** | OpenAI-compatible Chat Completions and Responses providers; editable, with an explicit default. API keys are stored as plaintext in ~/.sion/providers.json (restricted permissions) and never echoed in the UI. |
+| **Local model settings** | OpenAI-compatible Chat Completions and Responses providers; editable, with an explicit default. API keys are stored as plaintext in `~/.sion/providers.json` (restricted permissions) and never echoed in the UI. |
 | **One project container** | Choose a project directory once; Sion creates and discovers multiple projects inside it without prompting again. |
-| **File preview** | The right-hand attachments pane previews extracted file text (text only); only checked files become Agent context. |
-| **Structured Word export** | Export Markdown nodes as DOCX with headings, a table of contents, lists, and tables. |
+| **Right-side work tabs** | Draft, attachments, file previews, and Agent change previews use closable tabs. The pane is resizable and durable tabs restore after restart. |
+| **Settings in one place** | Project-directory and model configuration live under Settings at bottom-left; there are no account, version, dark-theme, or browser controls. |
+| **File preview** | The attachments tab previews extracted file text (text only); only checked files become Agent context. |
+| **Structured Word export** | Export Markdown nodes as DOCX from the draft or the dedicated Export Center. |
 
 ## Quick start
 
@@ -78,11 +82,11 @@ npm run test:no-browser-runtime
 
 ## Workflow
 
-1. In **Project Directory Settings** on the landing screen, choose a directory to hold your projects (you only do this once); then choose **Create Project** and Sion creates it as its own folder inside that directory.
-2. Configure a provider and a default model in **Model Connection**. Offline editing works without one.
-3. Work through the twelve nodes. Import files and select only the references relevant to the current Agent conversation. The workbench center has two tabs: **Chat** to talk with the node Agent and **Draft** to edit Markdown; the right-hand attachments pane previews extracted file text.
+1. Open **Settings** at the bottom-left and choose the directory that will contain projects (once). Return to the **Projects** hub to create a project; Sion gives every project its own folder.
+2. Configure a provider and default model under **Settings → Models**. Offline editing works without one.
+3. Open a project, then add or switch design nodes in the sidebar. The center pane is the current-node Agent conversation; the right-side **Draft**, **Attachments**, and file-preview tabs hold editable and reference material.
 4. Chat with the current-node Agent, review its delivery patch, then explicitly apply it to the Markdown working paper.
-5. Complete the final-node checks and export a DOCX through the system save dialog.
+5. Export DOCX from the draft or select any project in the **Export Center**, then choose a destination through the native save dialog.
 
 ## Design nodes
 
@@ -105,7 +109,7 @@ npm run test:no-browser-runtime
 
 Sion supports OpenAI-compatible **Chat Completions** and **OpenAI Responses**. Configure OpenAI, DeepSeek, Qwen, SiliconFlow, or another compatible provider according to the API protocol and model IDs it actually exposes.
 
-Complete every field in **Model Connection**:
+Add or edit a connection under **Settings → Models**:
 
 | Field | What to enter |
 |---|---|
@@ -113,7 +117,7 @@ Complete every field in **Model Connection**:
 | **API Base URL** | The provider's **version root**, including its version prefix but not the final endpoint path. It commonly ends in `/v1`. |
 | **Protocol** | Use **Chat Completions** for most OpenAI-compatible services. Use **Responses** only when the provider explicitly supports the OpenAI Responses API. |
 | **Default Model** | The exact model ID in the provider documentation, for example `gpt-5` or `deepseek-chat`; it is not a marketing display name. |
-| **API Key** | A key issued by that provider. It is required for a new provider and is never echoed after saving. When editing an existing provider, leave this field blank to keep the stored key, or enter a new value to replace it. Keys live only in the OS credential store and cannot be recovered. |
+| **API Key** | A key issued by that provider. It is required for a new provider and is never echoed after saving. When editing an existing provider, leave this field blank to keep the stored key, or enter a new value to replace it. Keys are plaintext in `~/.sion/providers.json` with restricted file permissions. |
 
 ### How to enter the URL
 
@@ -169,7 +173,7 @@ Writeable Agent output must be fenced `delivery` JSON. By default it patches exi
 
 ## Word export
 
-Export DOCX from the final node and choose the destination through the native save dialog. The document preserves Markdown heading levels, project title and metadata, a table of contents, ordered and unordered lists, and pipe tables for continued review in Word.
+Export DOCX from the right-side draft or choose a project in the dedicated Export Center, then select the destination through the native save dialog. The center exposes only the currently supported DOCX format—no cloud, history, or scheduled-export placeholders. The document preserves Markdown heading levels, project title and metadata, a table of contents, ordered and unordered lists, and pipe tables for continued review in Word.
 
 The chosen destination receives the export. Sion does not automatically write it into the project directory or upload it.
 

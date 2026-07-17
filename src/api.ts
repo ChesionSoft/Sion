@@ -8,7 +8,6 @@ import {
   API_VERSION,
   type AgentRun,
   type AppSettings,
-  type AppVersion,
   type AssistantDeliveryPreview,
   type ChatMessage,
   type ChatSession,
@@ -41,8 +40,6 @@ const invokePayload = async <T>(
   const { apiVersion: _apiVersion, ...payload } = response;
   return payload as T;
 };
-
-export const getAppVersion = () => invokePayload<AppVersion>("app_get_version", {});
 
 export const getSettings = () => invokePayload<AppSettings>("settings_get", {});
 export const pickProjectsDirectory = () =>
