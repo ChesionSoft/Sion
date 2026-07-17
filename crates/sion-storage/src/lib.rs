@@ -11,8 +11,8 @@ use serde::Serialize;
 use sion_agent::AgentRun;
 use sion_core::{
     ChatMessage, ChatModelSelection, ChatSession, FileExtractionStatus, NodeStatus,
-    PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind, ProjectManifest, ReasoningEffort,
-    WorkflowNode, WorkflowNodeId, default_nodes,
+    PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind, ProjectManifest, WorkflowNode,
+    WorkflowNodeId, default_nodes,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -1170,7 +1170,7 @@ mod tests {
         let first = ChatModelSelection {
             provider_id: "openai".into(),
             model: "gpt-a".into(),
-            reasoning_effort: ReasoningEffort::Medium,
+            reasoning_effort: sion_core::ReasoningEffort::Medium,
         };
         let session = store
             .create_session(
@@ -1183,7 +1183,7 @@ mod tests {
         let second = ChatModelSelection {
             provider_id: "openai".into(),
             model: "gpt-b".into(),
-            reasoning_effort: ReasoningEffort::Off,
+            reasoning_effort: sion_core::ReasoningEffort::Off,
         };
         let updated = store
             .update_session_model(

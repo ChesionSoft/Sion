@@ -5,8 +5,12 @@ const files = [
   "src/components/app/ProjectHome.tsx",
   "src/components/settings/SettingsDialog.tsx",
   "src/components/settings/ProviderEditorDialog.tsx",
+  "src/components/workspace/ConversationPane.tsx",
+  "src/components/workspace/ConversationModelMenu.tsx",
+  "src/components/workspace/ConversationFileMenu.tsx",
   "src/components/workspace/FilePoolWorkspace.tsx",
   "src-tauri/src/lib.rs",
+  "src-tauri/src/conversation_runtime.rs",
   "src-tauri/src/provider_settings.rs",
   "crates/sion-storage/src/lib.rs",
 ];

@@ -50,7 +50,9 @@ Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x6
 | **Markdown working papers** | Edit, save, and track the state of every node directly. |
 | **Project rule overrides** | Add project-specific instructions per node without changing bundled defaults. |
 | **Local file pool** | Import TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX, then select files as Agent context. |
-| **Local model settings** | OpenAI-compatible Chat Completions and Responses providers; editable, with an explicit default. API keys are stored as plaintext in `~/.sion/providers.json` (restricted permissions) and never echoed in the UI. |
+| **Local model settings** | OpenAI-compatible Chat Completions and Responses providers; one provider can hold multiple models with an explicit default, and every model requires an input context window. API keys are stored as plaintext in `~/.sion/providers.json` (restricted permissions) and never echoed in the UI. |
+| **Per-session model choice** | Each session stores its own model and reasoning effort (off/low/medium/high); switching sessions or restarting restores it. |
+| **Context estimate** | The circular indicator next to the composer estimates the current message against the model's context window: under 80% ready, 80%–100% warning, over 100% blocked. Sion sets no maximum output length and never auto-truncates. |
 | **One project container** | Choose a project directory once; Sion creates and discovers multiple projects inside it without prompting again. |
 | **Right-side work tabs** | Draft, attachments, file previews, and Agent change previews use closable tabs. The pane is resizable and durable tabs restore after restart. |
 | **Settings in one place** | Project-directory and model configuration live under Settings at bottom-left; there are no account, version, dark-theme, or browser controls. |
@@ -116,7 +118,8 @@ Add or edit a connection under **Settings → Models**:
 | **Provider Name** | A UI label, such as `OpenAI`, `DeepSeek`, or `Qwen`. |
 | **API Base URL** | The provider's **version root**, including its version prefix but not the final endpoint path. It commonly ends in `/v1`. |
 | **Protocol** | Use **Chat Completions** for most OpenAI-compatible services. Use **Responses** only when the provider explicitly supports the OpenAI Responses API. |
-| **Default Model** | The exact model ID in the provider documentation, for example `gpt-5` or `deepseek-chat`; it is not a marketing display name. |
+| **Model list** | A provider can hold multiple models, each with a name, a context window, and one marked default. Model names must be unique (after trimming); exactly one model is the default. |
+| **Context window** | Every usable model requires a positive integer input context window in tokens (for example `128000`). A model without a context window cannot be selected or sent. Sion never guesses a default. |
 | **API Key** | A key issued by that provider. It is required for a new provider and is never echoed after saving. When editing an existing provider, leave this field blank to keep the stored key, or enter a new value to replace it. Keys are plaintext in `~/.sion/providers.json` with restricted file permissions. |
 
 ### How to enter the URL
@@ -163,11 +166,13 @@ Common issues:
 
 Provider metadata and API keys are stored together in ~/.sion/providers.json (restricted permissions). The UI never echoes the key, and the key never enters project data, exports, or logs.
 
+Each session stores its own model and reasoning effort (off, low, medium, high; new sessions default to medium). Switch model or reasoning effort at any time next to the conversation composer; the choice is saved to the current session and restored when you switch sessions or restart. The circular indicator next to the composer estimates the current message (including selected attachments) against the model's context window: under 80% is ready, 80%–100% is a warning, and over 100% blocks sending. The estimate and the real run use the same assembled prompt; Sion sets no maximum output length and never auto-truncates prompt content. If the provider rejects the chosen reasoning effort, Sion reports a readable failure and suggests retrying with reasoning set to off.
+
 > The desktop runtime has no browser search, browser automation, Playwright, or web-fetch subsystem. Agents work only from the current node, selected attachments, and the conversation.
 
 ## Attachments and Agent deliveries
 
-Imported files are copied into the project's `files/` directory alongside extracted text. TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX are extractable. Failed extraction is visible as a failure; it is never presented as usable text. The right-hand attachments pane previews the extracted text of an imported file (text only; it never renders web pages or opens external links). Previewing a file is independent of selecting it as Agent context; only checked files become Agent context.
+Imported files are copied into the project's `files/` directory alongside extracted text. TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX are extractable. Failed extraction is visible as a failure; it is never presented as usable text. The right-hand attachments pane previews the extracted text of an imported file (text only; it never renders web pages or opens external links). Previewing a file is independent of selecting it as Agent context. Files checked in the conversation composer apply only to the next user message; a successful send clears the selection, while a validation failure keeps it for retry. Full file text is always read locally through Tauri and never enters the frontend.
 
 Writeable Agent output must be fenced `delivery` JSON. By default it patches existing second-level sections only; a full rewrite requires an explicit user request. Sion validates the node structure, previews changes, and saves with the current revision, so a partial streaming response cannot become project content.
 
