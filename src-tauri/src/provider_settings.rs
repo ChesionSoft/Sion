@@ -7,9 +7,10 @@
 use std::{fs, path::Path};
 
 use serde::{Deserialize, Serialize};
+use sion_core::{ChatModelSelection, ReasoningEffort};
 use uuid::Uuid;
 
-const PROVIDERS_SCHEMA_VERSION: u32 = 1;
+const PROVIDERS_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +18,8 @@ pub struct ProviderModel {
     pub name: String,
     pub is_default: bool,
     pub tool_calling: bool,
+    #[serde(default)]
+    pub context_window_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +57,7 @@ pub struct ResolvedModel {
     pub api_key: String,
     pub protocol: String,
     pub model: String,
+    pub context_window_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,13 +105,21 @@ pub fn save(app_data_root: &Path, input: ProviderInput) -> Result<ProviderSummar
     let created_at = existing_index
         .map(|index| file.providers[index].created_at.clone())
         .unwrap_or_else(|| input.now.clone());
+    let models = input
+        .models
+        .into_iter()
+        .map(|mut model| {
+            model.name = model.name.trim().to_string();
+            model
+        })
+        .collect();
     let record = ProviderRecord {
         id: input.id,
-        name: input.name,
-        api_base_url: input.api_base_url,
+        name: input.name.trim().to_string(),
+        api_base_url: input.api_base_url.trim().to_string(),
         api_url_mode: input.api_url_mode,
         protocol: input.protocol,
-        models: input.models,
+        models,
         is_default: input.is_default,
         created_at,
         updated_at: input.now,
@@ -181,26 +193,84 @@ pub fn resolve_default_model(app_data_root: &Path) -> Result<ResolvedModel, Stri
         .find(|model| model.is_default)
         .or_else(|| provider.models.first())
         .ok_or_else(|| "the default provider has no model".to_string())?;
-    let api_key = provider.api_key.clone();
-    let endpoint = match provider.api_url_mode.as_str() {
-        "full" => provider.api_base_url.clone(),
-        "base" => {
-            let suffix = match provider.protocol.as_str() {
-                "chat_completions" => "chat/completions",
-                "openai_responses" => "responses",
-                _ => return Err("the default provider uses an unsupported protocol".to_string()),
-            };
-            format!("{}/{}", provider.api_base_url.trim_end_matches('/'), suffix)
-        }
-        _ => return Err("the default provider has an unsupported URL mode".to_string()),
-    };
+    let context_window_tokens = model
+        .context_window_tokens
+        .ok_or_else(|| "the default model is missing a context window".to_string())?;
+    let endpoint = build_endpoint(&provider.api_base_url, &provider.api_url_mode, &provider.protocol)?;
     Ok(ResolvedModel {
         provider_id: provider.id.clone(),
         endpoint,
-        api_key,
+        api_key: provider.api_key.clone(),
         protocol: provider.protocol.clone(),
         model: model.name.clone(),
+        context_window_tokens,
     })
+}
+
+pub fn default_selection(app_data_root: &Path) -> Result<ChatModelSelection, String> {
+    let file = read_file(app_data_root)?;
+    let provider = file
+        .providers
+        .iter()
+        .find(|provider| provider.is_default)
+        .or_else(|| file.providers.first())
+        .ok_or_else(|| "configure a model provider before starting an Agent Run".to_string())?;
+    let model = provider
+        .models
+        .iter()
+        .find(|model| model.is_default)
+        .or_else(|| provider.models.first())
+        .ok_or_else(|| "the default provider has no model".to_string())?;
+    Ok(ChatModelSelection {
+        provider_id: provider.id.clone(),
+        model: model.name.clone(),
+        reasoning_effort: ReasoningEffort::Medium,
+    })
+}
+
+pub fn resolve_model(
+    app_data_root: &Path,
+    provider_id: &str,
+    model_name: &str,
+) -> Result<ResolvedModel, String> {
+    let file = read_file(app_data_root)?;
+    let provider = file
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .ok_or_else(|| format!("provider {provider_id} was not found"))?;
+    let model = provider
+        .models
+        .iter()
+        .find(|model| model.name == model_name)
+        .ok_or_else(|| format!("model {model_name} was not found in provider {provider_id}"))?;
+    let context_window_tokens = model
+        .context_window_tokens
+        .ok_or_else(|| format!("model {model_name} is missing a context window"))?;
+    let endpoint = build_endpoint(&provider.api_base_url, &provider.api_url_mode, &provider.protocol)?;
+    Ok(ResolvedModel {
+        provider_id: provider.id.clone(),
+        endpoint,
+        api_key: provider.api_key.clone(),
+        protocol: provider.protocol.clone(),
+        model: model.name.clone(),
+        context_window_tokens,
+    })
+}
+
+fn build_endpoint(api_base_url: &str, api_url_mode: &str, protocol: &str) -> Result<String, String> {
+    match api_url_mode {
+        "full" => Ok(api_base_url.to_string()),
+        "base" => {
+            let suffix = match protocol {
+                "chat_completions" => "chat/completions",
+                "openai_responses" => "responses",
+                _ => return Err("the provider uses an unsupported protocol".to_string()),
+            };
+            Ok(format!("{}/{}", api_base_url.trim_end_matches('/'), suffix))
+        }
+        _ => Err("the provider has an unsupported URL mode".to_string()),
+    }
 }
 
 fn read_file(app_data_root: &Path) -> Result<ProvidersFile, String> {
@@ -213,14 +283,15 @@ fn read_file(app_data_root: &Path) -> Result<ProvidersFile, String> {
     }
     let raw =
         fs::read(&target).map_err(|error| format!("cannot read {}: {error}", target.display()))?;
-    let file: ProvidersFile = serde_json::from_slice(&raw)
+    let mut file: ProvidersFile = serde_json::from_slice(&raw)
         .map_err(|error| format!("invalid JSON {}: {error}", target.display()))?;
-    if file.schema_version != PROVIDERS_SCHEMA_VERSION {
+    if file.schema_version > PROVIDERS_SCHEMA_VERSION {
         return Err(format!(
             "providers schema {} is unsupported",
             file.schema_version
         ));
     }
+    file.schema_version = PROVIDERS_SCHEMA_VERSION;
     Ok(file)
 }
 
@@ -252,6 +323,20 @@ fn validate_input(input: &ProviderInput) -> Result<(), String> {
             .any(|model| model.name.trim().is_empty())
     {
         return Err("at least one named model is required".to_string());
+    }
+    let default_count = input.models.iter().filter(|model| model.is_default).count();
+    if default_count != 1 {
+        return Err("exactly one model must be the default".to_string());
+    }
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for model in &input.models {
+        if !seen.insert(model.name.trim()) {
+            return Err("model names must be unique".to_string());
+        }
+        match model.context_window_tokens {
+            Some(window) if window > 0 => {}
+            _ => return Err("every model requires a positive context window".to_string()),
+        }
     }
     Ok(())
 }
@@ -333,6 +418,7 @@ mod tests {
                 name: "model-a".to_string(),
                 is_default: true,
                 tool_calling: false,
+                context_window_tokens: Some(64_000),
             }],
             is_default: true,
             api_key: Some("secret-value".to_string()),
@@ -395,6 +481,112 @@ mod tests {
             fs::metadata(path(&root)).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_v1_models_as_incomplete_but_requires_context_on_save() {
+        let root = root();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            path(&root),
+            r#"{"schemaVersion":1,"providers":[{"id":"p","name":"P","apiBaseUrl":"https://example.invalid/v1","apiUrlMode":"base","protocol":"chat_completions","models":[{"name":"m","isDefault":true,"toolCalling":false}],"isDefault":true,"createdAt":"now","updatedAt":"now","apiKey":"secret"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(list(&root).unwrap()[0].models[0].context_window_tokens, None);
+        assert!(
+            resolve_model(&root, "p", "m")
+                .unwrap_err()
+                .contains("context window")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolves_the_requested_provider_model_and_context() {
+        let root = root();
+        let mut value = input("p");
+        value.models = vec![
+            ProviderModel {
+                name: "a".into(),
+                is_default: false,
+                tool_calling: false,
+                context_window_tokens: Some(64_000),
+            },
+            ProviderModel {
+                name: "b".into(),
+                is_default: true,
+                tool_calling: false,
+                context_window_tokens: Some(128_000),
+            },
+        ];
+        save(&root, value).unwrap();
+        let resolved = resolve_model(&root, "p", "b").unwrap();
+        assert_eq!(resolved.context_window_tokens, 128_000);
+        assert_eq!(default_selection(&root).unwrap().model, "b");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_empty_duplicate_zero_context_and_multiple_default_models() {
+        let root = root();
+        let base = input("provider-a");
+        let empty_name = ProviderInput {
+            models: vec![ProviderModel {
+                name: "  ".into(),
+                is_default: true,
+                tool_calling: false,
+                context_window_tokens: Some(64_000),
+            }],
+            ..base.clone()
+        };
+        assert!(save(&root, empty_name).unwrap_err().contains("model"));
+        let dup = ProviderInput {
+            models: vec![
+                ProviderModel {
+                    name: "dup".into(),
+                    is_default: true,
+                    tool_calling: false,
+                    context_window_tokens: Some(64_000),
+                },
+                ProviderModel {
+                    name: " dup ".into(),
+                    is_default: false,
+                    tool_calling: false,
+                    context_window_tokens: Some(64_000),
+                },
+            ],
+            ..base.clone()
+        };
+        assert!(save(&root, dup).unwrap_err().contains("model"));
+        let zero = ProviderInput {
+            models: vec![ProviderModel {
+                name: "z".into(),
+                is_default: true,
+                tool_calling: false,
+                context_window_tokens: Some(0),
+            }],
+            ..base.clone()
+        };
+        assert!(save(&root, zero).unwrap_err().contains("context"));
+        let multi = ProviderInput {
+            models: vec![
+                ProviderModel {
+                    name: "a".into(),
+                    is_default: true,
+                    tool_calling: false,
+                    context_window_tokens: Some(64_000),
+                },
+                ProviderModel {
+                    name: "b".into(),
+                    is_default: true,
+                    tool_calling: false,
+                    context_window_tokens: Some(64_000),
+                },
+            ],
+            ..base.clone()
+        };
+        assert!(save(&root, multi).unwrap_err().contains("default"));
         let _ = fs::remove_dir_all(root);
     }
 }
