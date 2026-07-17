@@ -73,6 +73,12 @@ export type UiSettings = {
 };
 
 export type AppSettings = { projectsDirectory: string | null; ui: UiSettings };
+export type NoticeMessage = {
+  id: string;
+  kind: "success" | "warning" | "error";
+  message: string;
+  dismissAfterMs: number | null;
+};
 export type FilePreview = { file: ProjectFile; text?: string; truncated: boolean };
 
 export type ProviderModel = { name: string; isDefault: boolean; toolCalling: boolean };

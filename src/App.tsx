@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   cancelAgentRun,
   clearProjectsDirectory,
@@ -26,15 +26,18 @@ import {
   saveAgentOverride,
   saveNode,
   saveProvider,
+  saveUiSettings,
   setDefaultProvider,
   startAgentRun,
 } from "./api";
 import { LandingPage } from "./components/LandingPage";
+import { AppShell } from "./components/app/AppShell";
 import { ProviderManager } from "./components/ProviderManager";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Workbench } from "./components/Workbench";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AppVersion, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type NodeId, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type WorkflowNode, type WorkbenchTab } from "./types";
-import { initialUiSettings } from "./ui-state.ts";
+import { EmptyState } from "./components/ui";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AppVersion, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type UiSettings, type WorkflowNode, type WorkbenchTab } from "./types";
+import { closeNode as closeUiNode, initialProjectUi, initialUiSettings, openNode as openUiNode, sanitizeUiSettings } from "./ui-state.ts";
 
 const now = () => new Date().toISOString();
 
@@ -42,14 +45,13 @@ export function App() {
   const [version, setVersion] = useState<AppVersion | null>(null);
   const [projects, setProjects] = useState<RecentProject[]>([]);
   const [project, setProject] = useState<RecentProject | null>(null);
-  const [nodeId, setNodeId] = useState<NodeId>("basic-info");
   const [node, setNode] = useState<WorkflowNode | null>(null);
   const [draft, setDraft] = useState("");
   const [agentOverride, setAgentOverride] = useState<string | null>(null);
   const [agentOverrideDraft, setAgentOverrideDraft] = useState("");
   const [agentOverrideOpen, setAgentOverrideOpen] = useState(false);
   const [savingAgentOverride, setSavingAgentOverride] = useState(false);
-  const [notice, setNotice] = useState("正在连接本机应用服务");
+  const [notice, setNoticeState] = useState<NoticeMessage | null>({ id: "startup", kind: "warning", message: "正在连接本机应用服务", dismissAfterMs: null });
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -62,6 +64,8 @@ export function App() {
   const [importingFile, setImportingFile] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [settings, setSettings] = useState<AppSettings>({ projectsDirectory: null, ui: initialUiSettings() });
+  const [ui, setUi] = useState<UiSettings>(initialUiSettings);
+  const [destination, setDestination] = useState<MainDestination>("projects");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [providersOpen, setProvidersOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -74,20 +78,42 @@ export function App() {
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
   const [isFileDrawerOpen, setIsFileDrawerOpen] = useState(false);
 
+  const projectUi = project ? ui.projects[project.id] : undefined;
+  const activeNodeId = projectUi?.activeNodeId ?? null;
+  const nodeId: NodeId = activeNodeId ?? "basic-info";
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
+  const dismissNotice = useCallback(() => setNoticeState(null), []);
+
+  function setNotice(message: string) {
+    const kind = /失败|错误|不可用/.test(message) ? "error" : /正在|请先|未|取消|检测|暂/.test(message) ? "warning" : "success";
+    setNoticeState({ id: crypto.randomUUID(), kind, message, dismissAfterMs: kind === "success" ? 4000 : null });
+  }
+
+  function updateUi(next: UiSettings) {
+    const sanitized = sanitizeUiSettings(next);
+    setUi(sanitized);
+    setSettings((current) => ({ ...current, ui: sanitized }));
+    void saveUiSettings(sanitized).catch((error) => setNotice(`保存界面状态失败：${String(error)}`));
+  }
 
   useEffect(() => {
     void Promise.all([loadVersion(), loadProjects(), loadProviders(), loadSettings()]);
   }, []);
 
   useEffect(() => {
-    if (project) {
-      void loadNode(project.id, nodeId);
-      void loadAgentOverride(project.id, nodeId);
-      void loadSessions(project.id, nodeId);
+    if (project && activeNodeId) {
+      void loadNode(project.id, activeNodeId);
+      void loadAgentOverride(project.id, activeNodeId);
+      void loadSessions(project.id, activeNodeId);
+    } else if (project) {
+      setNode(null);
+      setDraft("");
+      setSessions([]);
+      setSessionId(null);
+      setMessages([]);
     }
-  }, [project, nodeId]);
+  }, [project, activeNodeId]);
 
   useEffect(() => {
     if (project) void loadFiles(project.id);
@@ -98,8 +124,8 @@ export function App() {
   }, [project]);
 
   useEffect(() => {
-    if (project && sessionId) void loadMessages(project.id, nodeId, sessionId);
-  }, [project, nodeId, sessionId]);
+    if (project && activeNodeId && sessionId) void loadMessages(project.id, activeNodeId, sessionId);
+  }, [project, activeNodeId, sessionId]);
 
   useEffect(() => {
     const subscriptions = Promise.all([
@@ -166,7 +192,11 @@ export function App() {
 
   async function loadSettings() {
     try {
-      setSettings(await getSettings());
+      const loaded = await getSettings();
+      const loadedUi = sanitizeUiSettings(loaded.ui);
+      setSettings({ ...loaded, ui: loadedUi });
+      setUi(loadedUi);
+      setDestination(loadedUi.lastDestination);
     } catch (error) {
       setNotice(`读取应用设置失败：${String(error)}`);
     }
@@ -176,6 +206,7 @@ export function App() {
     try {
       const updated = await pickProjectsDirectory();
       setSettings(updated);
+      setUi(sanitizeUiSettings(updated.ui));
       if (updated.projectsDirectory) {
         setNotice("项目目录已更新；Sion 会在此目录自动创建并发现多个项目");
         void loadProjects();
@@ -189,7 +220,9 @@ export function App() {
 
   async function resetDefaultDirectory() {
     try {
-      setSettings(await clearProjectsDirectory());
+      const updated = await clearProjectsDirectory();
+      setSettings(updated);
+      setUi(sanitizeUiSettings(updated.ui));
       setProjects([]);
       setNotice("已清除项目目录；请重新选择一个项目目录");
     } catch (error) {
@@ -255,8 +288,11 @@ export function App() {
     setSelectedFileIds([]);
     setFilePreview(null);
     setPreviewFileId(null);
+    const existing = ui.projects[item.id];
+    const nextProjectUi = existing?.initialized ? existing : initialProjectUi();
+    updateUi({ ...ui, projects: { ...ui.projects, [item.id]: nextProjectUi } });
     setProject(item);
-    setNodeId("basic-info");
+    setDestination("workspace");
   }
 
   async function loadNode(projectId: string, nextNodeId: NodeId) {
@@ -504,12 +540,35 @@ export function App() {
     setDeliveryPreview(null);
     setFilePreview(null);
     setPreviewFileId(null);
-    setProject(null);
+    selectDestination("projects");
   }
 
   function selectNode(id: NodeId) {
+    if (!project) return;
     setDeliveryPreview(null);
-    setNodeId(id);
+    const current = ui.projects[project.id] ?? initialProjectUi();
+    updateUi({ ...ui, projects: { ...ui.projects, [project.id]: openUiNode(current, id) } });
+    setDestination("workspace");
+  }
+
+  function closeNode(id: NodeId) {
+    if (!project) return;
+    const current = ui.projects[project.id] ?? initialProjectUi();
+    const next = closeUiNode(current, id);
+    updateUi({ ...ui, projects: { ...ui.projects, [project.id]: next } });
+    if (next.activeNodeId === null) {
+      setNode(null);
+      setDraft("");
+    }
+  }
+
+  function selectDestination(nextDestination: "projects" | "exports") {
+    setDestination(nextDestination);
+    updateUi({ ...ui, lastDestination: nextDestination });
+  }
+
+  function toggleSidebar() {
+    updateUi({ ...ui, sidebarCollapsed: !ui.sidebarCollapsed });
   }
 
   function selectSession(nextSessionId: string) {
@@ -517,43 +576,22 @@ export function App() {
     setSessionId(nextSessionId);
   }
 
-  if (!project) {
-    return (
-      <>
-        <LandingPage
-          projects={projects}
-          providers={providers}
-          settings={settings}
-          creating={creating}
-          onCreate={createProjectFromForm}
-          onOpenProject={openProject}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenProviders={() => setProvidersOpen(true)}
-          notice={notice}
-          appVersion={version}
-        />
-        {settingsOpen ? (
-          <SettingsDialog
-            settings={settings}
-            onPickDirectory={() => void chooseDefaultDirectory()}
-            onClearDirectory={() => void resetDefaultDirectory()}
-            onClose={() => setSettingsOpen(false)}
-          />
-        ) : null}
-        {providersOpen ? (
-          <ProviderManager
-            providers={providers}
-            onSave={(draft) => void handleSaveProvider(draft)}
-            onSetDefault={(id) => void handleSetDefaultProvider(id)}
-            onDelete={(id) => void handleDeleteProvider(id)}
-            onClose={() => setProvidersOpen(false)}
-          />
-        ) : null}
-      </>
-    );
-  }
-
-  return (
+  const pageContent = destination === "projects" || !project ? (
+    <LandingPage
+      projects={projects}
+      providers={providers}
+      settings={settings}
+      creating={creating}
+      onCreate={createProjectFromForm}
+      onOpenProject={openProject}
+      onOpenSettings={() => setSettingsOpen(true)}
+      onOpenProviders={() => setProvidersOpen(true)}
+      notice={notice?.message ?? ""}
+      appVersion={version}
+    />
+  ) : destination === "exports" ? (
+    <EmptyState title="导出中心" description="导出任务将在后续迁移到这里；当前项目仍可从交付稿中导出。" />
+  ) : (
     <Workbench
       project={project}
       node={node}
@@ -600,10 +638,49 @@ export function App() {
       setMessageDraft={setMessageDraft}
       onSendMessage={() => void sendMessage()}
       sendingMessage={sendingMessage}
-      notice={notice}
+      notice={notice?.message ?? ""}
       deliveryPreview={deliveryPreview}
       onCloseDeliveryPreview={() => setDeliveryPreview(null)}
       onApplyAssistant={(id) => void applyAssistant(id)}
     />
+  );
+
+  return (
+    <>
+      <AppShell
+        destination={destination}
+        projects={projects}
+        activeProject={project}
+        ui={ui}
+        dirty={dirty}
+        notice={notice}
+        onDismissNotice={dismissNotice}
+        onDestination={selectDestination}
+        onProject={openProject}
+        onNode={selectNode}
+        onCloseNode={closeNode}
+        onToggleSidebar={toggleSidebar}
+        onOpenSettings={() => setSettingsOpen(true)}
+      >
+        {pageContent}
+      </AppShell>
+      {settingsOpen ? (
+        <SettingsDialog
+          settings={settings}
+          onPickDirectory={() => void chooseDefaultDirectory()}
+          onClearDirectory={() => void resetDefaultDirectory()}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
+      {providersOpen ? (
+        <ProviderManager
+          providers={providers}
+          onSave={(providerDraft) => void handleSaveProvider(providerDraft)}
+          onSetDefault={(id) => void handleSetDefaultProvider(id)}
+          onDelete={(id) => void handleDeleteProvider(id)}
+          onClose={() => setProvidersOpen(false)}
+        />
+      ) : null}
+    </>
   );
 }
