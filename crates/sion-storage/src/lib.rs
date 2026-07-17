@@ -10,8 +10,9 @@ use calamine::{Reader, open_workbook_auto};
 use serde::Serialize;
 use sion_agent::AgentRun;
 use sion_core::{
-    ChatMessage, ChatSession, FileExtractionStatus, NodeStatus, PROJECT_SCHEMA_VERSION,
-    ProjectFile, ProjectFileKind, ProjectManifest, WorkflowNode, WorkflowNodeId, default_nodes,
+    ChatMessage, ChatModelSelection, ChatSession, FileExtractionStatus, NodeStatus,
+    PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind, ProjectManifest, ReasoningEffort,
+    WorkflowNode, WorkflowNodeId, default_nodes,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -352,6 +353,7 @@ impl ProjectStore {
         &self,
         node_id: WorkflowNodeId,
         name: String,
+        model_selection: Option<ChatModelSelection>,
         now: String,
     ) -> Result<ChatSession> {
         self.manifest()?;
@@ -363,7 +365,7 @@ impl ProjectStore {
             message_count: 0,
             created_at: now.clone(),
             updated_at: now,
-            model_selection: None,
+            model_selection,
         };
         atomic_write_json(
             &self.messages_path(node_id, &session.id)?,
@@ -374,6 +376,34 @@ impl ProjectStore {
         sessions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
         atomic_write_json(&self.sessions_path(node_id), &sessions)?;
         Ok(session)
+    }
+
+    pub fn session(&self, node_id: WorkflowNodeId, session_id: &str) -> Result<ChatSession> {
+        self.read_sessions(node_id)?
+            .into_iter()
+            .find(|session| session.id == session_id)
+            .ok_or_else(|| StorageError::SessionNotFound(session_id.to_string()))
+    }
+
+    pub fn update_session_model(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        model_selection: ChatModelSelection,
+        updated_at: String,
+    ) -> Result<ChatSession> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        let mut sessions = self.read_sessions(node_id)?;
+        let session = sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+            .ok_or_else(|| StorageError::SessionNotFound(session_id.to_string()))?;
+        session.model_selection = Some(model_selection);
+        session.updated_at = updated_at;
+        let updated = session.clone();
+        atomic_write_json(&self.sessions_path(node_id), &sessions)?;
+        Ok(updated)
     }
 
     pub fn messages(&self, node_id: WorkflowNodeId, session_id: &str) -> Result<Vec<ChatMessage>> {
@@ -1121,15 +1151,57 @@ mod tests {
         )
         .unwrap();
         let store = ProjectStore::at(&root);
-        assert_eq!(
-            store.list_sessions(WorkflowNodeId::Goals).unwrap()[0].name,
-            "旧会话"
-        );
+        let sessions = store.list_sessions(WorkflowNodeId::Goals).unwrap();
+        assert_eq!(sessions[0].name, "旧会话");
+        assert_eq!(sessions[0].model_selection, None);
         assert_eq!(
             store.messages(WorkflowNodeId::Goals, "session-1").unwrap()[0].content,
             "旧消息"
         );
         fs::remove_dir_all(container).unwrap();
+    }
+
+    #[test]
+    fn persists_and_updates_session_model_selection() {
+        let root = temp_project();
+        std::fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
+        let first = ChatModelSelection {
+            provider_id: "openai".into(),
+            model: "gpt-a".into(),
+            reasoning_effort: ReasoningEffort::Medium,
+        };
+        let session = store
+            .create_session(
+                WorkflowNodeId::Goals,
+                "讨论".into(),
+                Some(first),
+                "2026-07-17T00:00:00Z".into(),
+            )
+            .unwrap();
+        let second = ChatModelSelection {
+            provider_id: "openai".into(),
+            model: "gpt-b".into(),
+            reasoning_effort: ReasoningEffort::Off,
+        };
+        let updated = store
+            .update_session_model(
+                WorkflowNodeId::Goals,
+                &session.id,
+                second.clone(),
+                "2026-07-17T00:01:00Z".into(),
+            )
+            .unwrap();
+        assert_eq!(updated.model_selection, Some(second.clone()));
+        assert_eq!(
+            store
+                .session(WorkflowNodeId::Goals, &session.id)
+                .unwrap()
+                .model_selection,
+            Some(second)
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1235,6 +1307,7 @@ mod tests {
             .create_session(
                 WorkflowNodeId::Goals,
                 "需求讨论".to_string(),
+                None,
                 "2026-07-15T00:02:00.000Z".to_string(),
             )
             .unwrap();
@@ -1272,6 +1345,7 @@ mod tests {
             .create_session(
                 WorkflowNodeId::Goals,
                 "恢复测试".to_string(),
+                None,
                 "2026-07-15T00:02:00.000Z".to_string(),
             )
             .unwrap();

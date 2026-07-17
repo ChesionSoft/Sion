@@ -1222,7 +1222,7 @@ fn session_create(
     assert_api_version(&request.version)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let session = ProjectStore::at(project_root)
-        .create_session(request.node_id, request.name, request.now)
+        .create_session(request.node_id, request.name, None, request.now)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
