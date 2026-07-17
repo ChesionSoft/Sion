@@ -21,6 +21,10 @@ export const NODES = [
 export type NodeId = (typeof NODES)[number][0];
 export type NodeStatus = "not_started" | "draft" | "generated" | "confirmed" | "needs_confirmation";
 export type WorkbenchTab = "chat" | "draft";
+export type MainDestination = "projects" | "exports" | "workspace";
+export type DurableRightTabId = "delivery" | "files" | `file:${string}`;
+export type TransientRightTabId = `delivery-preview:${string}`;
+export type RightTabId = DurableRightTabId | TransientRightTabId;
 
 // Rust flattens the payload alongside `apiVersion`, so the response object is
 // `{ apiVersion } & T`. `invokePayload` strips the envelope and returns `T`.
@@ -52,7 +56,23 @@ export type ProjectFile = {
   truncated?: boolean;
 };
 
-export type AppSettings = { projectsDirectory: string | null };
+export type ProjectUiSettings = {
+  initialized: boolean;
+  openedNodeIds: NodeId[];
+  activeNodeId: NodeId | null;
+  tabsInitialized: boolean;
+  rightTabIds: RightTabId[];
+  activeRightTabId: RightTabId | null;
+  rightPaneWidth: number;
+};
+
+export type UiSettings = {
+  sidebarCollapsed: boolean;
+  lastDestination: Exclude<MainDestination, "workspace">;
+  projects: Record<string, ProjectUiSettings>;
+};
+
+export type AppSettings = { projectsDirectory: string | null; ui: UiSettings };
 export type FilePreview = { file: ProjectFile; text?: string; truncated: boolean };
 
 export type ProviderModel = { name: string; isDefault: boolean; toolCalling: boolean };

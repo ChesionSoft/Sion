@@ -23,7 +23,9 @@ import {
   type SaveNodeResult,
   type VersionedResponse,
   type WorkflowNode,
+  type UiSettings,
 } from "./types";
+import { durableUiSettings } from "./ui-state.ts";
 
 const invokePayload = async <T>(
   command: string,
@@ -47,9 +49,13 @@ export const pickProjectsDirectory = () =>
   invokePayload<AppSettings>("settings_pick_projects_directory", {});
 export const clearProjectsDirectory = () =>
   invokePayload<AppSettings>("settings_clear_projects_directory", {});
+export const saveUiSettings = (ui: UiSettings) =>
+  invokePayload<AppSettings>("settings_save_ui", { ui: durableUiSettings(ui) });
 
 export const getProjects = () =>
   invokePayload<{ projects: RecentProject[]; warnings: string[] }>("project_list", {});
+export const revealProject = (projectId: string) =>
+  invokePayload<{ revealed: boolean }>("project_reveal", { projectId });
 export const createProject = (
   id: string,
   name: string,

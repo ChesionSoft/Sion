@@ -34,6 +34,7 @@ import { ProviderManager } from "./components/ProviderManager";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Workbench } from "./components/Workbench";
 import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AppVersion, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type NodeId, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type WorkflowNode, type WorkbenchTab } from "./types";
+import { initialUiSettings } from "./ui-state.ts";
 
 const now = () => new Date().toISOString();
 
@@ -60,7 +61,7 @@ export function App() {
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
   const [importingFile, setImportingFile] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
-  const [settings, setSettings] = useState<AppSettings>({ projectsDirectory: null });
+  const [settings, setSettings] = useState<AppSettings>({ projectsDirectory: null, ui: initialUiSettings() });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [providersOpen, setProvidersOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
