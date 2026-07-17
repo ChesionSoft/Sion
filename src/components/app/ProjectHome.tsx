@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { NODES, type AppSettings, type RecentProject } from "../../types";
 import { filterAndSortProjects, type ProjectSort } from "../../ui-state.ts";
-import { Button, EmptyState, Field, Popover, SelectField } from "../ui";
+import { Button, EmptyState, Field, Icon, Popover, SelectField } from "../ui";
 import { NewProjectDialog } from "./NewProjectDialog";
 
 type ProjectHomeProps = {
@@ -71,7 +71,7 @@ export function ProjectHome({
                 return (
                   <article className="project-list-row" role="listitem" key={item.id}>
                     <button className="project-row-open" onClick={() => onOpen(item)} type="button">
-                      <span className="project-row-symbol" aria-hidden="true">□</span>
+                      <span className="project-row-symbol" aria-hidden="true"><Icon name="project-document" size={18} /></span>
                       <span className="project-row-name"><strong>{item.name}</strong><small>{activeNode ? `上次节点：${activeNode}` : "尚未打开节点"}</small></span>
                       <span className="project-row-state"><strong>{projectUi?.openedNodeIds.length ?? 0} 个已打开节点</strong><small>本地项目</small></span>
                       <span className="project-row-time"><strong>{openedAtLabel(item.openedAt)}</strong><small>最近打开</small></span>

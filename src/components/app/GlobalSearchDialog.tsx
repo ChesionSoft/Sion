@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { NODES, type NodeId, type RecentProject } from "../../types";
-import { Dialog, Field } from "../ui";
+import { Dialog, Field, Icon } from "../ui";
 
 export function GlobalSearchDialog({
   open,
@@ -29,7 +29,7 @@ export function GlobalSearchDialog({
         <section>
           <h3>项目</h3>
           <div className="search-result-list">
-            {projectRows.map((item) => <button key={item.id} onClick={() => onProject(item)} type="button"><span aria-hidden="true">□</span><span><strong>{item.name}</strong><small>{item.rootPath}</small></span></button>)}
+            {projectRows.map((item) => <button key={item.id} onClick={() => onProject(item)} type="button"><span aria-hidden="true"><Icon name="project-document" size={18} /></span><span><strong>{item.name}</strong><small>{item.rootPath}</small></span></button>)}
             {projectRows.length === 0 ? <p>没有匹配的项目</p> : null}
           </div>
         </section>
