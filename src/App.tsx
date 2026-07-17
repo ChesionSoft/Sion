@@ -5,7 +5,6 @@ import {
   cancelAgentRun,
   clearProjectsDirectory,
   applyAssistant as applyAssistantApi,
-  appendMessage,
   createProject,
   createSession as createSessionApi,
   deleteProvider,
@@ -645,24 +644,16 @@ export function App() {
     try {
       const active = sessionId ? sessions.find((session) => session.id === sessionId) ?? null : await createSession();
       if (!active || !isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
-      const message: ChatMessage = { id: crypto.randomUUID(), role: "user", content, createdAt: now() };
-      await appendMessage(project.id, nodeId, active.id, message, now());
+      const run = await startAgentRun(project.id, nodeId, active.id, content, selectedFileIds, now());
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
-      setMessages((current) => [...current, message]);
-      setSessions((current) => current.map((session) => session.id === active.id ? { ...session, messageCount: session.messageCount + 1, updatedAt: message.createdAt } : session));
+      await loadMessages(project.id, nodeId, active.id);
+      setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
       setMessageDraft("");
-      try {
-        const run = await startAgentRun(project.id, nodeId, active.id, selectedFileIds, now());
-        if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
-        setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
-        setNotice(run.status === "queued" ? "Agent Run 已排队；同一节点不会并发写入" : "Agent 正在本机流式生成回复");
-      } catch (error) {
-        if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
-        setNotice(`用户消息已保存；暂未启动 Agent：${String(error)}`);
-      }
+      setSelectedFileIds([]);
+      setNotice(run.status === "queued" ? "Agent Run 已排队；同一节点不会并发写入" : "Agent 正在本机流式生成回复");
     } catch (error) {
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
-      setNotice(`保存消息失败：${String(error)}`);
+      setNotice(`发送失败：${String(error)}`);
     } finally {
       if (isLatestRequest(scope, messageMutationScopeRef.current)) setSendingMessage(false);
     }

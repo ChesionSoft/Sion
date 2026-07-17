@@ -10,7 +10,9 @@ import {
   type AppSettings,
   type AssistantDeliveryPreview,
   type ChatMessage,
+  type ChatModelSelection,
   type ChatSession,
+  type ContextEstimate,
   type EffectiveAgentRules,
   type FilePreview,
   type NodeId,
@@ -130,8 +132,44 @@ export const exportDocx = (projectId: string) =>
 
 export const listSessions = async (projectId: string, nodeId: NodeId): Promise<ChatSession[]> =>
   (await invokePayload<{ sessions: ChatSession[] }>("session_list", { projectId, nodeId })).sessions;
-export const createSession = (projectId: string, nodeId: NodeId, name: string, now: string) =>
-  invokePayload<ChatSession>("session_create", { projectId, nodeId, name, now });
+export const createSession = (
+  projectId: string,
+  nodeId: NodeId,
+  name: string,
+  now: string,
+  modelSelection?: ChatModelSelection,
+) =>
+  invokePayload<ChatSession>("session_create", { projectId, nodeId, name, modelSelection, now });
+export const updateSessionModel = (
+  projectId: string,
+  nodeId: NodeId,
+  sessionId: string,
+  modelSelection: ChatModelSelection,
+  now: string,
+) =>
+  invokePayload<ChatSession>("session_model_update", {
+    projectId,
+    nodeId,
+    sessionId,
+    modelSelection,
+    now,
+  });
+export const estimateAgentContext = (
+  projectId: string,
+  nodeId: NodeId,
+  sessionId: string | null,
+  modelSelection: ChatModelSelection,
+  message: string,
+  fileIds: string[],
+) =>
+  invokePayload<ContextEstimate>("agent_context_estimate", {
+    projectId,
+    nodeId,
+    sessionId,
+    modelSelection,
+    message,
+    fileIds,
+  });
 export const listMessages = async (
   projectId: string,
   nodeId: NodeId,
@@ -169,7 +207,7 @@ export const saveProvider = (draft: ProviderDraft) =>
     apiBaseUrl: draft.apiBaseUrl,
     apiUrlMode: draft.apiUrlMode,
     protocol: draft.protocol,
-    models: [{ name: draft.model, isDefault: true, toolCalling: false }],
+    models: [{ name: draft.model, isDefault: true, toolCalling: false, contextWindowTokens: Number(draft.contextWindow) }],
     isDefault: draft.isDefault,
     apiKey: draft.apiKey,
     now: draft.now,
@@ -183,10 +221,11 @@ export const startAgentRun = (
   projectId: string,
   nodeId: NodeId,
   sessionId: string,
+  message: string,
   fileIds: string[],
   now: string,
 ) =>
-  invokePayload<AgentRun>("agent_run_start", { projectId, nodeId, sessionId, fileIds, now });
+  invokePayload<AgentRun>("agent_run_start", { projectId, nodeId, sessionId, message, fileIds, now });
 export const listRuns = async (projectId: string): Promise<AgentRun[]> =>
   (await invokePayload<{ runs: AgentRun[] }>("agent_run_list", { projectId })).runs;
 export const cancelAgentRun = (projectId: string, runId: string, now: string) =>

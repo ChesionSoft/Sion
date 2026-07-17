@@ -32,8 +32,18 @@ export type VersionedResponse<T> = { apiVersion: number } & T;
 export type RecentProject = { id: string; name: string; rootPath: string; openedAt: string };
 export type ProjectManifest = { id: string; name: string; customerName: string; authorName: string; version: string };
 export type WorkflowNode = { id: NodeId; status: NodeStatus; markdown: string; revision: number; updatedAt: string };
-export type ChatSession = { id: string; nodeId: NodeId; name: string; messageCount: number; createdAt: string; updatedAt: string };
-export type ChatMessage = { id: string; role: "user" | "assistant" | "system"; content: string; createdAt: string };
+export type ReasoningEffort = "off" | "low" | "medium" | "high";
+export type ChatModelSelection = { providerId: string; model: string; reasoningEffort: ReasoningEffort };
+export type MessageAttachmentRef = { fileId: string; originalName: string };
+export type ModelExecution = ChatModelSelection;
+export type ContextEstimate = {
+  estimatedInputTokens: number;
+  contextWindowTokens: number;
+  ratio: number;
+  status: "ready" | "warning" | "blocked";
+};
+export type ChatSession = { id: string; nodeId: NodeId; name: string; messageCount: number; createdAt: string; updatedAt: string; modelSelection?: ChatModelSelection | null };
+export type ChatMessage = { id: string; role: "user" | "assistant" | "system"; content: string; createdAt: string; attachments?: MessageAttachmentRef[]; modelExecution?: ModelExecution | null };
 export type FileExtractionStatus = "available" | "failed" | "unsupported";
 export type ProjectFile = {
   id: string;
@@ -93,7 +103,7 @@ export type NoticeMessage = {
 };
 export type FilePreview = { file: ProjectFile; text?: string; truncated: boolean };
 
-export type ProviderModel = { name: string; isDefault: boolean; toolCalling: boolean };
+export type ProviderModel = { name: string; isDefault: boolean; toolCalling: boolean; contextWindowTokens: number | null };
 export type Provider = {
   id: string;
   name: string;
@@ -111,6 +121,10 @@ export type AgentRun = {
   nodeId: NodeId;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   summary?: string;
+  providerId?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  fileIds?: string[];
 };
 export type AgentTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
 export type AgentFinishedEvent = { run: AgentRun };
@@ -124,6 +138,7 @@ export type ProviderDraft = {
   apiUrlMode: "base" | "full";
   protocol: "chat_completions" | "openai_responses";
   model: string;
+  contextWindow: string;
   isDefault: boolean;
   apiKey?: string;
   now: string;

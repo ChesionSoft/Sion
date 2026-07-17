@@ -23,6 +23,7 @@ export function ProviderEditorDialog({
   const [apiUrlMode, setApiUrlMode] = useState<Provider["apiUrlMode"]>("base");
   const [protocol, setProtocol] = useState<Provider["protocol"]>("chat_completions");
   const [model, setModel] = useState("");
+  const [contextWindow, setContextWindow] = useState("");
   const [key, setKey] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -33,22 +34,26 @@ export function ProviderEditorDialog({
     setUrl(provider?.apiBaseUrl ?? DEFAULT_URL);
     setApiUrlMode(provider?.apiUrlMode ?? "base");
     setProtocol(provider?.protocol ?? "chat_completions");
-    setModel(provider?.models.find((item) => item.isDefault)?.name ?? provider?.models[0]?.name ?? "");
+    const defaultModel = provider?.models.find((item) => item.isDefault) ?? provider?.models[0];
+    setModel(defaultModel?.name ?? "");
+    setContextWindow(defaultModel?.contextWindowTokens != null ? String(defaultModel.contextWindowTokens) : "");
     setKey("");
     setSubmitted(false);
     setSaving(false);
   }, [open, provider]);
 
+  const contextWindowValid = Number.isSafeInteger(Number(contextWindow)) && Number(contextWindow) > 0;
   const errors = {
     name: submitted && !name.trim() ? "请输入提供商名称" : undefined,
     url: submitted && !url.trim() ? "请输入 API URL" : undefined,
     model: submitted && !model.trim() ? "请输入模型名称" : undefined,
+    contextWindow: submitted && !contextWindowValid ? "请输入正整数的上下文窗口" : undefined,
     key: submitted && !provider && !key.trim() ? "新增提供商需要 API Key" : undefined,
   };
 
   async function submit() {
     setSubmitted(true);
-    if (!name.trim() || !url.trim() || !model.trim() || (!provider && !key.trim()) || saving) return;
+    if (!name.trim() || !url.trim() || !model.trim() || !contextWindowValid || (!provider && !key.trim()) || saving) return;
     setSaving(true);
     const saved = await onSave({
       id: provider?.id ?? crypto.randomUUID(),
@@ -57,6 +62,7 @@ export function ProviderEditorDialog({
       apiUrlMode,
       protocol,
       model: model.trim(),
+      contextWindow: contextWindow.trim(),
       isDefault: provider?.isDefault ?? providerCount === 0,
       ...(key.trim() ? { apiKey: key.trim() } : {}),
       now: now(),
@@ -95,6 +101,7 @@ export function ProviderEditorDialog({
         </div>
         <p className="provider-editor-hint">{apiUrlMode === "base" ? "Sion 会按所选协议拼接请求路径。" : "Sion 会原样使用完整 Endpoint，不再拼接路径。"}</p>
         <Field label="默认模型" value={model} onChange={(event) => setModel(event.target.value)} error={errors.model} placeholder="gpt-5" />
+        <Field label="上下文窗口（tokens）" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} error={errors.contextWindow} placeholder="128000" />
         <Field label="API Key" type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} error={errors.key} placeholder={provider ? "留空以保留当前密钥" : "仅保存到 ~/.sion/providers.json"} />
       </form>
     </Dialog>
