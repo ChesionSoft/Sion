@@ -72,3 +72,19 @@ test("provider editor preserves a multi-model draft with context windows", async
   assert.match(source, /添加模型/);
   assert.doesNotMatch(source, /const \[model, setModel\]/);
 });
+
+test("conversation controls are accessible and never invoke Tauri directly", async () => {
+  const [modelMenu, fileMenu, indicator] = await Promise.all([
+    readFile("src/components/workspace/ConversationModelMenu.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationFileMenu.tsx", "utf8"),
+    readFile("src/components/workspace/ContextUsageIndicator.tsx", "utf8"),
+  ]);
+  assert.match(modelMenu, /aria-haspopup="menu"/);
+  assert.match(modelMenu, /推理强度/);
+  assert.match(modelMenu, /关闭/);
+  assert.match(fileMenu, /导入新文件/);
+  assert.match(fileMenu, /disabled=\{!selectable/);
+  assert.match(indicator, /role="status"/);
+  assert.match(indicator, /aria-label/);
+  assert.doesNotMatch([modelMenu, fileMenu, indicator].join("\n"), /invoke\(/);
+});
