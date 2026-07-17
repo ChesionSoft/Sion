@@ -1,5 +1,5 @@
 import { NODES } from "./types.ts";
-import type { NodeId, ProjectUiSettings, RecentProject, RightSurface, UiSettings, WorkspaceView } from "./types.ts";
+import type { AgentRun, NodeId, ProjectUiSettings, RecentProject, RightSurface, UiSettings, WorkspaceView } from "./types.ts";
 
 const NODE_IDS = new Set<string>(NODES.map(([id]) => id));
 const FIXED_NODE_IDS = NODES.map(([id]) => id);
@@ -18,6 +18,35 @@ export type SaveResult = "saved" | "conflict" | "failed";
 
 export function requestScope(...parts: Array<string | null | undefined>): string | null {
   return parts.every((part): part is string => typeof part === "string") ? JSON.stringify(parts) : null;
+}
+
+export function isLatestRequest(expected: string | null, current: string | null): boolean {
+  return expected !== null && expected === current;
+}
+
+export function shouldChangeNode(currentNodeId: NodeId | null, nextNodeId: NodeId): boolean {
+  return currentNodeId !== nextNodeId;
+}
+
+export function shouldChangeProject(currentProjectId: string | null, nextProjectId: string): boolean {
+  return currentProjectId !== nextProjectId;
+}
+
+export function isAgentRulesDirty(draft: string, saved: string | null | undefined): boolean {
+  return draft !== (saved ?? "");
+}
+
+export function activeRunIdForContext(
+  runs: AgentRun[],
+  projectId: string | null,
+  nodeId: NodeId | null,
+): string | null {
+  if (!projectId || !nodeId) return null;
+  return runs.find((run) => (
+    run.projectId === projectId
+    && run.nodeId === nodeId
+    && (run.status === "queued" || run.status === "running")
+  ))?.id ?? null;
 }
 
 export function createSerialTaskQueue() {

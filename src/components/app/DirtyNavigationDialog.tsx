@@ -1,8 +1,9 @@
 import { Button, Dialog } from "../ui";
 
-export function DirtyNavigationDialog({ open, saving, onSave, onDiscard, onCancel }: {
+export function DirtyNavigationDialog({ open, saving, description, onSave, onDiscard, onCancel }: {
   open: boolean;
   saving: boolean;
+  description: string;
   onSave: () => void;
   onDiscard: () => void;
   onCancel: () => void;
@@ -11,7 +12,7 @@ export function DirtyNavigationDialog({ open, saving, onSave, onDiscard, onCance
     <Dialog
       open={open}
       title="要保存未完成的修改吗？"
-      description="当前交付稿包含尚未写入项目目录的修改。"
+      description={description}
       size="confirm"
       closeLabel="取消离开"
       onClose={onCancel}

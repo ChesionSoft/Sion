@@ -11,8 +11,10 @@ type ProjectWorkspaceProps = {
   node: WorkflowNode | null;
   nodeTitle: string;
   sessions: ChatSession[];
+  sessionsError: string | null;
   sessionId: string | null;
   runs: AgentRun[];
+  runsError: string | null;
   activeRunId: string | null;
   messages: ChatMessage[];
   previewingMessageId: string | null;
@@ -87,7 +89,9 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
               <Button
                 key={action.id}
                 variant={pressed ? "secondary" : "ghost"}
+                aria-label={action.label}
                 aria-pressed={pressed}
+                title={action.label}
                 data-workspace-action={action.id}
                 onClick={() => props.onRightSurface(headerActionSurface(action.id))}
               >
@@ -100,7 +104,7 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             <div className="workspace-overflow-menu">
               <section aria-label="运行记录">
                 <h3><Icon name="run-history" />运行记录</h3>
-                {props.runs.length === 0 ? <p>还没有运行记录。</p> : props.runs.slice(0, 8).map((run) => (
+                {props.runsError ? <p role="alert">{props.runsError}</p> : props.runs.length === 0 ? <p>还没有运行记录。</p> : props.runs.slice(0, 8).map((run) => (
                   <div className="run-history-row" key={run.id}>
                     <StatusDot kind={runStatusKind(run.status)} />
                     <span><strong>{run.nodeId}</strong><small>{runLabel[run.status]}</small></span>
@@ -114,7 +118,7 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
       <div className="workspace-surface">
         <div className="workspace-conversation">
           <div className="conversation-toolbar">
-            <button ref={historyTriggerRef} type="button" className="ui-button ui-button-ghost" onClick={() => setHistoryOpen(true)}>
+            <button ref={historyTriggerRef} type="button" className="ui-button ui-button-ghost" aria-label="聊天记录" title="聊天记录" onClick={() => setHistoryOpen(true)}>
               <Icon name="chat-history" />
               <span className="workspace-action-label">聊天记录</span>
             </button>
@@ -135,6 +139,7 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
           <ConversationHistoryDrawer
             open={historyOpen}
             sessions={props.sessions}
+            error={props.sessionsError}
             sessionId={props.sessionId}
             onSelect={props.onSelectSession}
             onCreate={props.onCreateSession}

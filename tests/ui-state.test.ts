@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as uiState from "../src/ui-state.ts";
 import {
   createSerialTaskQueue,
   durableUiSettings,
@@ -16,6 +17,7 @@ import {
 } from "../src/ui-state.ts";
 import type { NavigationIntent } from "../src/ui-state.ts";
 import { NODES } from "../src/types.ts";
+import type { AgentRun } from "../src/types.ts";
 
 test("filters project names case-insensitively and sorts recent projects descending", () => {
   const projects = [
@@ -168,4 +170,58 @@ test("serial task queue preserves persistence request order", async () => {
   releaseFirst();
   await Promise.all([first, second]);
   assert.deepEqual(order, ["first-start", "first-end", "second"]);
+});
+
+test("same-node navigation is a no-op before transient content is cleared", () => {
+  const shouldChangeNode = (uiState as unknown as {
+    shouldChangeNode?: (currentNodeId: string | null, nextNodeId: string) => boolean;
+  }).shouldChangeNode;
+  assert.equal(typeof shouldChangeNode, "function");
+  assert.equal(shouldChangeNode?.("goals", "goals"), false);
+  assert.equal(shouldChangeNode?.("goals", "basic-info"), true);
+});
+
+test("project collections reset only when opening a different project", () => {
+  const shouldChangeProject = (uiState as unknown as {
+    shouldChangeProject?: (currentProjectId: string | null, nextProjectId: string) => boolean;
+  }).shouldChangeProject;
+  assert.equal(typeof shouldChangeProject, "function");
+  assert.equal(shouldChangeProject?.("project-a", "project-a"), false);
+  assert.equal(shouldChangeProject?.("project-a", "project-b"), true);
+  assert.equal(shouldChangeProject?.(null, "project-a"), true);
+});
+
+test("agent rule drafts participate in dirty navigation protection", () => {
+  const isAgentRulesDirty = (uiState as unknown as {
+    isAgentRulesDirty?: (draft: string, saved: string | null | undefined) => boolean;
+  }).isAgentRulesDirty;
+  assert.equal(typeof isAgentRulesDirty, "function");
+  assert.equal(isAgentRulesDirty?.("只使用事实", "只使用事实"), false);
+  assert.equal(isAgentRulesDirty?.("只使用事实\n", "只使用事实"), true);
+  assert.equal(isAgentRulesDirty?.("新增规则", null), true);
+});
+
+test("active agent runs are selected only for the current project and node", () => {
+  const activeRunIdForContext = (uiState as unknown as {
+    activeRunIdForContext?: (runs: AgentRun[], projectId: string | null, nodeId: string | null) => string | null;
+  }).activeRunIdForContext;
+  const runs: AgentRun[] = [
+    { id: "old-project", projectId: "project-a", nodeId: "goals", status: "running" },
+    { id: "old-node", projectId: "project-b", nodeId: "basic-info", status: "queued" },
+    { id: "current", projectId: "project-b", nodeId: "goals", status: "running" },
+  ];
+  assert.equal(typeof activeRunIdForContext, "function");
+  assert.equal(activeRunIdForContext?.(runs, "project-b", "goals"), "current");
+  assert.equal(activeRunIdForContext?.(runs, "project-b", "final-export"), null);
+  assert.equal(activeRunIdForContext?.(runs, null, "goals"), null);
+});
+
+test("late async responses are accepted only for the latest request scope", () => {
+  const isLatestRequest = (uiState as unknown as {
+    isLatestRequest?: (expected: string | null, current: string | null) => boolean;
+  }).isLatestRequest;
+  assert.equal(typeof isLatestRequest, "function");
+  assert.equal(isLatestRequest?.("request-a", "request-a"), true);
+  assert.equal(isLatestRequest?.("request-a", "request-b"), false);
+  assert.equal(isLatestRequest?.(null, null), false);
 });

@@ -10,7 +10,6 @@ export function MarkdownPreview({ markdown }: { markdown: string }) {
     <div className="markdown-preview">
       <Markdown
         remarkPlugins={[remarkGfm]}
-        skipHtml
         urlTransform={blockedMarkdownUrl}
         components={{
           a: ({ children }) => <span className="markdown-link-text">{children}</span>,

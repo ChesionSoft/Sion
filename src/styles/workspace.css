@@ -161,7 +161,6 @@
 @media (max-width: 900px) {
   .workspace-node-status { display: none; }
   .workspace-breadcrumb span { max-width: 110px; }
-  .workspace-header-actions > .ui-button:first-child { display: none; }
   .conversation-thread { padding-inline: 24px; }
   .conversation-composer { width: calc(100% - 32px); }
 }

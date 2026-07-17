@@ -724,6 +724,17 @@ fn agent_run_list(
     })
 }
 
+fn validate_run_project(run: &sion_agent::AgentRun, project_id: &str) -> Result<(), ApiError> {
+    if run.project_id == project_id {
+        Ok(())
+    } else {
+        Err(ApiError::CheckFailed(format!(
+            "agent run {} does not belong to project {project_id}",
+            run.id
+        )))
+    }
+}
+
 #[tauri::command]
 fn agent_run_cancel(
     request: AgentRunCancelRequest,
@@ -731,6 +742,14 @@ fn agent_run_cancel(
     state: tauri::State<'_, Arc<AgentState>>,
 ) -> Result<VersionedResponse<sion_agent::AgentRun>, ApiError> {
     assert_api_version(&request.version)?;
+    let run = state
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
+        .get(&request.run_id)
+        .cloned()
+        .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
+    validate_run_project(&run, &request.project_id)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let job = state
         .jobs
@@ -739,13 +758,7 @@ fn agent_run_cancel(
         .get(&request.run_id)
         .cloned()
         .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
-    let status = state
-        .scheduler
-        .lock()
-        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
-        .get(&request.run_id)
-        .map(|run| run.status.clone())
-        .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
+    let status = run.status;
     if status == sion_agent::AgentRunStatus::Queued {
         let promoted = state
             .scheduler
@@ -874,8 +887,8 @@ fn settings_clear_projects_directory(
         .mutation
         .lock()
         .map_err(|_| ApiError::CheckFailed("settings lock is poisoned".to_string()))?;
-    let cleared = app_settings::update_projects_directory(&global, None)
-        .map_err(ApiError::CheckFailed)?;
+    let cleared =
+        app_settings::update_projects_directory(&global, None).map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: settings_summary(&cleared),
@@ -1368,10 +1381,8 @@ fn agent_prompt(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    let effective_rules = compose_effective_agent_rules(
-        node.id,
-        project_override.map(|rule| rule.to_string()),
-    );
+    let effective_rules =
+        compose_effective_agent_rules(node.id, project_override.map(|rule| rule.to_string()));
     let attachment_block = attachments
         .iter()
         .map(|(name, text)| format!("## {name}\n{text}"))
@@ -1753,6 +1764,23 @@ mod tests {
     }
 
     #[test]
+    fn agent_run_project_validation_rejects_cross_project_cancellation() {
+        let run = sion_agent::AgentRun {
+            id: "run-1".to_string(),
+            project_id: "project-a".to_string(),
+            node_id: WorkflowNodeId::Goals,
+            status: sion_agent::AgentRunStatus::Running,
+            created_at: "now".to_string(),
+            started_at: Some("now".to_string()),
+            finished_at: None,
+            summary: None,
+        };
+        assert!(validate_run_project(&run, "project-a").is_ok());
+        let error = validate_run_project(&run, "project-b").unwrap_err();
+        assert!(error.to_string().contains("does not belong"));
+    }
+
+    #[test]
     fn line_change_stats_counts_kept_added_and_deleted_lines() {
         let stats = line_change_stats("A\nB\nC", "A\nB2\nC\nD");
         assert_eq!(
@@ -1793,11 +1821,11 @@ mod tests {
             WorkflowNodeId::Goals,
             Some("只使用已确认目标。".to_string()),
         );
-        assert_eq!(rules.built_in_markdown, sion_core::agent_rule(WorkflowNodeId::Goals));
         assert_eq!(
-            rules.custom_markdown.as_deref(),
-            Some("只使用已确认目标。")
+            rules.built_in_markdown,
+            sion_core::agent_rule(WorkflowNodeId::Goals)
         );
+        assert_eq!(rules.custom_markdown.as_deref(), Some("只使用已确认目标。"));
         assert_eq!(
             rules.effective_markdown,
             format!(
@@ -1809,10 +1837,8 @@ mod tests {
 
     #[test]
     fn empty_agent_override_is_not_part_of_effective_rules() {
-        let rules = compose_effective_agent_rules(
-            WorkflowNodeId::BasicInfo,
-            Some(" \n ".to_string()),
-        );
+        let rules =
+            compose_effective_agent_rules(WorkflowNodeId::BasicInfo, Some(" \n ".to_string()));
         assert_eq!(rules.custom_markdown, None);
         assert_eq!(rules.effective_markdown, rules.built_in_markdown);
     }

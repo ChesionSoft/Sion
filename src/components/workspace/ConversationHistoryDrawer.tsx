@@ -5,13 +5,14 @@ import { Button, Icon } from "../ui";
 type ConversationHistoryDrawerProps = {
   open: boolean;
   sessions: ChatSession[];
+  error: string | null;
   sessionId: string | null;
   onSelect: (sessionId: string) => void;
   onCreate: () => void;
   onClose: () => void;
 };
 
-export function ConversationHistoryDrawer({ open, sessions, sessionId, onSelect, onCreate, onClose }: ConversationHistoryDrawerProps) {
+export function ConversationHistoryDrawer({ open, sessions, error, sessionId, onSelect, onCreate, onClose }: ConversationHistoryDrawerProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -43,7 +44,7 @@ export function ConversationHistoryDrawer({ open, sessions, sessionId, onSelect,
         </header>
         <div className="conversation-history-body">
           <Button variant="secondary" onClick={() => { onCreate(); onClose(); }}>＋ 新建会话</Button>
-          {sessions.length === 0 ? <p>当前节点还没有聊天记录。</p> : (
+          {error ? <p role="alert">{error}</p> : sessions.length === 0 ? <p>当前节点还没有聊天记录。</p> : (
             <div className="conversation-history-list">
               {sessions.map((session) => (
                 <button
