@@ -6,6 +6,31 @@ const MIN_PANE_WIDTH = 320;
 const MAX_PANE_WIDTH = 720;
 
 export type ProjectSort = "recent" | "name";
+export type NavigationIntent =
+  | { kind: "destination"; destination: "projects" | "exports" }
+  | { kind: "project"; projectId: string }
+  | { kind: "node"; nodeId: NodeId }
+  | { kind: "close-node"; nodeId: NodeId }
+  | { kind: "close-window" };
+
+export type SaveResult = "saved" | "conflict" | "failed";
+
+export function requestNavigationDecision(dirty: boolean, intent: NavigationIntent) {
+  return dirty
+    ? { execute: null, pending: intent }
+    : { execute: intent, pending: null };
+}
+
+export function resolveNavigationDecision(
+  pending: NavigationIntent,
+  action: "cancel" | "discard" | "save",
+  saveResult?: SaveResult,
+) {
+  if (action === "cancel") return { execute: null, pending: null, shouldSave: false };
+  if (action === "discard") return { execute: pending, pending: null, shouldSave: false };
+  if (saveResult === "saved") return { execute: pending, pending: null, shouldSave: false };
+  return { execute: null, pending, shouldSave: saveResult === undefined };
+}
 
 export function filterAndSortProjects(projects: RecentProject[], query: string, sort: ProjectSort): RecentProject[] {
   const normalized = query.trim().toLocaleLowerCase("zh-CN");

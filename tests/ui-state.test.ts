@@ -6,10 +6,13 @@ import {
   durableUiSettings,
   filterAndSortProjects,
   initialProjectUi,
+  requestNavigationDecision,
+  resolveNavigationDecision,
   openNode,
   openRightTab,
   sanitizeUiSettings,
 } from "../src/ui-state.ts";
+import type { NavigationIntent } from "../src/ui-state.ts";
 
 test("filters project names case-insensitively and sorts recent projects descending", () => {
   const projects = [
@@ -93,4 +96,24 @@ test("transient preview tabs are excluded from persisted settings", () => {
     projects: { p1: state },
   });
   assert.deepEqual(durable.projects.p1.rightTabIds, ["delivery"]);
+});
+
+test("clean navigation executes immediately while dirty navigation waits", () => {
+  const intent: NavigationIntent = { kind: "node", nodeId: "goals" };
+  assert.deepEqual(requestNavigationDecision(false, intent), { execute: intent, pending: null });
+  assert.deepEqual(requestNavigationDecision(true, intent), { execute: null, pending: intent });
+});
+
+test("cancel clears a pending navigation and discard executes without saving", () => {
+  const intent: NavigationIntent = { kind: "project", projectId: "project-2" };
+  assert.deepEqual(resolveNavigationDecision(intent, "cancel"), { execute: null, pending: null, shouldSave: false });
+  assert.deepEqual(resolveNavigationDecision(intent, "discard"), { execute: intent, pending: null, shouldSave: false });
+});
+
+test("save executes navigation only after a successful save", () => {
+  const intent: NavigationIntent = { kind: "close-window" };
+  assert.deepEqual(resolveNavigationDecision(intent, "save"), { execute: null, pending: intent, shouldSave: true });
+  assert.deepEqual(resolveNavigationDecision(intent, "save", "failed"), { execute: null, pending: intent, shouldSave: false });
+  assert.deepEqual(resolveNavigationDecision(intent, "save", "conflict"), { execute: null, pending: intent, shouldSave: false });
+  assert.deepEqual(resolveNavigationDecision(intent, "save", "saved"), { execute: intent, pending: null, shouldSave: false });
 });

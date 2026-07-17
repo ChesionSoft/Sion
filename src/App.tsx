@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelAgentRun,
   clearProjectsDirectory,
@@ -31,9 +32,11 @@ import {
   startAgentRun,
 } from "./api";
 import { AppShell } from "./components/app/AppShell";
+import { DirtyNavigationDialog } from "./components/app/DirtyNavigationDialog";
 import { ProjectHome } from "./components/app/ProjectHome";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectWorkspace } from "./components/workspace/ProjectWorkspace";
+import { RevisionConflictDialog } from "./components/workspace/RevisionConflictDialog";
 import { AgentRuleDialog } from "./components/workspace/AgentRuleDialog";
 import { DeliveryPreviewTab } from "./components/workspace/DeliveryPreviewTab";
 import { DeliveryTab } from "./components/workspace/DeliveryTab";
@@ -42,7 +45,7 @@ import { ProjectFilesTab } from "./components/workspace/ProjectFilesTab";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { EmptyState } from "./components/ui";
 import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightTabId, type UiSettings, type WorkflowNode } from "./types";
-import { closeNode as closeUiNode, closeRightTab as closeUiRightTab, initialProjectUi, initialUiSettings, openNode as openUiNode, openRightTab as openUiRightTab, sanitizeUiSettings } from "./ui-state.ts";
+import { closeNode as closeUiNode, closeRightTab as closeUiRightTab, durableUiSettings, initialProjectUi, initialUiSettings, openNode as openUiNode, openRightTab as openUiRightTab, requestNavigationDecision, resolveNavigationDecision, sanitizeUiSettings, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 
 const now = () => new Date().toISOString();
 
@@ -77,6 +80,11 @@ export function App() {
   const [deliveryPreview, setDeliveryPreview] = useState<AssistantDeliveryPreview | null>(null);
   const [previewingMessageId, setPreviewingMessageId] = useState<string | null>(null);
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
+  const [pendingNavigation, setPendingNavigation] = useState<NavigationIntent | null>(null);
+  const [conflictLatest, setConflictLatest] = useState<WorkflowNode | null>(null);
+  const [uiHydrated, setUiHydrated] = useState(false);
+  const uiPersistenceWarningShown = useRef(false);
+  const skipNextUiPersistence = useRef(true);
 
   const projectUi = project ? ui.projects[project.id] : undefined;
   const activeNodeId = projectUi?.activeNodeId ?? null;
@@ -95,12 +103,29 @@ export function App() {
     const sanitized = sanitizeUiSettings(next);
     setUi(sanitized);
     setSettings((current) => ({ ...current, ui: sanitized }));
-    void saveUiSettings(sanitized).catch((error) => setNotice(`保存界面状态失败：${String(error)}`));
   }
 
   useEffect(() => {
     void Promise.all([loadProjects(), loadProviders(), loadSettings()]);
   }, []);
+
+  useEffect(() => {
+    if (!uiHydrated) return;
+    if (skipNextUiPersistence.current) {
+      skipNextUiPersistence.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void saveUiSettings(durableUiSettings(ui)).then(() => {
+        uiPersistenceWarningShown.current = false;
+      }).catch((error) => {
+        if (uiPersistenceWarningShown.current) return;
+        uiPersistenceWarningShown.current = true;
+        setNotice(`保存界面状态失败：${String(error)}`);
+      });
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [ui, uiHydrated]);
 
   useEffect(() => {
     if (project && activeNodeId) {
@@ -168,6 +193,29 @@ export function App() {
     return () => window.removeEventListener("keydown", saveWithShortcut);
   }, [project, node, draft, dirty, saving]);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    try {
+      void getCurrentWindow().onCloseRequested((event) => {
+        if (!dirty) return;
+        event.preventDefault();
+        requestNavigation({ kind: "close-window" });
+      }).then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      }).catch(() => {
+        // The Vite browser preview has no native window; Tauri desktop does.
+      });
+    } catch {
+      // getCurrentWindow itself throws outside the Tauri webview.
+    }
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [dirty]);
+
   async function loadProjects(): Promise<RecentProject[]> {
     try {
       const result = await getProjects();
@@ -195,6 +243,7 @@ export function App() {
       setSettings({ ...loaded, ui: loadedUi });
       setUi(loadedUi);
       setDestination(loadedUi.lastDestination);
+      setUiHydrated(true);
     } catch (error) {
       setNotice(`读取应用设置失败：${String(error)}`);
     }
@@ -281,7 +330,7 @@ export function App() {
       const registry = await loadProjects();
       const created = registry.find((item) => item.id === response.project!.id);
       setNotice(`已创建 ${response.project.name}`);
-      if (created) openProject(created);
+      if (created) requestNavigation({ kind: "project", projectId: created.id });
       return true;
     } catch (error) {
       setNotice(`创建项目失败：${String(error)}`);
@@ -300,7 +349,7 @@ export function App() {
     }
   }
 
-  function openProject(item: RecentProject) {
+  function openProjectImmediate(item: RecentProject) {
     setDeliveryPreview(null);
     setSelectedFileIds([]);
     setFilePreview(null);
@@ -354,22 +403,27 @@ export function App() {
     }
   }
 
-  async function saveNodeDraft() {
-    if (!project || !node) return;
+  async function saveNodeDraft(): Promise<SaveResult> {
+    if (!project || !node) return "failed";
     setSaving(true);
     try {
       const result = await saveNode(project.id, nodeId, node.revision, draft, node.status, now());
       if (result.conflict) {
-        setNode(result.conflict.latest);
-        setDraft(result.conflict.latest.markdown);
-        setNotice("检测到另一次保存；已载入磁盘中的最新版本，没有覆盖它");
+        setConflictLatest(result.conflict.latest);
+        setNotice("检测到另一次保存；你的草稿仍保留在编辑器中");
+        return "conflict";
       } else if (result.saved) {
         setNode(result.saved);
         setDraft(result.saved.markdown);
+        setConflictLatest(null);
         setNotice(`已原子保存 revision ${result.saved.revision}`);
+        return "saved";
       }
+      setNotice("保存失败：本机服务没有返回保存结果");
+      return "failed";
     } catch (error) {
       setNotice(`保存失败：${String(error)}`);
+      return "failed";
     } finally {
       setSaving(false);
     }
@@ -552,12 +606,16 @@ export function App() {
   }
 
   function exitProject() {
-    setDeliveryPreview(null);
-    setFilePreview(null);
-    selectDestination("projects");
+    requestNavigation({ kind: "destination", destination: "projects" });
   }
 
-  function selectNode(id: NodeId) {
+  function exitProjectImmediate() {
+    setDeliveryPreview(null);
+    setFilePreview(null);
+    selectDestinationImmediate("projects");
+  }
+
+  function selectNodeImmediate(id: NodeId) {
     if (!project) return;
     setDeliveryPreview(null);
     const current = ui.projects[project.id] ?? initialProjectUi();
@@ -565,7 +623,7 @@ export function App() {
     setDestination("workspace");
   }
 
-  function closeNode(id: NodeId) {
+  function closeNodeImmediate(id: NodeId) {
     if (!project) return;
     const current = ui.projects[project.id] ?? initialProjectUi();
     const next = closeUiNode(current, id);
@@ -605,9 +663,82 @@ export function App() {
     updateActiveProjectUi((current) => ({ ...current, rightPaneWidth: width }));
   }
 
-  function selectDestination(nextDestination: "projects" | "exports") {
+  function selectDestinationImmediate(nextDestination: "projects" | "exports") {
     setDestination(nextDestination);
     updateUi({ ...ui, lastDestination: nextDestination });
+  }
+
+  function executeNavigation(intent: NavigationIntent) {
+    if (intent.kind === "destination") {
+      if (intent.destination === "projects") exitProjectImmediate();
+      else selectDestinationImmediate(intent.destination);
+      return;
+    }
+    if (intent.kind === "project") {
+      const nextProject = projects.find((item) => item.id === intent.projectId);
+      if (nextProject) openProjectImmediate(nextProject);
+      return;
+    }
+    if (intent.kind === "node") {
+      selectNodeImmediate(intent.nodeId);
+      return;
+    }
+    if (intent.kind === "close-node") {
+      closeNodeImmediate(intent.nodeId);
+      return;
+    }
+    void getCurrentWindow().destroy();
+  }
+
+  function requestNavigation(intent: NavigationIntent) {
+    const threatensDraft = intent.kind === "close-window"
+      || (intent.kind === "project" && intent.projectId !== project?.id)
+      || (intent.kind === "node" && intent.nodeId !== activeNodeId)
+      || (intent.kind === "close-node" && intent.nodeId === activeNodeId)
+      || (intent.kind === "destination" && intent.destination !== destination);
+    const decision = requestNavigationDecision(dirty && threatensDraft, intent);
+    if (decision.pending) setPendingNavigation(decision.pending);
+    if (decision.execute) executeNavigation(decision.execute);
+  }
+
+  function cancelPendingNavigation() {
+    if (!pendingNavigation) return;
+    const decision = resolveNavigationDecision(pendingNavigation, "cancel");
+    setPendingNavigation(decision.pending);
+  }
+
+  function discardAndNavigate() {
+    if (!pendingNavigation) return;
+    const decision = resolveNavigationDecision(pendingNavigation, "discard");
+    setDraft(node?.markdown ?? "");
+    setPendingNavigation(decision.pending);
+    if (decision.execute) executeNavigation(decision.execute);
+  }
+
+  async function saveAndNavigate() {
+    if (!pendingNavigation) return;
+    const intent = pendingNavigation;
+    const saveDecision = resolveNavigationDecision(intent, "save");
+    if (!saveDecision.shouldSave) return;
+    const result = await saveNodeDraft();
+    const decision = resolveNavigationDecision(intent, "save", result);
+    setPendingNavigation(decision.pending);
+    if (decision.execute) executeNavigation(decision.execute);
+  }
+
+  function keepConflictedDraft() {
+    setConflictLatest(null);
+    setPendingNavigation(null);
+  }
+
+  function loadLatestAfterConflict() {
+    if (!conflictLatest) return;
+    const intent = pendingNavigation;
+    setNode(conflictLatest);
+    setDraft(conflictLatest.markdown);
+    setConflictLatest(null);
+    setPendingNavigation(null);
+    if (intent) executeNavigation(intent);
   }
 
   function toggleSidebar() {
@@ -645,7 +776,7 @@ export function App() {
       hasProvider={providers.length > 0}
       creating={creating}
       onCreate={createProjectFromForm}
-      onOpen={openProject}
+      onOpen={(item) => requestNavigation({ kind: "project", projectId: item.id })}
       onReveal={(projectId) => void revealProjectInFileManager(projectId)}
       onOpenSettings={() => setSettingsOpen(true)}
       notice={null}
@@ -688,16 +819,18 @@ export function App() {
         dirty={dirty}
         notice={notice}
         onDismissNotice={dismissNotice}
-        onDestination={selectDestination}
-        onProject={openProject}
-        onNode={selectNode}
-        onCloseNode={closeNode}
+        onDestination={(nextDestination) => requestNavigation({ kind: "destination", destination: nextDestination })}
+        onProject={(item) => requestNavigation({ kind: "project", projectId: item.id })}
+        onNode={(id) => requestNavigation({ kind: "node", nodeId: id })}
+        onCloseNode={(id) => requestNavigation({ kind: "close-node", nodeId: id })}
         onToggleSidebar={toggleSidebar}
         onOpenSettings={() => setSettingsOpen(true)}
       >
         {pageContent}
       </AppShell>
       <AgentRuleDialog open={agentOverrideOpen} nodeTitle={nodeTitle} value={agentOverrideDraft} saving={savingAgentOverride} onChange={setAgentOverrideDraft} onClose={() => setAgentOverrideOpen(false)} onSave={() => void saveAgentOverrideDraft()} />
+      <DirtyNavigationDialog open={pendingNavigation !== null && conflictLatest === null} saving={saving} onSave={() => void saveAndNavigate()} onDiscard={discardAndNavigate} onCancel={cancelPendingNavigation} />
+      <RevisionConflictDialog latest={conflictLatest} onKeepDraft={keepConflictedDraft} onLoadLatest={loadLatestAfterConflict} />
       {settingsOpen ? (
         <SettingsDialog
           settings={settings}
