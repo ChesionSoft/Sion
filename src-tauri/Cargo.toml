@@ -9,6 +9,8 @@ edition = "2024"
 name = "sion_desktop_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[workspace]
+
 [build-dependencies]
 image = "0.25.10"
 tauri-build = { version = "2.5.3", features = [] }
