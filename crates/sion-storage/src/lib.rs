@@ -1558,6 +1558,10 @@ mod tests {
             started_at: Some("2026-07-15T00:00:01.000Z".to_string()),
             finished_at: Some("2026-07-15T00:00:02.000Z".to_string()),
             summary: Some("用户取消，未保存任何部分助手内容".to_string()),
+            provider_id: None,
+            model: None,
+            reasoning_effort: None,
+            file_ids: Vec::new(),
         };
         store.save_run(&run).unwrap();
 

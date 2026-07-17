@@ -56,10 +56,9 @@ where
         .await
         .map_err(|error| format!("model request failed: {error}"))?;
     if !response.status().is_success() {
-        return Err(format!(
-            "model provider returned HTTP {}",
-            response.status()
-        ));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("model provider returned HTTP {status}: {body}"));
     }
 
     let mut bytes = response.bytes_stream();

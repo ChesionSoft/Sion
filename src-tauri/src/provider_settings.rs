@@ -179,34 +179,6 @@ pub fn set_default(app_data_root: &Path, provider_id: &str) -> Result<ProviderSu
     Ok(summary(provider))
 }
 
-pub fn resolve_default_model(app_data_root: &Path) -> Result<ResolvedModel, String> {
-    let file = read_file(app_data_root)?;
-    let provider = file
-        .providers
-        .iter()
-        .find(|provider| provider.is_default)
-        .or_else(|| file.providers.first())
-        .ok_or_else(|| "configure a model provider before starting an Agent Run".to_string())?;
-    let model = provider
-        .models
-        .iter()
-        .find(|model| model.is_default)
-        .or_else(|| provider.models.first())
-        .ok_or_else(|| "the default provider has no model".to_string())?;
-    let context_window_tokens = model
-        .context_window_tokens
-        .ok_or_else(|| "the default model is missing a context window".to_string())?;
-    let endpoint = build_endpoint(&provider.api_base_url, &provider.api_url_mode, &provider.protocol)?;
-    Ok(ResolvedModel {
-        provider_id: provider.id.clone(),
-        endpoint,
-        api_key: provider.api_key.clone(),
-        protocol: provider.protocol.clone(),
-        model: model.name.clone(),
-        context_window_tokens,
-    })
-}
-
 pub fn default_selection(app_data_root: &Path) -> Result<ChatModelSelection, String> {
     let file = read_file(app_data_root)?;
     let provider = file
@@ -452,7 +424,7 @@ mod tests {
         edited.api_key = None;
         save(&root, edited).unwrap();
         assert_eq!(
-            resolve_default_model(&root).unwrap().api_key,
+            resolve_model(&root, "provider-a", "model-a").unwrap().api_key,
             "secret-value"
         );
         let _ = fs::remove_dir_all(root);

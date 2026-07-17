@@ -57,6 +57,7 @@ struct AgentJob {
     session_id: String,
     prompt: String,
     model: provider_settings::ResolvedModel,
+    reasoning_effort: ReasoningEffort,
     cancellation: CancellationToken,
 }
 
@@ -279,6 +280,7 @@ struct AgentRunStartRequest {
     project_id: String,
     node_id: WorkflowNodeId,
     session_id: String,
+    message: String,
     file_ids: Vec<String>,
     now: String,
 }
@@ -685,6 +687,94 @@ fn provider_delete(
     })
 }
 
+#[derive(Debug)]
+struct PreparedSend {
+    resolved: provider_settings::ResolvedModel,
+    selection: ChatModelSelection,
+    prompt: String,
+    #[allow(dead_code)]
+    estimate: ContextEstimate,
+    user_message: ChatMessage,
+    file_ids: Vec<String>,
+}
+
+impl PreparedSend {
+    fn run_request(
+        &self,
+        project_id: String,
+        node_id: WorkflowNodeId,
+        created_at: String,
+    ) -> sion_agent::RunRequest {
+        sion_agent::RunRequest {
+            project_id,
+            node_id,
+            provider_id: self.selection.provider_id.clone(),
+            model: self.selection.model.clone(),
+            reasoning_effort: self.selection.reasoning_effort,
+            file_ids: self.file_ids.clone(),
+            created_at,
+        }
+    }
+}
+
+fn prepare_agent_send(
+    provider_root: &Path,
+    store: &ProjectStore,
+    node_id: WorkflowNodeId,
+    session_id: &str,
+    message: &str,
+    file_ids: &[String],
+    now: &str,
+) -> Result<PreparedSend, String> {
+    let session = store
+        .session(node_id, session_id)
+        .map_err(|error| error.to_string())?;
+    let selection = match session.model_selection {
+        Some(selection) => selection,
+        None => provider_settings::default_selection(provider_root)?,
+    };
+    let resolved = provider_settings::resolve_model(
+        provider_root,
+        &selection.provider_id,
+        &selection.model,
+    )?;
+    let prepared = conversation_runtime::prepare_conversation(
+        store,
+        node_id,
+        Some(session_id),
+        message,
+        file_ids,
+        resolved.context_window_tokens,
+    )?;
+    if prepared.estimate.status == sion_core::ContextEstimateStatus::Blocked {
+        return Err(format!(
+            "message exceeds the model context window (estimated {} tokens)",
+            prepared.estimate.estimated_input_tokens
+        ));
+    }
+    let user_message = ChatMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        role: ChatRole::User,
+        content: message.to_string(),
+        reasoning_content: None,
+        sources: None,
+        created_at: now.to_string(),
+        turn_id: None,
+        reasoning_duration_ms: None,
+        usage: None,
+        attachments: prepared.attachments.clone(),
+        model_execution: None,
+    };
+    Ok(PreparedSend {
+        resolved,
+        selection,
+        prompt: prepared.prompt,
+        estimate: prepared.estimate,
+        user_message,
+        file_ids: file_ids.to_vec(),
+    })
+}
+
 #[tauri::command]
 fn agent_run_start(
     request: AgentRunStartRequest,
@@ -693,50 +783,70 @@ fn agent_run_start(
 ) -> Result<VersionedResponse<sion_agent::AgentRun>, ApiError> {
     assert_api_version(&request.version)?;
     let app_data_root = sion_root(&app)?;
-    let model =
-        provider_settings::resolve_default_model(&app_data_root).map_err(ApiError::CheckFailed)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let store = ProjectStore::at(&project_root);
-    let node = store
-        .node(request.node_id)
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let messages = store
-        .messages(request.node_id, &request.session_id)
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let project_override = store
-        .agent_override(request.node_id)
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let attachments = conversation_runtime::load_selected_files(&store, &request.file_ids)
-        .map_err(ApiError::CheckFailed)?;
-    let prompt = conversation_runtime::build_agent_prompt(conversation_runtime::ConversationParts {
-        node: &node,
-        messages: &messages,
-        project_override: project_override.as_deref(),
-        attachments: &attachments,
-        draft: "",
-    });
-    let run = state
+    let prepared = prepare_agent_send(
+        &app_data_root,
+        &store,
+        request.node_id,
+        &request.session_id,
+        &request.message,
+        &request.file_ids,
+        &request.now,
+    )
+    .map_err(ApiError::CheckFailed)?;
+    if store
+        .session(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?
+        .model_selection
+        .is_none()
+    {
+        store
+            .update_session_model(
+                request.node_id,
+                &request.session_id,
+                prepared.selection.clone(),
+                request.now.clone(),
+            )
+            .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    }
+    let run_request = prepared.run_request(
+        request.project_id.clone(),
+        request.node_id,
+        request.now.clone(),
+    );
+    let mut scheduler = state
         .scheduler
         .lock()
-        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
-        .enqueue(sion_agent::RunRequest {
-            project_id: request.project_id.clone(),
-            node_id: request.node_id,
-            provider_id: model.provider_id.clone(),
-            model: model.model.clone(),
-            reasoning_effort: sion_core::ReasoningEffort::Medium,
-            file_ids: request.file_ids.clone(),
-            created_at: request.now.clone(),
-        })
+        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?;
+    scheduler
+        .ensure_available(&request.project_id, request.node_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     store
-        .save_run(&run)
+        .append_message(
+            request.node_id,
+            &request.session_id,
+            prepared.user_message.clone(),
+            request.now.clone(),
+        )
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let run = scheduler
+        .enqueue(run_request)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    if let Err(error) = store.save_run(&run) {
+        let promoted = scheduler
+            .cancel(&run.id, request.now.clone(), Some("运行记录保存失败".into()))
+            .unwrap_or_default();
+        drop(scheduler);
+        spawn_promoted_runs(app.clone(), state.inner().clone(), promoted);
+        return Err(ApiError::CheckFailed(error.to_string()));
+    }
     let job = AgentJob {
         project_root,
-        session_id: request.session_id,
-        prompt,
-        model,
+        session_id: request.session_id.clone(),
+        prompt: prepared.prompt.clone(),
+        model: prepared.resolved.clone(),
+        reasoning_effort: prepared.selection.reasoning_effort,
         cancellation: CancellationToken::new(),
     };
     state
@@ -744,7 +854,9 @@ fn agent_run_start(
         .lock()
         .map_err(|_| ApiError::CheckFailed("agent job lock is poisoned".to_string()))?
         .insert(run.id.clone(), job.clone());
-    if run.status == sion_agent::AgentRunStatus::Running {
+    let should_spawn = run.status == sion_agent::AgentRunStatus::Running;
+    drop(scheduler);
+    if should_spawn {
         spawn_agent_run(app, state.inner().clone(), run.clone(), job);
     }
     Ok(VersionedResponse {
@@ -1482,7 +1594,7 @@ fn spawn_agent_run(
                 protocol,
                 model: job.model.model.clone(),
                 prompt: job.prompt.clone(),
-                reasoning_effort: sion_core::ReasoningEffort::Medium,
+                reasoning_effort: job.reasoning_effort,
             },
             job.cancellation.clone(),
             move |delta| {
@@ -1534,13 +1646,16 @@ fn complete_agent_run(
                     )),
                 )
                 .map(|promoted| (promoted, content)),
-            Err(error) => scheduler
-                .fail(
-                    &run.id,
-                    finished_at.clone(),
-                    format!("模型调用失败：{error}"),
-                )
-                .map(|promoted| (promoted, None)),
+            Err(error) => {
+                let error = if error.contains("reasoning") {
+                    format!("{error}请将推理强度改为“关闭”后重试。")
+                } else {
+                    error
+                };
+                scheduler
+                    .fail(&run.id, finished_at.clone(), format!("模型调用失败：{error}"))
+                    .map(|promoted| (promoted, None))
+            }
         };
         let Ok((promoted, content)) = transition else {
             return;
@@ -1567,7 +1682,11 @@ fn complete_agent_run(
                 reasoning_duration_ms: None,
                 usage: None,
                 attachments: Vec::new(),
-                model_execution: None,
+                model_execution: Some(sion_core::ModelExecution {
+                    provider_id: run.provider_id.clone().expect("new runs freeze provider"),
+                    model: run.model.clone().expect("new runs freeze model"),
+                    reasoning_effort: run.reasoning_effort.expect("new runs freeze effort"),
+                }),
             },
             finished_at.clone(),
         );
@@ -1909,5 +2028,108 @@ mod tests {
             conversation_runtime::compose_effective_agent_rules(WorkflowNodeId::BasicInfo, Some(" \n ".to_string()));
         assert_eq!(rules.custom_markdown, None);
         assert_eq!(rules.effective_markdown, rules.built_in_markdown);
+    }
+
+    struct SendFixture {
+        root: PathBuf,
+        provider_root: PathBuf,
+        store: ProjectStore,
+        session: ChatSession,
+        file: ProjectFile,
+    }
+
+    fn send_fixture(window: u64) -> SendFixture {
+        let root = temp_command_root();
+        let projects = root.join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        ProjectStore::create_in(&projects, create_input("project-1")).unwrap();
+        let store = ProjectStore::at(projects.join("project-1"));
+        let provider_root = root.join("global");
+        provider_settings::save(
+            &provider_root,
+            provider_settings::ProviderInput {
+                id: "provider-a".into(),
+                name: "Provider A".into(),
+                api_base_url: "https://example.invalid/v1".into(),
+                api_url_mode: "base".into(),
+                protocol: "chat_completions".into(),
+                is_default: true,
+                api_key: Some("secret".into()),
+                now: "now".into(),
+                models: vec![provider_settings::ProviderModel {
+                    name: "model-a".into(),
+                    is_default: true,
+                    tool_calling: false,
+                    context_window_tokens: Some(window),
+                }],
+            },
+        )
+        .unwrap();
+        let selection = ChatModelSelection {
+            provider_id: "provider-a".into(),
+            model: "model-a".into(),
+            reasoning_effort: ReasoningEffort::High,
+        };
+        let session = store
+            .create_session(WorkflowNodeId::Goals, "会话".into(), Some(selection), "now".into())
+            .unwrap();
+        let source = root.join("brief.md");
+        std::fs::write(&source, "brief content").unwrap();
+        let file = store.import_file(&source, "now".into()).unwrap();
+        SendFixture {
+            root,
+            provider_root,
+            store,
+            session,
+            file,
+        }
+    }
+
+    #[test]
+    fn blocked_context_does_not_append_a_message_or_run() {
+        let fixture = send_fixture(8);
+        let result = prepare_agent_send(
+            &fixture.provider_root,
+            &fixture.store,
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            "this input is intentionally too large",
+            &[],
+            "now",
+        );
+        assert!(result.unwrap_err().contains("context window"));
+        assert!(fixture
+            .store
+            .messages(WorkflowNodeId::Goals, &fixture.session.id)
+            .unwrap()
+            .is_empty());
+        assert!(fixture.store.list_runs().unwrap().is_empty());
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn successful_send_snapshots_files_and_freezes_run_values() {
+        let fixture = send_fixture(128_000);
+        let prepared = prepare_agent_send(
+            &fixture.provider_root,
+            &fixture.store,
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            "use the brief",
+            &[fixture.file.id.clone()],
+            "now",
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.user_message.attachments[0].original_name,
+            fixture.file.original_name
+        );
+        let mut scheduler = sion_agent::RunScheduler::default();
+        let run = scheduler
+            .enqueue(prepared.run_request("project-1".into(), WorkflowNodeId::Goals, "now".into()))
+            .unwrap();
+        assert_eq!(run.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(run.file_ids, vec![fixture.file.id.clone()]);
+        std::fs::remove_dir_all(fixture.root).unwrap();
     }
 }

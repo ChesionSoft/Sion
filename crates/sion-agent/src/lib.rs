@@ -122,6 +122,20 @@ impl RunScheduler {
         Ok(self.runs[&run.id].clone())
     }
 
+    pub fn ensure_available(
+        &mut self,
+        project_id: &str,
+        node_id: WorkflowNodeId,
+    ) -> Result<(), SchedulerError> {
+        if self.reserved_nodes.contains(&(project_id.to_string(), node_id)) {
+            return Err(SchedulerError::NodeBusy {
+                project_id: project_id.to_string(),
+                node_id: node_id.as_str().to_string(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn complete(
         &mut self,
         run_id: &str,
@@ -337,5 +351,26 @@ mod tests {
         assert_eq!(run.model.as_deref(), Some("model-a"));
         assert_eq!(run.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(run.file_ids, vec!["file-a"]);
+    }
+
+    #[test]
+    fn availability_check_rejects_a_reserved_node_without_mutating_state() {
+        let mut scheduler = RunScheduler::default();
+        scheduler
+            .enqueue(RunRequest {
+                project_id: "project-a".into(),
+                node_id: WorkflowNodeId::Goals,
+                provider_id: "p".into(),
+                model: "m".into(),
+                reasoning_effort: ReasoningEffort::Medium,
+                file_ids: vec![],
+                created_at: "now".into(),
+            })
+            .unwrap();
+        assert!(matches!(
+            scheduler.ensure_available("project-a", WorkflowNodeId::Goals),
+            Err(SchedulerError::NodeBusy { .. })
+        ));
+        assert_eq!(scheduler.active_count(), 1);
     }
 }
