@@ -682,7 +682,15 @@ fn agent_run_start(
         .scheduler
         .lock()
         .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
-        .enqueue(request.project_id.clone(), request.node_id, request.now)
+        .enqueue(sion_agent::RunRequest {
+            project_id: request.project_id.clone(),
+            node_id: request.node_id,
+            provider_id: model.provider_id.clone(),
+            model: model.model.clone(),
+            reasoning_effort: sion_core::ReasoningEffort::Medium,
+            file_ids: request.file_ids.clone(),
+            created_at: request.now.clone(),
+        })
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     store
         .save_run(&run)
@@ -1469,6 +1477,7 @@ fn spawn_agent_run(
                 protocol,
                 model: job.model.model.clone(),
                 prompt: job.prompt.clone(),
+                reasoning_effort: sion_core::ReasoningEffort::Medium,
             },
             job.cancellation.clone(),
             move |delta| {
@@ -1776,6 +1785,10 @@ mod tests {
             started_at: Some("now".to_string()),
             finished_at: None,
             summary: None,
+            provider_id: None,
+            model: None,
+            reasoning_effort: None,
+            file_ids: Vec::new(),
         };
         assert!(validate_run_project(&run, "project-a").is_ok());
         let error = validate_run_project(&run, "project-b").unwrap_err();

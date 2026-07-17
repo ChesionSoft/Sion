@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
-use sion_core::WorkflowNodeId;
+use sion_core::{ReasoningEffort, WorkflowNodeId};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -35,6 +35,25 @@ pub struct AgentRun {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunRequest {
+    pub project_id: String,
+    pub node_id: WorkflowNodeId,
+    pub provider_id: String,
+    pub model: String,
+    pub reasoning_effort: ReasoningEffort,
+    pub file_ids: Vec<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -74,33 +93,32 @@ impl RunScheduler {
         }
     }
 
-    pub fn enqueue(
-        &mut self,
-        project_id: String,
-        node_id: WorkflowNodeId,
-        created_at: String,
-    ) -> Result<AgentRun, SchedulerError> {
-        let key = (project_id.clone(), node_id);
+    pub fn enqueue(&mut self, request: RunRequest) -> Result<AgentRun, SchedulerError> {
+        let key = (request.project_id.clone(), request.node_id);
         if self.reserved_nodes.contains(&key) {
             return Err(SchedulerError::NodeBusy {
-                project_id,
-                node_id: node_id.as_str().to_string(),
+                project_id: request.project_id,
+                node_id: request.node_id.as_str().to_string(),
             });
         }
         let run = AgentRun {
             id: Uuid::new_v4().to_string(),
-            project_id,
-            node_id,
+            project_id: request.project_id,
+            node_id: request.node_id,
             status: AgentRunStatus::Queued,
-            created_at: created_at.clone(),
+            created_at: request.created_at.clone(),
             started_at: None,
             finished_at: None,
             summary: None,
+            provider_id: Some(request.provider_id),
+            model: Some(request.model),
+            reasoning_effort: Some(request.reasoning_effort),
+            file_ids: request.file_ids,
         };
         self.reserved_nodes.insert(key);
         self.queue.push_back(run.id.clone());
         self.runs.insert(run.id.clone(), run.clone());
-        self.promote(&created_at);
+        self.promote(&request.created_at);
         Ok(self.runs[&run.id].clone())
     }
 
@@ -220,11 +238,15 @@ mod tests {
 
     fn enqueue(scheduler: &mut RunScheduler, node_id: WorkflowNodeId) -> AgentRun {
         scheduler
-            .enqueue(
-                "project-a".to_string(),
+            .enqueue(RunRequest {
+                project_id: "project-a".to_string(),
                 node_id,
-                "2026-07-15T00:00:00.000Z".to_string(),
-            )
+                provider_id: "provider-a".to_string(),
+                model: "model-a".to_string(),
+                reasoning_effort: ReasoningEffort::Medium,
+                file_ids: Vec::new(),
+                created_at: "2026-07-15T00:00:00.000Z".to_string(),
+            })
             .unwrap()
     }
 
@@ -250,11 +272,15 @@ mod tests {
         let mut scheduler = RunScheduler::new(1);
         let first = enqueue(&mut scheduler, WorkflowNodeId::Goals);
         assert!(matches!(
-            scheduler.enqueue(
-                "project-a".to_string(),
-                WorkflowNodeId::Goals,
-                "now".to_string()
-            ),
+            scheduler.enqueue(RunRequest {
+                project_id: "project-a".to_string(),
+                node_id: WorkflowNodeId::Goals,
+                provider_id: "provider-a".to_string(),
+                model: "model-a".to_string(),
+                reasoning_effort: ReasoningEffort::Medium,
+                file_ids: Vec::new(),
+                created_at: "now".to_string()
+            }),
             Err(SchedulerError::NodeBusy { .. })
         ));
         scheduler
@@ -262,11 +288,15 @@ mod tests {
             .unwrap();
         assert!(
             scheduler
-                .enqueue(
-                    "project-a".to_string(),
-                    WorkflowNodeId::Goals,
-                    "later".to_string()
-                )
+                .enqueue(RunRequest {
+                    project_id: "project-a".to_string(),
+                    node_id: WorkflowNodeId::Goals,
+                    provider_id: "provider-a".to_string(),
+                    model: "model-a".to_string(),
+                    reasoning_effort: ReasoningEffort::Medium,
+                    file_ids: Vec::new(),
+                    created_at: "later".to_string()
+                })
                 .is_ok()
         );
     }
@@ -287,5 +317,25 @@ mod tests {
         assert_eq!(cancelled.status, AgentRunStatus::Cancelled);
         assert_eq!(cancelled.started_at, None);
         assert_eq!(scheduler.queued_count(), 0);
+    }
+
+    #[test]
+    fn enqueue_freezes_run_request_fields() {
+        let mut scheduler = RunScheduler::default();
+        let run = scheduler
+            .enqueue(RunRequest {
+                project_id: "project-a".into(),
+                node_id: WorkflowNodeId::Goals,
+                provider_id: "provider-a".into(),
+                model: "model-a".into(),
+                reasoning_effort: ReasoningEffort::High,
+                file_ids: vec!["file-a".into()],
+                created_at: "now".into(),
+            })
+            .unwrap();
+        assert_eq!(run.provider_id.as_deref(), Some("provider-a"));
+        assert_eq!(run.model.as_deref(), Some("model-a"));
+        assert_eq!(run.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(run.file_ids, vec!["file-a"]);
     }
 }

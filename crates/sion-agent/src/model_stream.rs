@@ -4,6 +4,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sion_core::ReasoningEffort;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +21,7 @@ pub struct StreamRequest {
     pub protocol: ProviderProtocol,
     pub model: String,
     pub prompt: String,
+    pub reasoning_effort: ReasoningEffort,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,18 +47,7 @@ pub async fn stream_text_with<F>(
 where
     F: FnMut(&str),
 {
-    let body = match request.protocol {
-        ProviderProtocol::ChatCompletions => json!({
-            "model": request.model,
-            "stream": true,
-            "messages": [{"role": "user", "content": request.prompt}]
-        }),
-        ProviderProtocol::OpenaiResponses => json!({
-            "model": request.model,
-            "stream": true,
-            "input": request.prompt
-        }),
-    };
+    let body = request_body(request);
     let response = client
         .post(&request.endpoint)
         .bearer_auth(&request.api_key)
@@ -93,6 +84,32 @@ where
         }
     }
     Ok(StreamOutcome::Completed(tokens))
+}
+
+pub fn request_body(request: &StreamRequest) -> serde_json::Value {
+    let mut body = match request.protocol {
+        ProviderProtocol::ChatCompletions => json!({
+            "model": request.model,
+            "stream": true,
+            "messages": [{"role": "user", "content": request.prompt}]
+        }),
+        ProviderProtocol::OpenaiResponses => json!({
+            "model": request.model,
+            "stream": true,
+            "input": request.prompt
+        }),
+    };
+    if let Some(effort) = request.reasoning_effort.provider_value() {
+        match request.protocol {
+            ProviderProtocol::ChatCompletions => {
+                body["reasoning_effort"] = json!(effort);
+            }
+            ProviderProtocol::OpenaiResponses => {
+                body["reasoning"] = json!({ "effort": effort });
+            }
+        }
+    }
+    body
 }
 
 #[derive(Debug)]
@@ -195,6 +212,7 @@ mod tests {
             protocol,
             model: "test".to_string(),
             prompt: "hello".to_string(),
+            reasoning_effort: ReasoningEffort::Medium,
         }
     }
 
@@ -246,5 +264,33 @@ mod tests {
         assert!(take_frames(&mut buffer).is_empty());
         buffer.push_str("\n\n");
         assert_eq!(take_frames(&mut buffer).len(), 1);
+    }
+
+    #[test]
+    fn request_body_maps_reasoning_effort_without_output_limits() {
+        let mut chat_request = request(
+            "https://example.invalid/chat".into(),
+            ProviderProtocol::ChatCompletions,
+        );
+        chat_request.reasoning_effort = ReasoningEffort::High;
+        let chat_high = request_body(&chat_request);
+        chat_request.reasoning_effort = ReasoningEffort::Off;
+        let chat_off = request_body(&chat_request);
+        let mut responses_request = request(
+            "https://example.invalid/responses".into(),
+            ProviderProtocol::OpenaiResponses,
+        );
+        responses_request.reasoning_effort = ReasoningEffort::Low;
+        let responses_low = request_body(&responses_request);
+        responses_request.reasoning_effort = ReasoningEffort::Off;
+        let responses_off = request_body(&responses_request);
+        assert_eq!(chat_high["reasoning_effort"], "high");
+        assert!(chat_off.get("reasoning_effort").is_none());
+        assert_eq!(responses_low["reasoning"]["effort"], "low");
+        assert!(responses_off.get("reasoning").is_none());
+        for body in [chat_high, chat_off, responses_low, responses_off] {
+            assert!(body.get("max_tokens").is_none());
+            assert!(body.get("max_output_tokens").is_none());
+        }
     }
 }
