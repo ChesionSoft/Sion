@@ -370,6 +370,12 @@ pub enum ModelCallCategory {
     Answer,
     ToolPlanning,
     DocumentUpdate,
+    /// Fallback for legacy or unrecognized categories (e.g. the removed
+    /// `fact_judge`), so historical chat files stay readable. The category is
+    /// informational only and never drives behavior; on the next write the
+    /// value is normalized to `other`.
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -867,6 +873,47 @@ mod tests {
         );
         assert_eq!(assistant.usage.as_ref().unwrap().total_tokens, 160);
         assert_eq!(assistant.reasoning_duration_ms, Some(1200));
+    }
+
+    #[test]
+    fn tolerates_legacy_model_call_categories_when_parsing_messages() {
+        // Chat files written before the `fact_judge` category was removed (commit
+        // 7c2fd02) still carry that value on disk. Such files must remain
+        // readable instead of failing the whole session.
+        let messages: Vec<ChatMessage> = serde_json::from_str(
+            r##"[{
+              "id": "legacy-call-1",
+              "role": "assistant",
+              "content": "历史回复",
+              "createdAt": "2026-07-03T04:02:07.184Z",
+              "usage": {
+                "inputTokens": 1185,
+                "outputTokens": 515,
+                "totalTokens": 1700,
+                "turnId": "turn-legacy-1",
+                "source": "exact",
+                "callCount": 1,
+                "calls": [
+                  {
+                    "id": "call-legacy-1",
+                    "category": "fact_judge",
+                    "providerId": "provider-legacy",
+                    "model": "legacy-model",
+                    "source": "exact",
+                    "status": "completed",
+                    "inputTokens": 1185,
+                    "outputTokens": 515,
+                    "totalTokens": 1700
+                  }
+                ]
+              }
+            }]"##,
+        )
+        .unwrap();
+        let assistant = &messages[0];
+        let call = &assistant.usage.as_ref().unwrap().calls[0];
+        assert_eq!(call.category, ModelCallCategory::Other);
+        assert_eq!(call.total_tokens, 1700);
     }
 
     #[test]
