@@ -45,7 +45,7 @@ import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { ProjectFilesTab } from "./components/workspace/ProjectFilesTab";
 import { WorkspaceTabs } from "./components/workspace/WorkspaceTabs";
 import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatSession, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightTabId, type UiSettings, type WorkflowNode } from "./types";
-import { closeNode as closeUiNode, closeRightTab as closeUiRightTab, durableUiSettings, initialProjectUi, initialUiSettings, openNode as openUiNode, openRightTab as openUiRightTab, requestNavigationDecision, resolveNavigationDecision, sanitizeUiSettings, type NavigationIntent, type SaveResult } from "./ui-state.ts";
+import { closeNode as closeUiNode, closeRightTab as closeUiRightTab, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, openNode as openUiNode, openRightTab as openUiRightTab, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 
 const now = () => new Date().toISOString();
 
@@ -87,6 +87,13 @@ export function App() {
   const [uiHydrated, setUiHydrated] = useState(false);
   const uiPersistenceWarningShown = useRef(false);
   const skipNextUiPersistence = useRef(true);
+  const uiRef = useRef<UiSettings>(initialUiSettings());
+  const uiChangeGeneration = useRef(0);
+  const uiPersistedGeneration = useRef(0);
+  const uiSaveQueue = useRef(createSerialTaskQueue());
+  const workspaceScopeRef = useRef<string | null>(null);
+  const messageScopeRef = useRef<string | null>(null);
+  const projectScopeRef = useRef<string | null>(null);
 
   const projectUi = project ? ui.projects[project.id] : undefined;
   const activeNodeId = projectUi?.activeNodeId ?? null;
@@ -95,6 +102,10 @@ export function App() {
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
   const dirty = node !== null && draft !== node.markdown;
   const dismissNotice = useCallback(() => setNoticeState(null), []);
+  workspaceScopeRef.current = requestScope(project?.id, activeNodeId);
+  messageScopeRef.current = requestScope(project?.id, activeNodeId, sessionId);
+  projectScopeRef.current = project?.id ?? null;
+  uiRef.current = ui;
 
   function setNotice(message: string) {
     const kind = /失败|错误|不可用/.test(message) ? "error" : /正在|请先|未|取消|检测|暂/.test(message) ? "warning" : "success";
@@ -103,8 +114,27 @@ export function App() {
 
   function updateUi(next: UiSettings) {
     const sanitized = sanitizeUiSettings(next);
+    uiRef.current = sanitized;
+    uiChangeGeneration.current += 1;
     setUi(sanitized);
     setSettings((current) => ({ ...current, ui: sanitized }));
+  }
+
+  function persistUiSnapshot(snapshot: UiSettings, generation: number, showWarning: boolean): Promise<boolean> {
+    return uiSaveQueue.current(async () => {
+      try {
+        await saveUiSettings(durableUiSettings(snapshot));
+        uiPersistedGeneration.current = Math.max(uiPersistedGeneration.current, generation);
+        uiPersistenceWarningShown.current = false;
+        return true;
+      } catch (error) {
+        if (showWarning && !uiPersistenceWarningShown.current) {
+          uiPersistenceWarningShown.current = true;
+          setNotice(`保存界面状态失败：${String(error)}`);
+        }
+        return false;
+      }
+    });
   }
 
   useEffect(() => {
@@ -117,14 +147,9 @@ export function App() {
       skipNextUiPersistence.current = false;
       return;
     }
+    const generation = uiChangeGeneration.current;
     const timer = window.setTimeout(() => {
-      void saveUiSettings(durableUiSettings(ui)).then(() => {
-        uiPersistenceWarningShown.current = false;
-      }).catch((error) => {
-        if (uiPersistenceWarningShown.current) return;
-        uiPersistenceWarningShown.current = true;
-        setNotice(`保存界面状态失败：${String(error)}`);
-      });
+      void persistUiSnapshot(ui, generation, true);
     }, 300);
     return () => window.clearTimeout(timer);
   }, [ui, uiHydrated]);
@@ -200,9 +225,11 @@ export function App() {
     let disposed = false;
     try {
       void getCurrentWindow().onCloseRequested((event) => {
-        if (!dirty) return;
+        const pendingUiSave = uiHydrated && uiPersistedGeneration.current < uiChangeGeneration.current;
+        if (!dirty && !pendingUiSave) return;
         event.preventDefault();
-        requestNavigation({ kind: "close-window" });
+        if (dirty) requestNavigation({ kind: "close-window" });
+        else void closeWindowSafely();
       }).then((stop) => {
         if (disposed) stop();
         else unlisten = stop;
@@ -216,7 +243,7 @@ export function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [dirty]);
+  }, [dirty, uiHydrated]);
 
   async function loadProjects(): Promise<RecentProject[]> {
     try {
@@ -242,7 +269,8 @@ export function App() {
   async function loadSettings() {
     try {
       const loaded = await getSettings();
-      const loadedUi = sanitizeUiSettings(loaded.ui);
+      const loadedUi = durableUiSettings(loaded.ui);
+      uiRef.current = loadedUi;
       setSettings({ ...loaded, ui: loadedUi });
       setUi(loadedUi);
       setDestination(loadedUi.lastDestination);
@@ -318,8 +346,11 @@ export function App() {
 
   async function loadRuns(projectId: string) {
     try {
-      setRuns(await listRuns(projectId));
+      const loaded = await listRuns(projectId);
+      if (projectScopeRef.current !== projectId) return;
+      setRuns(loaded);
     } catch (error) {
+      if (projectScopeRef.current !== projectId) return;
       setNotice(`读取任务中心失败：${String(error)}`);
     }
   }
@@ -358,30 +389,43 @@ export function App() {
     setFilePreview(null);
     const existing = ui.projects[item.id];
     const nextProjectUi = existing?.initialized ? existing : initialProjectUi();
+    if (item.id !== project?.id) {
+      setNode(null);
+      setDraft("");
+    }
+    projectScopeRef.current = item.id;
+    workspaceScopeRef.current = requestScope(item.id, nextProjectUi.activeNodeId);
+    messageScopeRef.current = null;
     updateUi({ ...ui, projects: { ...ui.projects, [item.id]: nextProjectUi } });
     setProject(item);
     setDestination("workspace");
   }
 
   async function loadNode(projectId: string, nextNodeId: NodeId) {
+    const scope = requestScope(projectId, nextNodeId);
     setNotice(`正在读取 ${NODES.find(([id]) => id === nextNodeId)?.[1] ?? "节点"}`);
     try {
       const loaded = await getNode(projectId, nextNodeId);
+      if (workspaceScopeRef.current !== scope) return;
       setNode(loaded);
       setDraft(loaded.markdown);
       setNotice(`节点 revision ${loaded.revision} 已从本地项目读取`);
     } catch (error) {
+      if (workspaceScopeRef.current !== scope) return;
       setNode(null);
       setNotice(`读取节点失败：${String(error)}`);
     }
   }
 
   async function loadAgentOverride(projectId: string, nextNodeId: NodeId) {
+    const scope = requestScope(projectId, nextNodeId);
     setAgentOverride(null);
     try {
       const response = await getAgentOverride(projectId, nextNodeId);
+      if (workspaceScopeRef.current !== scope) return;
       setAgentOverride(response.markdown ?? null);
     } catch (error) {
+      if (workspaceScopeRef.current !== scope) return;
       setNotice(`读取节点自定义规则失败：${String(error)}`);
     }
   }
@@ -407,7 +451,7 @@ export function App() {
   }
 
   async function saveNodeDraft(): Promise<SaveResult> {
-    if (!project || !node) return "failed";
+    if (!project || !node || node.id !== nodeId) return "failed";
     setSaving(true);
     try {
       const result = await saveNode(project.id, nodeId, node.revision, draft, node.status, now());
@@ -476,14 +520,17 @@ export function App() {
   }
 
   async function loadSessions(projectId: string, nextNodeId: NodeId) {
+    const scope = requestScope(projectId, nextNodeId);
     setSessionId(null);
     setMessages([]);
     setDeliveryPreview(null);
     try {
       const loaded = await listSessions(projectId, nextNodeId);
+      if (workspaceScopeRef.current !== scope) return;
       setSessions(loaded);
       setSessionId(loaded[0]?.id ?? null);
     } catch (error) {
+      if (workspaceScopeRef.current !== scope) return;
       setSessions([]);
       setNotice(`读取会话失败：${String(error)}`);
     }
@@ -505,9 +552,13 @@ export function App() {
   }
 
   async function loadMessages(projectId: string, nextNodeId: NodeId, nextSessionId: string) {
+    const scope = requestScope(projectId, nextNodeId, nextSessionId);
     try {
-      setMessages(await listMessages(projectId, nextNodeId, nextSessionId));
+      const loaded = await listMessages(projectId, nextNodeId, nextSessionId);
+      if (messageScopeRef.current !== scope) return;
+      setMessages(loaded);
     } catch (error) {
+      if (messageScopeRef.current !== scope) return;
       setMessages([]);
       setNotice(`读取消息失败：${String(error)}`);
     }
@@ -575,8 +626,11 @@ export function App() {
 
   async function loadFiles(projectId: string) {
     try {
-      setFiles(await listFiles(projectId));
+      const loaded = await listFiles(projectId);
+      if (projectScopeRef.current !== projectId) return;
+      setFiles(loaded);
     } catch (error) {
+      if (projectScopeRef.current !== projectId) return;
       setFiles([]);
       setNotice(`读取文件池失败：${String(error)}`);
     }
@@ -628,8 +682,14 @@ export function App() {
 
   function selectNodeImmediate(id: NodeId) {
     if (!project) return;
+    if (id !== activeNodeId) {
+      setNode(null);
+      setDraft("");
+    }
     setDeliveryPreview(null);
     const current = ui.projects[project.id] ?? initialProjectUi();
+    workspaceScopeRef.current = requestScope(project.id, id);
+    messageScopeRef.current = null;
     updateUi({ ...ui, projects: { ...ui.projects, [project.id]: openUiNode(current, id) } });
     setDestination("workspace");
   }
@@ -638,11 +698,13 @@ export function App() {
     if (!project) return;
     const current = ui.projects[project.id] ?? initialProjectUi();
     const next = closeUiNode(current, id);
-    updateUi({ ...ui, projects: { ...ui.projects, [project.id]: next } });
-    if (next.activeNodeId === null) {
+    if (id === activeNodeId) {
       setNode(null);
       setDraft("");
     }
+    workspaceScopeRef.current = requestScope(project.id, next.activeNodeId);
+    messageScopeRef.current = null;
+    updateUi({ ...ui, projects: { ...ui.projects, [project.id]: next } });
   }
 
   function updateActiveProjectUi(transform: (current: ReturnType<typeof initialProjectUi>) => ReturnType<typeof initialProjectUi>) {
@@ -698,7 +760,15 @@ export function App() {
       closeNodeImmediate(intent.nodeId);
       return;
     }
-    void getCurrentWindow().destroy();
+    void closeWindowSafely();
+  }
+
+  async function closeWindowSafely() {
+    const generation = uiChangeGeneration.current;
+    if (uiHydrated && uiPersistedGeneration.current < generation) {
+      await persistUiSnapshot(uiRef.current, generation, false);
+    }
+    await getCurrentWindow().destroy();
   }
 
   function requestNavigation(intent: NavigationIntent) {
@@ -758,6 +828,7 @@ export function App() {
 
   function selectSession(nextSessionId: string) {
     setDeliveryPreview(null);
+    messageScopeRef.current = requestScope(project?.id, activeNodeId, nextSessionId);
     setSessionId(nextSessionId);
   }
 

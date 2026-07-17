@@ -139,6 +139,23 @@ pub fn save(app_data_root: &Path, mut settings: AppSettings) -> Result<AppSettin
     result.map(|()| settings)
 }
 
+pub fn update_ui(app_data_root: &Path, ui: UiSettings) -> Result<AppSettings, String> {
+    let mut settings = load(app_data_root)?;
+    settings.ui = ui;
+    save(app_data_root, settings)
+}
+
+pub fn update_projects_directory(
+    app_data_root: &Path,
+    projects_directory: Option<PathBuf>,
+) -> Result<AppSettings, String> {
+    let settings = load(app_data_root)?;
+    save(
+        app_data_root,
+        settings.with_updated_projects_directory(projects_directory),
+    )
+}
+
 /// Returns the configured projects directory only when it still exists on disk.
 /// A stale path (deleted between sessions) must not be treated as a usable
 /// container, so callers can detect the missing directory and ask the user to
@@ -214,6 +231,20 @@ mod tests {
             Some(PathBuf::from("/tmp/projects"))
         );
         assert!(changed.ui.sidebar_collapsed);
+    }
+
+    #[test]
+    fn updating_projects_directory_reloads_the_latest_ui_state() {
+        let root = temp_root();
+        let mut latest = AppSettings::with_projects_directory(None);
+        latest.ui.sidebar_collapsed = true;
+        save(&root, latest).unwrap();
+
+        let directory = root.join("projects");
+        let updated = update_projects_directory(&root, Some(directory.clone())).unwrap();
+        assert!(updated.ui.sidebar_collapsed);
+        assert_eq!(updated.projects_directory, Some(directory));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

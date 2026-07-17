@@ -3,10 +3,12 @@ import test from "node:test";
 import {
   closeNode,
   closeRightTab,
+  createSerialTaskQueue,
   durableUiSettings,
   filterAndSortProjects,
   initialProjectUi,
   requestNavigationDecision,
+  requestScope,
   resolveNavigationDecision,
   openNode,
   openRightTab,
@@ -116,4 +118,27 @@ test("save executes navigation only after a successful save", () => {
   assert.deepEqual(resolveNavigationDecision(intent, "save", "failed"), { execute: null, pending: intent, shouldSave: false });
   assert.deepEqual(resolveNavigationDecision(intent, "save", "conflict"), { execute: null, pending: intent, shouldSave: false });
   assert.deepEqual(resolveNavigationDecision(intent, "save", "saved"), { execute: intent, pending: null, shouldSave: false });
+});
+
+test("async request scopes change when project, node, or session changes", () => {
+  const nodeRequest = requestScope("project-1", "basic-info");
+  assert.equal(nodeRequest, requestScope("project-1", "basic-info"));
+  assert.notEqual(nodeRequest, requestScope("project-1", "goals"));
+  assert.notEqual(nodeRequest, requestScope("project-2", "basic-info"));
+  assert.notEqual(requestScope("project-1", "basic-info", "session-1"), requestScope("project-1", "basic-info", "session-2"));
+  assert.equal(requestScope("project-1", null), null);
+});
+
+test("serial task queue preserves persistence request order", async () => {
+  const enqueue = createSerialTaskQueue();
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const first = enqueue(async () => { order.push("first-start"); await firstGate; order.push("first-end"); });
+  const second = enqueue(async () => { order.push("second"); });
+  await Promise.resolve();
+  assert.deepEqual(order, ["first-start"]);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ["first-start", "first-end", "second"]);
 });

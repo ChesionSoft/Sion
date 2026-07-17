@@ -15,6 +15,19 @@ export type NavigationIntent =
 
 export type SaveResult = "saved" | "conflict" | "failed";
 
+export function requestScope(...parts: Array<string | null | undefined>): string | null {
+  return parts.every((part): part is string => typeof part === "string") ? JSON.stringify(parts) : null;
+}
+
+export function createSerialTaskQueue() {
+  let tail: Promise<unknown> = Promise.resolve();
+  return function enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const result = tail.then(task, task);
+    tail = result.then(() => undefined, () => undefined);
+    return result;
+  };
+}
+
 export function requestNavigationDecision(dirty: boolean, intent: NavigationIntent) {
   return dirty
     ? { execute: null, pending: intent }

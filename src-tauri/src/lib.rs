@@ -32,6 +32,11 @@ struct AgentState {
     client: reqwest::Client,
 }
 
+#[derive(Default)]
+struct SettingsState {
+    mutation: Mutex<()>,
+}
+
 impl Default for AgentState {
     fn default() -> Self {
         Self {
@@ -801,12 +806,15 @@ fn settings_get(
 fn settings_save_ui(
     request: SettingsSaveUiRequest,
     app: tauri::AppHandle,
+    state: tauri::State<'_, SettingsState>,
 ) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
     assert_api_version(&request.version)?;
     let global = sion_root(&app)?;
-    let mut settings = app_settings::load(&global).map_err(ApiError::CheckFailed)?;
-    settings.ui = request.ui;
-    let saved = app_settings::save(&global, settings).map_err(ApiError::CheckFailed)?;
+    let _guard = state
+        .mutation
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("settings lock is poisoned".to_string()))?;
+    let saved = app_settings::update_ui(&global, request.ui).map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: settings_summary(&saved),
@@ -817,24 +825,37 @@ fn settings_save_ui(
 async fn settings_pick_projects_directory(
     request: VersionedRequest,
     app: tauri::AppHandle,
+    state: tauri::State<'_, SettingsState>,
 ) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
     assert_api_version(&request)?;
     let global = sion_root(&app)?;
-    let settings = app_settings::load(&global).map_err(ApiError::CheckFailed)?;
+    let settings = {
+        let _guard = state
+            .mutation
+            .lock()
+            .map_err(|_| ApiError::CheckFailed("settings lock is poisoned".to_string()))?;
+        app_settings::load(&global).map_err(ApiError::CheckFailed)?
+    };
     let Some(directory) = project_directory_dialog(&app, &settings).blocking_pick_folder() else {
+        let _guard = state
+            .mutation
+            .lock()
+            .map_err(|_| ApiError::CheckFailed("settings lock is poisoned".to_string()))?;
+        let latest = app_settings::load(&global).map_err(ApiError::CheckFailed)?;
         return Ok(VersionedResponse {
             api_version: API_VERSION,
-            payload: settings_summary(&settings),
+            payload: settings_summary(&latest),
         });
     };
     let directory = directory.into_path().map_err(|error| {
         ApiError::CheckFailed(format!("selected directory is not a local path: {error}"))
     })?;
-    let updated = app_settings::save(
-        &global,
-        settings.with_updated_projects_directory(Some(directory)),
-    )
-    .map_err(ApiError::CheckFailed)?;
+    let _guard = state
+        .mutation
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("settings lock is poisoned".to_string()))?;
+    let updated = app_settings::update_projects_directory(&global, Some(directory))
+        .map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: settings_summary(&updated),
@@ -845,11 +866,15 @@ async fn settings_pick_projects_directory(
 fn settings_clear_projects_directory(
     request: VersionedRequest,
     app: tauri::AppHandle,
+    state: tauri::State<'_, SettingsState>,
 ) -> Result<VersionedResponse<SettingsSummary>, ApiError> {
     assert_api_version(&request)?;
     let global = sion_root(&app)?;
-    let settings = app_settings::load(&global).map_err(ApiError::CheckFailed)?;
-    let cleared = app_settings::save(&global, settings.with_updated_projects_directory(None))
+    let _guard = state
+        .mutation
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("settings lock is poisoned".to_string()))?;
+    let cleared = app_settings::update_projects_directory(&global, None)
         .map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
@@ -1534,6 +1559,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(AgentState::default()))
+        .manage(SettingsState::default())
         .invoke_handler(tauri::generate_handler![
             app_get_version,
             spike_docx_check,
