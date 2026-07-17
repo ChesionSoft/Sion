@@ -1,7 +1,8 @@
 import { NODES } from "./types.ts";
-import type { NodeId, ProjectUiSettings, RecentProject, RightTabId, UiSettings } from "./types.ts";
+import type { AgentRun, NodeId, ProjectUiSettings, RecentProject, RightSurface, UiSettings, WorkspaceView } from "./types.ts";
 
 const NODE_IDS = new Set<string>(NODES.map(([id]) => id));
+const FIXED_NODE_IDS = NODES.map(([id]) => id);
 const MIN_PANE_WIDTH = 320;
 const MAX_PANE_WIDTH = 720;
 
@@ -17,6 +18,35 @@ export type SaveResult = "saved" | "conflict" | "failed";
 
 export function requestScope(...parts: Array<string | null | undefined>): string | null {
   return parts.every((part): part is string => typeof part === "string") ? JSON.stringify(parts) : null;
+}
+
+export function isLatestRequest(expected: string | null, current: string | null): boolean {
+  return expected !== null && expected === current;
+}
+
+export function shouldChangeNode(currentNodeId: NodeId | null, nextNodeId: NodeId): boolean {
+  return currentNodeId !== nextNodeId;
+}
+
+export function shouldChangeProject(currentProjectId: string | null, nextProjectId: string): boolean {
+  return currentProjectId !== nextProjectId;
+}
+
+export function isAgentRulesDirty(draft: string, saved: string | null | undefined): boolean {
+  return draft !== (saved ?? "");
+}
+
+export function activeRunIdForContext(
+  runs: AgentRun[],
+  projectId: string | null,
+  nodeId: NodeId | null,
+): string | null {
+  if (!projectId || !nodeId) return null;
+  return runs.find((run) => (
+    run.projectId === projectId
+    && run.nodeId === nodeId
+    && (run.status === "queued" || run.status === "running")
+  ))?.id ?? null;
 }
 
 export function createSerialTaskQueue() {
@@ -58,27 +88,43 @@ function isNodeId(value: unknown): value is NodeId {
   return typeof value === "string" && NODE_IDS.has(value);
 }
 
-function isRightTabId(value: unknown): value is RightTabId {
-  return typeof value === "string" && (
-    value === "delivery"
-    || value === "files"
-    || value.startsWith("file:")
-    || value.startsWith("delivery-preview:")
-  );
-}
+export const initialWorkspaceView = (): WorkspaceView => ({
+  rightSurface: { kind: "delivery" },
+  deliveryView: "preview",
+});
 
-function unique<T>(values: T[]): T[] {
-  return values.filter((value, index) => values.indexOf(value) === index);
+export const resetWorkspaceViewForNode = (
+  current: WorkspaceView,
+  options: { sameNode: boolean },
+): WorkspaceView => (options.sameNode ? current : initialWorkspaceView());
+
+export function parentSurface(surface: RightSurface): RightSurface | null {
+  if (surface.kind === "file") return { kind: "file-pool" };
+  if (surface.kind === "delivery-preview") return { kind: "delivery" };
+  return null;
 }
 
 export const initialProjectUi = (): ProjectUiSettings => ({
   initialized: true,
-  openedNodeIds: ["basic-info"],
+  openedNodeIds: [...FIXED_NODE_IDS],
   activeNodeId: "basic-info",
   tabsInitialized: true,
   rightTabIds: ["delivery"],
   activeRightTabId: "delivery",
   rightPaneWidth: 440,
+});
+
+export const selectNode = (
+  state: ProjectUiSettings,
+  nodeId: NodeId,
+): ProjectUiSettings => ({
+  ...state,
+  initialized: true,
+  openedNodeIds: [...FIXED_NODE_IDS],
+  activeNodeId: nodeId,
+  tabsInitialized: true,
+  rightTabIds: ["delivery"],
+  activeRightTabId: "delivery",
 });
 
 export const initialUiSettings = (): UiSettings => ({
@@ -88,16 +134,18 @@ export const initialUiSettings = (): UiSettings => ({
 });
 
 function sanitizeProjectUi(value: ProjectUiSettings): ProjectUiSettings {
-  const openedNodeIds = unique((value.openedNodeIds ?? []).filter(isNodeId)).slice(-12);
-  const rightTabIds = unique((value.rightTabIds ?? []).filter(isRightTabId)).slice(-32);
+  const activeNodeId = isNodeId(value.activeNodeId) ? value.activeNodeId : "basic-info";
   return {
-    initialized: Boolean(value.initialized),
-    openedNodeIds,
-    activeNodeId: openedNodeIds.includes(value.activeNodeId as NodeId) ? value.activeNodeId : openedNodeIds.at(-1) ?? null,
-    tabsInitialized: Boolean(value.tabsInitialized),
-    rightTabIds,
-    activeRightTabId: rightTabIds.includes(value.activeRightTabId as RightTabId) ? value.activeRightTabId : rightTabIds.at(-1) ?? null,
-    rightPaneWidth: Math.min(MAX_PANE_WIDTH, Math.max(MIN_PANE_WIDTH, Number(value.rightPaneWidth) || 440)),
+    initialized: true,
+    openedNodeIds: [...FIXED_NODE_IDS],
+    activeNodeId,
+    tabsInitialized: true,
+    rightTabIds: ["delivery"],
+    activeRightTabId: "delivery",
+    rightPaneWidth: Math.min(
+      MAX_PANE_WIDTH,
+      Math.max(MIN_PANE_WIDTH, Number(value.rightPaneWidth) || 440),
+    ),
   };
 }
 
@@ -111,53 +159,4 @@ export const sanitizeUiSettings = (value: UiSettings): UiSettings => ({
   ),
 });
 
-export const openNode = (state: ProjectUiSettings, nodeId: NodeId): ProjectUiSettings => ({
-  ...state,
-  initialized: true,
-  openedNodeIds: [...state.openedNodeIds.filter((id) => id !== nodeId), nodeId],
-  activeNodeId: nodeId,
-});
-
-export const closeNode = (state: ProjectUiSettings, nodeId: NodeId): ProjectUiSettings => {
-  const openedNodeIds = state.openedNodeIds.filter((id) => id !== nodeId);
-  return {
-    ...state,
-    initialized: true,
-    openedNodeIds,
-    activeNodeId: state.activeNodeId === nodeId ? openedNodeIds.at(-1) ?? null : state.activeNodeId,
-  };
-};
-
-export const openRightTab = (state: ProjectUiSettings, tabId: RightTabId): ProjectUiSettings => ({
-  ...state,
-  tabsInitialized: true,
-  rightTabIds: state.rightTabIds.includes(tabId) ? state.rightTabIds : [...state.rightTabIds, tabId],
-  activeRightTabId: tabId,
-});
-
-export const closeRightTab = (state: ProjectUiSettings, tabId: RightTabId): ProjectUiSettings => {
-  const closedIndex = state.rightTabIds.indexOf(tabId);
-  const rightTabIds = state.rightTabIds.filter((id) => id !== tabId);
-  return {
-    ...state,
-    tabsInitialized: true,
-    rightTabIds,
-    activeRightTabId: state.activeRightTabId === tabId
-      ? rightTabIds[Math.min(Math.max(closedIndex, 0), rightTabIds.length - 1)] ?? null
-      : state.activeRightTabId,
-  };
-};
-
-export const durableUiSettings = (state: UiSettings): UiSettings => sanitizeUiSettings({
-  ...state,
-  projects: Object.fromEntries(Object.entries(state.projects).map(([projectId, project]) => {
-    const rightTabIds = project.rightTabIds.filter((id) => !id.startsWith("delivery-preview:"));
-    return [projectId, {
-      ...project,
-      rightTabIds,
-      activeRightTabId: rightTabIds.includes(project.activeRightTabId as RightTabId)
-        ? project.activeRightTabId
-        : rightTabIds.at(-1) ?? null,
-    }];
-  })),
-});
+export const durableUiSettings = (state: UiSettings): UiSettings => sanitizeUiSettings(state);

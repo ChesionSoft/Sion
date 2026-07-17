@@ -1,20 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as uiState from "../src/ui-state.ts";
 import {
-  closeNode,
-  closeRightTab,
   createSerialTaskQueue,
   durableUiSettings,
   filterAndSortProjects,
   initialProjectUi,
+  initialWorkspaceView,
   requestNavigationDecision,
   requestScope,
+  resetWorkspaceViewForNode,
   resolveNavigationDecision,
-  openNode,
-  openRightTab,
   sanitizeUiSettings,
+  selectNode,
+  parentSurface,
 } from "../src/ui-state.ts";
 import type { NavigationIntent } from "../src/ui-state.ts";
+import { NODES } from "../src/types.ts";
+import type { AgentRun } from "../src/types.ts";
 
 test("filters project names case-insensitively and sorts recent projects descending", () => {
   const projects = [
@@ -33,71 +36,97 @@ test("filters project names case-insensitively and sorts recent projects descend
   );
 });
 
-test("first project open initializes basic info and delivery", () => {
-  assert.deepEqual(initialProjectUi(), {
-    initialized: true,
-    openedNodeIds: ["basic-info"],
-    activeNodeId: "basic-info",
-    tabsInitialized: true,
-    rightTabIds: ["delivery"],
-    activeRightTabId: "delivery",
-    rightPaneWidth: 440,
+test("first project open initializes every node in fixed order and delivery preview", () => {
+  const project = initialProjectUi();
+  assert.deepEqual(project.openedNodeIds, NODES.map(([id]) => id));
+  assert.equal(project.activeNodeId, "basic-info");
+  assert.deepEqual(project.rightTabIds, ["delivery"]);
+  assert.equal(project.activeRightTabId, "delivery");
+  assert.deepEqual(initialWorkspaceView(), {
+    rightSurface: { kind: "delivery" },
+    deliveryView: "preview",
   });
 });
 
-test("closing the last node preserves an intentional empty state", () => {
-  const state = closeNode(initialProjectUi(), "basic-info");
-  assert.deepEqual(state.openedNodeIds, []);
-  assert.equal(state.activeNodeId, null);
-  assert.equal(state.initialized, true);
+test("selecting a node changes only the active node and never reorders the directory", () => {
+  const selected = selectNode(initialProjectUi(), "goals");
+  assert.equal(selected.activeNodeId, "goals");
+  assert.deepEqual(selected.openedNodeIds, NODES.map(([id]) => id));
 });
 
-test("closing active node selects the most recent remaining node", () => {
-  let state = openNode(initialProjectUi(), "goals");
-  state = openNode(state, "business-flow");
-  state = closeNode(state, "business-flow");
-  assert.equal(state.activeNodeId, "goals");
+test("legacy opened nodes and tabs normalize to the fixed directory and delivery", () => {
+  const sanitized = sanitizeUiSettings({
+    sidebarCollapsed: false,
+    lastDestination: "projects",
+    projects: {
+      project: {
+        initialized: true,
+        openedNodeIds: ["goals", "basic-info"],
+        activeNodeId: "goals",
+        tabsInitialized: true,
+        rightTabIds: ["files", "file:old"],
+        activeRightTabId: "file:old",
+        rightPaneWidth: 9999,
+      },
+    },
+  });
+  assert.deepEqual(sanitized.projects.project.openedNodeIds, NODES.map(([id]) => id));
+  assert.equal(sanitized.projects.project.activeNodeId, "goals");
+  assert.deepEqual(sanitized.projects.project.rightTabIds, ["delivery"]);
+  assert.equal(sanitized.projects.project.activeRightTabId, "delivery");
+  assert.equal(sanitized.projects.project.rightPaneWidth, 720);
 });
 
-test("closing the final right tab keeps tabs initialized and empty", () => {
-  const state = closeRightTab(initialProjectUi(), "delivery");
-  assert.deepEqual(state.rightTabIds, []);
-  assert.equal(state.activeRightTabId, null);
+test("node change resets transient surfaces to delivery preview", () => {
+  assert.deepEqual(
+    resetWorkspaceViewForNode(
+      {
+        rightSurface: { kind: "file", fileId: "brief" },
+        deliveryView: "source",
+      },
+      { sameNode: false },
+    ),
+    initialWorkspaceView(),
+  );
 });
 
-test("closing an inactive right tab preserves the active tab", () => {
-  let state = openRightTab(initialProjectUi(), "files");
-  state = openRightTab(state, "file:brief");
-  state = closeRightTab(state, "files");
-  assert.equal(state.activeRightTabId, "file:brief");
-  assert.deepEqual(state.rightTabIds, ["delivery", "file:brief"]);
+test("same-node selection preserves the current transient workspace", () => {
+  const current = {
+    rightSurface: { kind: "agent-rules" } as const,
+    deliveryView: "preview" as const,
+  };
+  assert.equal(
+    resetWorkspaceViewForNode(current, { sameNode: true }),
+    current,
+  );
 });
 
-test("closing the first active right tab selects its nearest neighbor", () => {
-  let state = openRightTab(initialProjectUi(), "files");
-  state = openRightTab(state, "file:brief");
-  state = openRightTab(state, "delivery");
-  state = closeRightTab(state, "delivery");
-  assert.equal(state.activeRightTabId, "files");
-});
-
-test("durable file tabs persist and pane width clamps", () => {
-  const state = openRightTab(initialProjectUi(), "file:brief");
-  const low = sanitizeUiSettings({ sidebarCollapsed: false, lastDestination: "projects", projects: { p1: { ...state, rightPaneWidth: 10 } } });
-  const high = sanitizeUiSettings({ sidebarCollapsed: false, lastDestination: "projects", projects: { p1: { ...state, rightPaneWidth: 9999 } } });
-  assert.deepEqual(low.projects.p1.rightTabIds, ["delivery", "file:brief"]);
-  assert.equal(low.projects.p1.rightPaneWidth, 320);
-  assert.equal(high.projects.p1.rightPaneWidth, 720);
-});
-
-test("transient preview tabs are excluded from persisted settings", () => {
-  const state = openRightTab(initialProjectUi(), "delivery-preview:message-1");
+test("durable settings never persist file or assistant preview surfaces", () => {
   const durable = durableUiSettings({
     sidebarCollapsed: false,
     lastDestination: "projects",
-    projects: { p1: state },
+    projects: {
+      project: {
+        ...initialProjectUi(),
+        rightTabIds: ["file:brief", "delivery-preview:message"],
+        activeRightTabId: "file:brief",
+      },
+    },
   });
-  assert.deepEqual(durable.projects.p1.rightTabIds, ["delivery"]);
+  assert.deepEqual(durable.projects.project.rightTabIds, ["delivery"]);
+  assert.equal(durable.projects.project.activeRightTabId, "delivery");
+});
+
+test("nested right surfaces return to their owning workspace", () => {
+  assert.deepEqual(
+    parentSurface({ kind: "file", fileId: "brief" }),
+    { kind: "file-pool" },
+  );
+  assert.deepEqual(
+    parentSurface({ kind: "delivery-preview", messageId: "message" }),
+    { kind: "delivery" },
+  );
+  assert.equal(parentSurface({ kind: "delivery" }), null);
 });
 
 test("clean navigation executes immediately while dirty navigation waits", () => {
@@ -141,4 +170,58 @@ test("serial task queue preserves persistence request order", async () => {
   releaseFirst();
   await Promise.all([first, second]);
   assert.deepEqual(order, ["first-start", "first-end", "second"]);
+});
+
+test("same-node navigation is a no-op before transient content is cleared", () => {
+  const shouldChangeNode = (uiState as unknown as {
+    shouldChangeNode?: (currentNodeId: string | null, nextNodeId: string) => boolean;
+  }).shouldChangeNode;
+  assert.equal(typeof shouldChangeNode, "function");
+  assert.equal(shouldChangeNode?.("goals", "goals"), false);
+  assert.equal(shouldChangeNode?.("goals", "basic-info"), true);
+});
+
+test("project collections reset only when opening a different project", () => {
+  const shouldChangeProject = (uiState as unknown as {
+    shouldChangeProject?: (currentProjectId: string | null, nextProjectId: string) => boolean;
+  }).shouldChangeProject;
+  assert.equal(typeof shouldChangeProject, "function");
+  assert.equal(shouldChangeProject?.("project-a", "project-a"), false);
+  assert.equal(shouldChangeProject?.("project-a", "project-b"), true);
+  assert.equal(shouldChangeProject?.(null, "project-a"), true);
+});
+
+test("agent rule drafts participate in dirty navigation protection", () => {
+  const isAgentRulesDirty = (uiState as unknown as {
+    isAgentRulesDirty?: (draft: string, saved: string | null | undefined) => boolean;
+  }).isAgentRulesDirty;
+  assert.equal(typeof isAgentRulesDirty, "function");
+  assert.equal(isAgentRulesDirty?.("只使用事实", "只使用事实"), false);
+  assert.equal(isAgentRulesDirty?.("只使用事实\n", "只使用事实"), true);
+  assert.equal(isAgentRulesDirty?.("新增规则", null), true);
+});
+
+test("active agent runs are selected only for the current project and node", () => {
+  const activeRunIdForContext = (uiState as unknown as {
+    activeRunIdForContext?: (runs: AgentRun[], projectId: string | null, nodeId: string | null) => string | null;
+  }).activeRunIdForContext;
+  const runs: AgentRun[] = [
+    { id: "old-project", projectId: "project-a", nodeId: "goals", status: "running" },
+    { id: "old-node", projectId: "project-b", nodeId: "basic-info", status: "queued" },
+    { id: "current", projectId: "project-b", nodeId: "goals", status: "running" },
+  ];
+  assert.equal(typeof activeRunIdForContext, "function");
+  assert.equal(activeRunIdForContext?.(runs, "project-b", "goals"), "current");
+  assert.equal(activeRunIdForContext?.(runs, "project-b", "final-export"), null);
+  assert.equal(activeRunIdForContext?.(runs, null, "goals"), null);
+});
+
+test("late async responses are accepted only for the latest request scope", () => {
+  const isLatestRequest = (uiState as unknown as {
+    isLatestRequest?: (expected: string | null, current: string | null) => boolean;
+  }).isLatestRequest;
+  assert.equal(typeof isLatestRequest, "function");
+  assert.equal(isLatestRequest?.("request-a", "request-a"), true);
+  assert.equal(isLatestRequest?.("request-a", "request-b"), false);
+  assert.equal(isLatestRequest?.(null, null), false);
 });

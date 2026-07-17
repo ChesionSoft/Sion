@@ -39,6 +39,8 @@
 
 .ui-icon-button:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
 
+.ui-icon { display: block; flex: none; }
+
 .ui-field { display: grid; gap: 6px; min-width: 0; }
 .ui-field-label { color: var(--text); font-size: 12px; font-weight: 550; }
 .ui-input, .ui-select {

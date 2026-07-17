@@ -724,6 +724,17 @@ fn agent_run_list(
     })
 }
 
+fn validate_run_project(run: &sion_agent::AgentRun, project_id: &str) -> Result<(), ApiError> {
+    if run.project_id == project_id {
+        Ok(())
+    } else {
+        Err(ApiError::CheckFailed(format!(
+            "agent run {} does not belong to project {project_id}",
+            run.id
+        )))
+    }
+}
+
 #[tauri::command]
 fn agent_run_cancel(
     request: AgentRunCancelRequest,
@@ -731,6 +742,14 @@ fn agent_run_cancel(
     state: tauri::State<'_, Arc<AgentState>>,
 ) -> Result<VersionedResponse<sion_agent::AgentRun>, ApiError> {
     assert_api_version(&request.version)?;
+    let run = state
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
+        .get(&request.run_id)
+        .cloned()
+        .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
+    validate_run_project(&run, &request.project_id)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let job = state
         .jobs
@@ -739,13 +758,7 @@ fn agent_run_cancel(
         .get(&request.run_id)
         .cloned()
         .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
-    let status = state
-        .scheduler
-        .lock()
-        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
-        .get(&request.run_id)
-        .map(|run| run.status.clone())
-        .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
+    let status = run.status;
     if status == sion_agent::AgentRunStatus::Queued {
         let promoted = state
             .scheduler
@@ -874,8 +887,8 @@ fn settings_clear_projects_directory(
         .mutation
         .lock()
         .map_err(|_| ApiError::CheckFailed("settings lock is poisoned".to_string()))?;
-    let cleared = app_settings::update_projects_directory(&global, None)
-        .map_err(ApiError::CheckFailed)?;
+    let cleared =
+        app_settings::update_projects_directory(&global, None).map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: settings_summary(&cleared),
@@ -963,6 +976,22 @@ fn project_get_agent_override(
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: ProjectAgentOverride { markdown },
+    })
+}
+
+#[tauri::command]
+fn project_get_agent_rules(
+    request: ProjectNodeRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<EffectiveAgentRules>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let custom_markdown = ProjectStore::at(project_root)
+        .agent_override(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: compose_effective_agent_rules(request.node_id, custom_markdown),
     })
 }
 
@@ -1301,6 +1330,33 @@ fn file_preview(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EffectiveAgentRules {
+    built_in_markdown: String,
+    custom_markdown: Option<String>,
+    effective_markdown: String,
+}
+
+fn compose_effective_agent_rules(
+    node_id: WorkflowNodeId,
+    custom_markdown: Option<String>,
+) -> EffectiveAgentRules {
+    let built_in_markdown = sion_core::agent_rule(node_id).to_string();
+    let custom_markdown = custom_markdown
+        .map(|markdown| markdown.trim().to_string())
+        .filter(|markdown| !markdown.is_empty());
+    let effective_markdown = custom_markdown
+        .as_deref()
+        .map(|custom| format!("{built_in_markdown}\n\n# 项目覆盖规则\n{custom}"))
+        .unwrap_or_else(|| built_in_markdown.clone());
+    EffectiveAgentRules {
+        built_in_markdown,
+        custom_markdown,
+        effective_markdown,
+    }
+}
+
 fn agent_prompt(
     node: &WorkflowNode,
     messages: &[ChatMessage],
@@ -1325,19 +1381,16 @@ fn agent_prompt(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    let override_block = project_override
-        .filter(|rule| !rule.trim().is_empty())
-        .map(|rule| format!("\n\n# 项目覆盖规则\n{rule}"))
-        .unwrap_or_default();
+    let effective_rules =
+        compose_effective_agent_rules(node.id, project_override.map(|rule| rule.to_string()));
     let attachment_block = attachments
         .iter()
         .map(|(name, text)| format!("## {name}\n{text}"))
         .collect::<Vec<_>>()
         .join("\n\n");
     format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。\n\n必须在回复末尾提供且只提供一个 fenced delivery JSON 交付块。默认使用分节补丁，格式为：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}}]}}\n```。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。\n\n兼容例外：只有当用户明确要求整篇重写时，才可用 `{{\"mode\":\"rewrite\",\"markdown\":\"完整节点 Markdown\"}}`，且必须保留本节点所有必填二级标题。\n\n# 本节点规则\n{}{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
-        sion_core::agent_rule(node.id),
-        override_block,
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。\n\n必须在回复末尾提供且只提供一个 fenced delivery JSON 交付块。默认使用分节补丁，格式为：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}}]}}\n```。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。\n\n兼容例外：只有当用户明确要求整篇重写时，才可用 `{{\"mode\":\"rewrite\",\"markdown\":\"完整节点 Markdown\"}}`，且必须保留本节点所有必填二级标题。\n\n# 本节点规则\n{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        effective_rules.effective_markdown,
         attachment_block,
         node.id.as_str(),
         node.markdown,
@@ -1578,6 +1631,7 @@ pub fn run() {
             project_list,
             project_reveal,
             project_get_node,
+            project_get_agent_rules,
             project_get_agent_override,
             project_save_agent_override,
             project_save_node,
@@ -1710,6 +1764,23 @@ mod tests {
     }
 
     #[test]
+    fn agent_run_project_validation_rejects_cross_project_cancellation() {
+        let run = sion_agent::AgentRun {
+            id: "run-1".to_string(),
+            project_id: "project-a".to_string(),
+            node_id: WorkflowNodeId::Goals,
+            status: sion_agent::AgentRunStatus::Running,
+            created_at: "now".to_string(),
+            started_at: Some("now".to_string()),
+            finished_at: None,
+            summary: None,
+        };
+        assert!(validate_run_project(&run, "project-a").is_ok());
+        let error = validate_run_project(&run, "project-b").unwrap_err();
+        assert!(error.to_string().contains("does not belong"));
+    }
+
+    #[test]
     fn line_change_stats_counts_kept_added_and_deleted_lines() {
         let stats = line_change_stats("A\nB\nC", "A\nB2\nC\nD");
         assert_eq!(
@@ -1742,5 +1813,33 @@ mod tests {
         assert!(prompt.contains("资料正文"));
         assert!(prompt.contains("不要浏览网页"));
         assert!(prompt.contains("```delivery"));
+    }
+
+    #[test]
+    fn effective_agent_rules_match_the_runtime_prompt_order() {
+        let rules = compose_effective_agent_rules(
+            WorkflowNodeId::Goals,
+            Some("只使用已确认目标。".to_string()),
+        );
+        assert_eq!(
+            rules.built_in_markdown,
+            sion_core::agent_rule(WorkflowNodeId::Goals)
+        );
+        assert_eq!(rules.custom_markdown.as_deref(), Some("只使用已确认目标。"));
+        assert_eq!(
+            rules.effective_markdown,
+            format!(
+                "{}\n\n# 项目覆盖规则\n只使用已确认目标。",
+                sion_core::agent_rule(WorkflowNodeId::Goals)
+            )
+        );
+    }
+
+    #[test]
+    fn empty_agent_override_is_not_part_of_effective_rules() {
+        let rules =
+            compose_effective_agent_rules(WorkflowNodeId::BasicInfo, Some(" \n ".to_string()));
+        assert_eq!(rules.custom_markdown, None);
+        assert_eq!(rules.effective_markdown, rules.built_in_markdown);
     }
 }

@@ -1,7 +1,7 @@
 import type { ProjectFile } from "../../types";
 import { Button, EmptyState } from "../ui";
 
-export function ProjectFilesTab({
+export function FilePoolWorkspace({
   files,
   selectedFileIds,
   importing,
@@ -17,9 +17,9 @@ export function ProjectFilesTab({
   onPreview: (fileId: string) => void;
 }) {
   return (
-    <section className="project-files-tab">
-      <header><div><h2>资料</h2><p>选择需要提供给当前节点 Agent 的本地资料。</p></div><Button variant="primary" loading={importing} onClick={onImport}>导入文件</Button></header>
-      {files.length === 0 ? <EmptyState title="还没有资料" description="导入的文件会复制到当前项目，并仅通过受限文本预览读取。" action={{ label: "导入文件", onClick: onImport }} /> : (
+    <section className="file-pool-workspace">
+      <header><div><h2>文件池</h2><p>选择需要提供给当前节点 Agent 的本地文件。</p></div><Button variant="primary" loading={importing} onClick={onImport}>导入文件</Button></header>
+      {files.length === 0 ? <EmptyState title="文件池为空" description="导入的文件会复制到当前项目，并仅通过受限文本预览读取。" action={{ label: "导入文件", onClick: onImport }} /> : (
         <div className="project-file-list">
           {files.map((file) => (
             <article key={file.id}>

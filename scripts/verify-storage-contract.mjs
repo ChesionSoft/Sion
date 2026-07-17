@@ -2,10 +2,10 @@ import { readFile } from "node:fs/promises";
 
 const files = [
   "src/App.tsx",
-  "src/components/LandingPage.tsx",
-  "src/components/SettingsDialog.tsx",
-  "src/components/ProviderManager.tsx",
-  "src/components/Workbench.tsx",
+  "src/components/app/ProjectHome.tsx",
+  "src/components/settings/SettingsDialog.tsx",
+  "src/components/settings/ProviderEditorDialog.tsx",
+  "src/components/workspace/FilePoolWorkspace.tsx",
   "src-tauri/src/lib.rs",
   "src-tauri/src/provider_settings.rs",
   "crates/sion-storage/src/lib.rs",

@@ -1,5 +1,5 @@
 import type { RecentProject } from "../../types";
-import { Button, EmptyState, SelectField, StatusDot } from "../ui";
+import { Button, EmptyState, Icon, SelectField, StatusDot } from "../ui";
 
 export type ExportResult =
   | { status: "success"; projectId: string; path: string }
@@ -51,9 +51,12 @@ export function ExportCenter({ projects, selectedProjectId, exporting, lastResul
         </section>
 
         <div className="export-center-action">
-          <div>
-            <strong>{selectedProject.name}</strong>
-            <small>系统将在导出时询问本机保存位置。</small>
+          <div className="export-selected-project">
+            <Icon name="project-document" size={18} />
+            <div>
+              <strong>{selectedProject.name}</strong>
+              <small>系统将在导出时询问本机保存位置。</small>
+            </div>
           </div>
           <Button variant="primary" loading={exporting} loadingLabel="正在导出…" onClick={() => onExport(selected)}>导出 DOCX</Button>
         </div>
