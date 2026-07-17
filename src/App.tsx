@@ -150,7 +150,11 @@ export function App() {
   }
 
   useEffect(() => {
-    void Promise.all([loadProjects(), loadProviders(), loadSettings()]);
+    void Promise.all([loadProjects(), loadProviders(), loadSettings()]).finally(() => {
+      // 首次加载完成。若没有任何错误/警告替换掉启动提示，就清除“正在连接本机应用服务”；
+      // 否则保留那条更有信息量的通知。
+      setNoticeState((current) => (current?.id === "startup" ? null : current));
+    });
   }, []);
 
   useEffect(() => {
