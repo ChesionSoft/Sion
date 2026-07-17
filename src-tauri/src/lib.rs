@@ -1552,6 +1552,8 @@ fn complete_agent_run(
                 turn_id: Some(run.id.clone()),
                 reasoning_duration_ms: None,
                 usage: None,
+                attachments: Vec::new(),
+                model_execution: None,
             },
             finished_at.clone(),
         );

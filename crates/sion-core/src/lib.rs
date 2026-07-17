@@ -5,6 +5,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod conversation;
+pub use conversation::*;
+
 pub const PROJECT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -429,6 +432,10 @@ pub struct ChatMessage {
     pub reasoning_duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<TurnTokenUsage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MessageAttachmentRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_execution: Option<ModelExecution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -440,6 +447,8 @@ pub struct ChatSession {
     pub message_count: u32,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_selection: Option<ChatModelSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -770,6 +779,21 @@ fn find_closing_fence(response: &str, body_start: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_session_without_model_selection_deserializes_empty() {
+        let json = r#"{"id":"s","nodeId":"goals","name":"n","messageCount":0,"createdAt":"t","updatedAt":"t"}"#;
+        let session: ChatSession = serde_json::from_str(json).unwrap();
+        assert_eq!(session.model_selection, None);
+    }
+
+    #[test]
+    fn legacy_message_without_attachments_deserializes_empty() {
+        let json = r#"{"id":"m","role":"user","content":"c","createdAt":"t"}"#;
+        let message: ChatMessage = serde_json::from_str(json).unwrap();
+        assert!(message.attachments.is_empty());
+        assert_eq!(message.model_execution, None);
+    }
 
     #[test]
     fn workflow_has_twelve_unique_nodes_in_order() {

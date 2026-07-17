@@ -363,6 +363,7 @@ impl ProjectStore {
             message_count: 0,
             created_at: now.clone(),
             updated_at: now,
+            model_selection: None,
         };
         atomic_write_json(
             &self.messages_path(node_id, &session.id)?,
@@ -1219,6 +1220,8 @@ mod tests {
             turn_id: None,
             reasoning_duration_ms: None,
             usage: None,
+            attachments: Vec::new(),
+            model_execution: None,
         }
     }
 
