@@ -30,4 +30,8 @@ export const WORKSPACE_HEADER_ACTIONS = [
   { id: "file-pool", label: "文件池", icon: "file-pool" },
 ] as const;
 
+export const MORE_MENU_ITEMS = [
+  { id: "run-history", label: "运行记录", icon: "run-history" },
+] as const;
+
 export const WORKSPACE_NODE_ROWS = NODES;

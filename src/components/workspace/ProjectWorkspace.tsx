@@ -1,7 +1,9 @@
-import type { ReactNode } from "react";
-import type { AgentRun, ChatMessage, ChatSession, NodeStatus, RecentProject, WorkflowNode } from "../../types";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { AgentRun, ChatMessage, ChatSession, NodeStatus, RecentProject, RightSurface, WorkflowNode } from "../../types";
 import { statusLabel } from "../../types";
-import { Button, IconButton, Popover, StatusDot } from "../ui";
+import { Button, IconButton, Popover, StatusDot, Icon } from "../ui";
+import { WORKSPACE_HEADER_ACTIONS } from "../../workspace-config";
+import { ConversationHistoryDrawer } from "./ConversationHistoryDrawer";
 import { ConversationPane } from "./ConversationPane";
 
 type ProjectWorkspaceProps = {
@@ -16,10 +18,10 @@ type ProjectWorkspaceProps = {
   previewingMessageId: string | null;
   messageDraft: string;
   sendingMessage: boolean;
+  rightSurface: RightSurface | null;
   workPane: ReactNode;
   onBack: () => void;
-  onOpenMaterials: () => void;
-  onOpenDelivery: () => void;
+  onRightSurface: (surface: RightSurface) => void;
   onSelectSession: (sessionId: string) => void;
   onCreateSession: () => void;
   onCancelAgent: () => void;
@@ -42,49 +44,82 @@ function statusKind(status: NodeStatus | undefined) {
   return "neutral" as const;
 }
 
+function runStatusKind(status: AgentRun["status"]) {
+  if (status === "completed") return "success" as const;
+  if (status === "failed") return "error" as const;
+  if (status === "running" || status === "queued") return "running" as const;
+  return "neutral" as const;
+}
+
+function headerActionSurface(id: "delivery" | "agent-rules" | "file-pool"): RightSurface {
+  if (id === "delivery") return { kind: "delivery" };
+  if (id === "agent-rules") return { kind: "agent-rules" };
+  return { kind: "file-pool" };
+}
+
 export function ProjectWorkspace(props: ProjectWorkspaceProps) {
-  const activeSession = props.sessions.find((session) => session.id === props.sessionId) ?? null;
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyTriggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    setHistoryOpen(false);
+  }, [props.node?.id]);
+
+  function closeHistory() {
+    setHistoryOpen(false);
+    window.requestAnimationFrame(() => historyTriggerRef.current?.focus());
+  }
 
   return (
     <section className="project-workspace">
       <header className="workspace-header">
         <div className="workspace-header-leading">
-          <IconButton aria-label="返回项目首页" onClick={props.onBack}>←</IconButton>
+          <IconButton aria-label="返回项目首页" onClick={props.onBack}><Icon name="back" /></IconButton>
           <div className="workspace-breadcrumb">
             <span>{props.project.name}</span><i aria-hidden="true">/</i><strong>{props.nodeTitle}</strong>
           </div>
           <div className="workspace-node-status"><StatusDot kind={statusKind(props.node?.status)} /><span>{props.node ? statusLabel[props.node.status] : "正在读取"}</span></div>
         </div>
         <div className="workspace-header-actions">
-          <Button variant="ghost" onClick={props.onOpenMaterials}>资料</Button>
-          <Popover label="选择会话" trigger={<span>{activeSession?.name ?? "新会话"}⌄</span>} align="end">
-            <div className="workspace-popover-list">
-              <Button variant="ghost" onClick={props.onCreateSession}>＋ 新建会话</Button>
-              {props.sessions.length === 0 ? <p>当前节点还没有会话。</p> : props.sessions.map((session) => (
-                <button className={session.id === props.sessionId ? "is-active" : ""} key={session.id} onClick={() => props.onSelectSession(session.id)} type="button">
-                  <span><strong>{session.name}</strong><small>{session.messageCount} 条消息</small></span>
-                  {session.id === props.sessionId ? <span aria-hidden="true">✓</span> : null}
-                </button>
-              ))}
-            </div>
-          </Popover>
-          <Popover label="查看 Agent 运行" trigger={<span>{props.activeRunId ? "运行中" : `运行 ${props.runs.length}`}⌄</span>} align="end">
-            <div className="workspace-popover-list run-list">
-              {props.runs.length === 0 ? <p>还没有运行记录。</p> : props.runs.slice(0, 8).map((run) => (
-                <div key={run.id}><StatusDot kind={run.status === "completed" ? "success" : run.status === "failed" ? "error" : run.status === "running" || run.status === "queued" ? "running" : "neutral"} /><span><strong>{run.nodeId}</strong><small>{runLabel[run.status]}</small></span></div>
-              ))}
-              {props.activeRunId ? <Button variant="danger" onClick={props.onCancelAgent}>停止当前运行</Button> : null}
-            </div>
-          </Popover>
+          {WORKSPACE_HEADER_ACTIONS.map((action) => {
+            const pressed = props.rightSurface?.kind === action.id;
+            return (
+              <Button
+                key={action.id}
+                variant={pressed ? "secondary" : "ghost"}
+                aria-pressed={pressed}
+                data-workspace-action={action.id}
+                onClick={() => props.onRightSurface(headerActionSurface(action.id))}
+              >
+                <Icon name={action.icon} />
+                <span className="workspace-action-label">{action.label}</span>
+              </Button>
+            );
+          })}
           <Popover label="更多节点操作" trigger={<span aria-hidden="true">•••</span>} align="end">
             <div className="workspace-overflow-menu">
-              <button onClick={props.onOpenDelivery} type="button">打开交付稿</button>
+              <section aria-label="运行记录">
+                <h3><Icon name="run-history" />运行记录</h3>
+                {props.runs.length === 0 ? <p>还没有运行记录。</p> : props.runs.slice(0, 8).map((run) => (
+                  <div className="run-history-row" key={run.id}>
+                    <StatusDot kind={runStatusKind(run.status)} />
+                    <span><strong>{run.nodeId}</strong><small>{runLabel[run.status]}</small></span>
+                  </div>
+                ))}
+              </section>
             </div>
           </Popover>
         </div>
       </header>
       <div className="workspace-surface">
         <div className="workspace-conversation">
+          <div className="conversation-toolbar">
+            <button ref={historyTriggerRef} type="button" className="ui-button ui-button-ghost" onClick={() => setHistoryOpen(true)}>
+              <Icon name="chat-history" />
+              <span className="workspace-action-label">聊天记录</span>
+            </button>
+            <Button variant="secondary" onClick={props.onCreateSession}>＋ 新会话</Button>
+          </div>
           <ConversationPane
             nodeAvailable={Boolean(props.node)}
             messages={props.messages}
@@ -96,6 +131,14 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             onSend={props.onSendMessage}
             onCancel={props.onCancelAgent}
             onPreviewAssistant={props.onPreviewAssistant}
+          />
+          <ConversationHistoryDrawer
+            open={historyOpen}
+            sessions={props.sessions}
+            sessionId={props.sessionId}
+            onSelect={props.onSelectSession}
+            onCreate={props.onCreateSession}
+            onClose={closeHistory}
           />
         </div>
         {props.workPane}

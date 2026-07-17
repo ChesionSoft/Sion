@@ -884,8 +884,12 @@ export function App() {
       nodeTitle={nodeTitle}
       workPane={workPane}
       onBack={exitProject}
-      onOpenMaterials={() => openWorkspaceTab("files")}
-      onOpenDelivery={() => openWorkspaceTab("delivery")}
+      rightSurface={null}
+      onRightSurface={(surface) => {
+        if (surface.kind === "delivery") openWorkspaceTab("delivery");
+        else if (surface.kind === "file-pool") openWorkspaceTab("files");
+        else if (surface.kind === "agent-rules") openAgentOverride();
+      }}
       sessions={sessions}
       sessionId={sessionId}
       onSelectSession={selectSession}
