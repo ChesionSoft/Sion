@@ -140,6 +140,12 @@ export type AssistantDeliveryPreview = {
 };
 export type SaveNodeResult = { saved?: WorkflowNode; conflict?: { latest: WorkflowNode } };
 
+export type EffectiveAgentRules = {
+  builtInMarkdown: string;
+  customMarkdown: string | null;
+  effectiveMarkdown: string;
+};
+
 export const statusLabel: Record<NodeStatus, string> = {
   not_started: "未开始",
   draft: "草稿",

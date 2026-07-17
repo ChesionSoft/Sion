@@ -11,6 +11,7 @@ import {
   type AssistantDeliveryPreview,
   type ChatMessage,
   type ChatSession,
+  type EffectiveAgentRules,
   type FilePreview,
   type NodeId,
   type NodeStatus,
@@ -72,6 +73,8 @@ export const getNode = (projectId: string, nodeId: NodeId) =>
   invokePayload<WorkflowNode>("project_get_node", { projectId, nodeId });
 export const getAgentOverride = (projectId: string, nodeId: NodeId) =>
   invokePayload<{ markdown?: string }>("project_get_agent_override", { projectId, nodeId });
+export const getAgentRules = (projectId: string, nodeId: NodeId) =>
+  invokePayload<EffectiveAgentRules>("project_get_agent_rules", { projectId, nodeId });
 export const saveAgentOverride = (projectId: string, nodeId: NodeId, markdown: string) =>
   invokePayload<{ markdown?: string }>("project_save_agent_override", {
     projectId,
