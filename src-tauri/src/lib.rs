@@ -14,7 +14,7 @@ use sion_storage::{
     RecentProject, SaveNodeResult,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ffi::OsString,
     path::{Path, PathBuf},
     process::Command,
@@ -23,6 +23,9 @@ use std::{
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tokio_util::sync::CancellationToken;
+
+mod conversation_runtime;
+use conversation_runtime::{compose_effective_agent_rules, EffectiveAgentRules};
 
 const API_VERSION: u16 = 1;
 
@@ -676,8 +679,15 @@ fn agent_run_start(
     let project_override = store
         .agent_override(request.node_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let attachments = selected_file_context(&store, &request.file_ids)?;
-    let prompt = agent_prompt(&node, &messages, project_override.as_deref(), &attachments);
+    let attachments = conversation_runtime::load_selected_files(&store, &request.file_ids)
+        .map_err(ApiError::CheckFailed)?;
+    let prompt = conversation_runtime::build_agent_prompt(conversation_runtime::ConversationParts {
+        node: &node,
+        messages: &messages,
+        project_override: project_override.as_deref(),
+        attachments: &attachments,
+        draft: "",
+    });
     let run = state
         .scheduler
         .lock()
@@ -1338,113 +1348,6 @@ fn file_preview(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EffectiveAgentRules {
-    built_in_markdown: String,
-    custom_markdown: Option<String>,
-    effective_markdown: String,
-}
-
-fn compose_effective_agent_rules(
-    node_id: WorkflowNodeId,
-    custom_markdown: Option<String>,
-) -> EffectiveAgentRules {
-    let built_in_markdown = sion_core::agent_rule(node_id).to_string();
-    let custom_markdown = custom_markdown
-        .map(|markdown| markdown.trim().to_string())
-        .filter(|markdown| !markdown.is_empty());
-    let effective_markdown = custom_markdown
-        .as_deref()
-        .map(|custom| format!("{built_in_markdown}\n\n# 项目覆盖规则\n{custom}"))
-        .unwrap_or_else(|| built_in_markdown.clone());
-    EffectiveAgentRules {
-        built_in_markdown,
-        custom_markdown,
-        effective_markdown,
-    }
-}
-
-fn agent_prompt(
-    node: &WorkflowNode,
-    messages: &[ChatMessage],
-    project_override: Option<&str>,
-    attachments: &[(String, String)],
-) -> String {
-    let transcript = messages
-        .iter()
-        .rev()
-        .take(16)
-        .rev()
-        .map(|message| {
-            format!(
-                "{}: {}",
-                match message.role {
-                    ChatRole::User => "用户",
-                    ChatRole::Assistant => "助手",
-                    ChatRole::System => "系统",
-                },
-                message.content
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let effective_rules =
-        compose_effective_agent_rules(node.id, project_override.map(|rule| rule.to_string()));
-    let attachment_block = attachments
-        .iter()
-        .map(|(name, text)| format!("## {name}\n{text}"))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。\n\n必须在回复末尾提供且只提供一个 fenced delivery JSON 交付块。默认使用分节补丁，格式为：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}}]}}\n```。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。\n\n兼容例外：只有当用户明确要求整篇重写时，才可用 `{{\"mode\":\"rewrite\",\"markdown\":\"完整节点 Markdown\"}}`，且必须保留本节点所有必填二级标题。\n\n# 本节点规则\n{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
-        effective_rules.effective_markdown,
-        attachment_block,
-        node.id.as_str(),
-        node.markdown,
-        transcript
-    )
-}
-
-fn selected_file_context(
-    store: &ProjectStore,
-    file_ids: &[String],
-) -> Result<Vec<(String, String)>, ApiError> {
-    const MAX_TOTAL_CHARS: usize = 48_000;
-    const MAX_PER_FILE_CHARS: usize = 12_000;
-    let files = store
-        .list_files()
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let mut seen = HashSet::new();
-    let mut remaining = MAX_TOTAL_CHARS;
-    let mut result = Vec::new();
-    for id in file_ids {
-        if !seen.insert(id) || remaining == 0 {
-            continue;
-        }
-        let file = files
-            .iter()
-            .find(|file| file.id == *id)
-            .ok_or_else(|| ApiError::CheckFailed(format!("selected file {id} was not found")))?;
-        let text = store
-            .read_file_text(id)
-            .map_err(|error| ApiError::CheckFailed(error.to_string()))?
-            .ok_or_else(|| {
-                ApiError::CheckFailed(format!(
-                    "selected file {} has no extracted text",
-                    file.original_name
-                ))
-            })?;
-        let excerpt = text
-            .chars()
-            .take(remaining.min(MAX_PER_FILE_CHARS))
-            .collect::<String>();
-        remaining -= excerpt.chars().count();
-        result.push((file.original_name.clone(), excerpt));
-    }
-    Ok(result)
-}
-
 fn spawn_agent_run(
     app: tauri::AppHandle,
     state: Arc<AgentState>,
@@ -1817,12 +1720,17 @@ mod tests {
             revision: 0,
             updated_at: "now".to_string(),
         };
-        let prompt = agent_prompt(
-            &node,
-            &[],
-            Some("只写确认事实"),
-            &[("资料.txt".to_string(), "资料正文".to_string())],
-        );
+        let prompt = conversation_runtime::build_agent_prompt(conversation_runtime::ConversationParts {
+            node: &node,
+            messages: &[],
+            project_override: Some("只写确认事实"),
+            attachments: &[conversation_runtime::SelectedFileContext {
+                file_id: "file-1".to_string(),
+                original_name: "资料.txt".to_string(),
+                text: "资料正文".to_string(),
+            }],
+            draft: "",
+        });
         assert!(prompt.contains("你只负责项目基本信息"));
         assert!(prompt.contains("只写确认事实"));
         assert!(prompt.contains("资料正文"));
@@ -1832,7 +1740,7 @@ mod tests {
 
     #[test]
     fn effective_agent_rules_match_the_runtime_prompt_order() {
-        let rules = compose_effective_agent_rules(
+        let rules = conversation_runtime::compose_effective_agent_rules(
             WorkflowNodeId::Goals,
             Some("只使用已确认目标。".to_string()),
         );
@@ -1853,7 +1761,7 @@ mod tests {
     #[test]
     fn empty_agent_override_is_not_part_of_effective_rules() {
         let rules =
-            compose_effective_agent_rules(WorkflowNodeId::BasicInfo, Some(" \n ".to_string()));
+            conversation_runtime::compose_effective_agent_rules(WorkflowNodeId::BasicInfo, Some(" \n ".to_string()));
         assert_eq!(rules.custom_markdown, None);
         assert_eq!(rules.effective_markdown, rules.built_in_markdown);
     }
