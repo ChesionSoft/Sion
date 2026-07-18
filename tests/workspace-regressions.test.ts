@@ -169,3 +169,18 @@ test("model submenu can shrink inside narrow viewports", async () => {
   const css = await readFile("src/styles/workspace.css", "utf8");
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.conversation-model-submenu\s*\{[^}]*min-width:\s*0/s);
 });
+
+test("conversation turns own agent status and the app no longer notices run completion", async () => {
+  const [app, pane, card] = await Promise.all([
+    readFile("src/App.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationPane.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationTurnCard.tsx", "utf8"),
+  ]);
+  assert.match(app, /conversation-turn-updated/);
+  assert.doesNotMatch(app, /Agent 回复已保存到本地会话/);
+  assert.doesNotMatch(app, /Agent 正在本机流式生成回复/);
+  assert.match(pane, /ConversationTurnCard/);
+  assert.match(card, /<details/);
+  assert.match(card, /reasoningSummary/);
+  assert.match(card, /重新判断交付稿/);
+});

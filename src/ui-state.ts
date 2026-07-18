@@ -100,7 +100,6 @@ export const resetWorkspaceViewForNode = (
 
 export function parentSurface(surface: RightSurface): RightSurface | null {
   if (surface.kind === "file") return { kind: "file-pool" };
-  if (surface.kind === "delivery-preview") return { kind: "delivery" };
   return null;
 }
 

@@ -22,8 +22,7 @@ export type NodeId = (typeof NODES)[number][0];
 export type NodeStatus = "not_started" | "draft" | "generated" | "confirmed" | "needs_confirmation";
 export type MainDestination = "projects" | "exports" | "workspace";
 export type DurableRightTabId = "delivery" | "files" | `file:${string}`;
-export type TransientRightTabId = `delivery-preview:${string}`;
-export type RightTabId = DurableRightTabId | TransientRightTabId;
+export type RightTabId = DurableRightTabId;
 
 // Rust flattens the payload alongside `apiVersion`, so the response object is
 // `{ apiVersion } & T`. `invokePayload` strips the envelope and returns `T`.
@@ -86,8 +85,7 @@ export type RightSurface =
   | { kind: "delivery" }
   | { kind: "agent-rules" }
   | { kind: "file-pool" }
-  | { kind: "file"; fileId: string }
-  | { kind: "delivery-preview"; messageId: string };
+  | { kind: "file"; fileId: string };
 
 export type WorkspaceView = {
   rightSurface: RightSurface | null;

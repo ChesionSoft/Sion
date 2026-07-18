@@ -1,21 +1,24 @@
-import type { ChatMessage, ChatModelSelection, ContextEstimate, ProjectFile, Provider } from "../../types";
+import type { ChatMessage, ChatModelSelection, ContextEstimate, ConversationTurn, ProjectFile, Provider } from "../../types";
 import { Button } from "../ui";
 import { ConversationModelMenu } from "./ConversationModelMenu";
 import { ConversationFileMenu } from "./ConversationFileMenu";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
+import { ConversationTurnCard } from "./ConversationTurnCard";
 import { conversationCanSend } from "../../conversation-controls";
+import { groupConversation } from "../../conversation-turns.ts";
 
 export type ConversationPaneProps = {
   nodeAvailable: boolean;
   messages: ChatMessage[];
+  turns: ConversationTurn[];
   activeRunId: string | null;
   sendingMessage: boolean;
-  previewingMessageId: string | null;
   messageDraft: string;
+  markdownDirty: boolean;
   onMessageDraft: (value: string) => void;
   onSend: () => void;
   onCancel: () => void;
-  onPreviewAssistant: (messageId: string) => void;
+  onRetryDelivery: (turnId: string) => void;
   providers: Provider[];
   files: ProjectFile[];
   selectedFileIds: string[];
@@ -34,8 +37,8 @@ const reasoningLabel: Record<string, string> = { off: "关闭", low: "低", medi
 
 export function ConversationPane(props: ConversationPaneProps) {
   const {
-    nodeAvailable, messages, activeRunId, sendingMessage, previewingMessageId, messageDraft,
-    onMessageDraft, onSend, onCancel, onPreviewAssistant,
+    nodeAvailable, messages, turns, activeRunId, sendingMessage, messageDraft, markdownDirty,
+    onMessageDraft, onSend, onCancel, onRetryDelivery,
     providers, files, selectedFileIds, importing, modelSelection, savingModelSelection,
     contextEstimate, estimatingContext, contextEstimateError, onModelSelection, onToggleFile, onImportFile,
   } = props;
@@ -59,34 +62,45 @@ export function ConversationPane(props: ConversationPaneProps) {
   }
 
   const selectedFiles = files.filter((file) => selectedFileIds.includes(file.id));
+  const items = groupConversation(messages, turns);
 
   return (
     <section className="conversation-pane" aria-label="节点对话">
       <div className="conversation-thread">
-        {messages.length === 0 ? (
+        {items.length === 0 ? (
           <div className="conversation-empty">
             <span aria-hidden="true">↗</span>
             <h2>从这里开始完善节点</h2>
             <p>描述你希望补充、分析或调整的内容。消息、回复与交付修改都会保存在当前项目中。</p>
           </div>
-        ) : messages.map((message) => {
-          const streaming = message.id.startsWith("stream-");
+        ) : items.map((item) => {
+          if (item.kind === "legacy_message") {
+            const message = item.message;
+            const streaming = message.id.startsWith("stream-");
+            return (
+              <article className={`conversation-message is-${message.role} ${streaming ? "is-streaming" : ""}`} key={message.id}>
+                <div className="conversation-message-meta"><strong>{message.role === "user" ? "你" : message.role === "assistant" ? "Sion" : "系统"}</strong><time>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div>
+                <div className="conversation-message-copy">{message.content}</div>
+                {message.role === "user" && message.attachments && message.attachments.length > 0 ? (
+                  <div className="conversation-message-attachments">
+                    {message.attachments.map((attachment) => <span key={attachment.fileId}>{attachment.originalName}</span>)}
+                  </div>
+                ) : null}
+                {message.role === "assistant" && message.modelExecution ? (
+                  <div className="conversation-message-execution">{message.modelExecution.providerId} · {message.modelExecution.model} · 推理：{reasoningLabel[message.modelExecution.reasoningEffort] ?? message.modelExecution.reasoningEffort}</div>
+                ) : null}
+              </article>
+            );
+          }
           return (
-            <article className={`conversation-message is-${message.role} ${streaming ? "is-streaming" : ""}`} key={message.id}>
-              <div className="conversation-message-meta"><strong>{message.role === "user" ? "你" : message.role === "assistant" ? "Sion" : "系统"}</strong><time>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div>
-              <div className="conversation-message-copy">{message.content}</div>
-              {message.role === "user" && message.attachments && message.attachments.length > 0 ? (
-                <div className="conversation-message-attachments">
-                  {message.attachments.map((attachment) => <span key={attachment.fileId}>{attachment.originalName}</span>)}
-                </div>
-              ) : null}
-              {message.role === "assistant" && message.modelExecution ? (
-                <div className="conversation-message-execution">{message.modelExecution.providerId} · {message.modelExecution.model} · 推理：{reasoningLabel[message.modelExecution.reasoningEffort] ?? message.modelExecution.reasoningEffort}</div>
-              ) : null}
-              {message.role === "assistant" && !streaming ? (
-                <Button variant="ghost" loading={previewingMessageId === message.id} onClick={() => onPreviewAssistant(message.id)}>预览修改</Button>
-              ) : null}
-            </article>
+            <ConversationTurnCard
+              key={item.turn.id}
+              turn={item.turn}
+              userMessage={item.userMessage}
+              assistantMessage={item.assistantMessage}
+              markdownDirty={markdownDirty}
+              onRetryDelivery={onRetryDelivery}
+            />
           );
         })}
       </div>

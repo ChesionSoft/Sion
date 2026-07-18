@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { AgentRun, ChatMessage, ChatModelSelection, ChatSession, ContextEstimate, NodeStatus, ProjectFile, Provider, RecentProject, RightSurface, WorkflowNode } from "../../types";
+import type { AgentRun, ChatMessage, ChatModelSelection, ChatSession, ContextEstimate, ConversationTurn, NodeStatus, ProjectFile, Provider, RecentProject, RightSurface, WorkflowNode } from "../../types";
 import { statusLabel } from "../../types";
 import { Button, IconButton, Popover, StatusDot, Icon } from "../ui";
 import { WORKSPACE_HEADER_ACTIONS } from "../../workspace-config";
@@ -17,7 +17,8 @@ type ProjectWorkspaceProps = {
   runsError: string | null;
   activeRunId: string | null;
   messages: ChatMessage[];
-  previewingMessageId: string | null;
+  turns: ConversationTurn[];
+  markdownDirty: boolean;
   messageDraft: string;
   sendingMessage: boolean;
   rightSurface: RightSurface | null;
@@ -36,7 +37,7 @@ type ProjectWorkspaceProps = {
   onSelectSession: (sessionId: string) => void;
   onCreateSession: () => void;
   onCancelAgent: () => void;
-  onPreviewAssistant: (messageId: string) => void;
+  onRetryDelivery: (turnId: string) => void;
   onMessageDraft: (value: string) => void;
   onSendMessage: () => void;
   onModelSelection: (selection: ChatModelSelection) => Promise<void>;
@@ -139,14 +140,15 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
           <ConversationPane
             nodeAvailable={Boolean(props.node)}
             messages={props.messages}
+            turns={props.turns}
+            markdownDirty={props.markdownDirty}
             activeRunId={props.activeRunId}
             sendingMessage={props.sendingMessage}
-            previewingMessageId={props.previewingMessageId}
             messageDraft={props.messageDraft}
             onMessageDraft={props.onMessageDraft}
             onSend={props.onSendMessage}
             onCancel={props.onCancelAgent}
-            onPreviewAssistant={props.onPreviewAssistant}
+            onRetryDelivery={props.onRetryDelivery}
             providers={props.providers}
             files={props.files}
             selectedFileIds={props.selectedFileIds}

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelAgentRun,
   clearProjectsDirectory,
-  applyAssistant as applyAssistantApi,
   createProject,
   createSession as createSessionApi,
   deleteProvider,
@@ -16,14 +15,15 @@ import {
   getProjects,
   getSettings,
   importFile as importFileApi,
+  listConversationTurns,
   listFiles,
   listMessages,
   listProviders,
   listRuns,
   listSessions,
   pickProjectsDirectory,
-  previewAssistantDelivery,
   revealProject,
+  retryConversationTurnDelivery,
   saveAgentOverride,
   saveNode,
   saveProvider,
@@ -40,14 +40,14 @@ import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectWorkspace } from "./components/workspace/ProjectWorkspace";
 import { RevisionConflictDialog } from "./components/workspace/RevisionConflictDialog";
 import { AgentRulesWorkspace } from "./components/workspace/AgentRulesWorkspace";
-import { DeliveryPreviewTab } from "./components/workspace/DeliveryPreviewTab";
 import { DeliveryWorkspace } from "./components/workspace/DeliveryWorkspace";
 import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
 import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatModelSelection, type ChatSession, type ContextEstimate, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ContextEstimate, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
+import { mergeTurnSnapshot } from "./conversation-turns.ts";
 
 const now = () => new Date().toISOString();
 
@@ -88,8 +88,7 @@ export function App() {
   const [exporting, setExporting] = useState(false);
   const [exportProjectId, setExportProjectId] = useState<string | null>(null);
   const [lastExportResult, setLastExportResult] = useState<ExportResult | null>(null);
-  const [deliveryPreview, setDeliveryPreview] = useState<AssistantDeliveryPreview | null>(null);
-  const [previewingMessageId, setPreviewingMessageId] = useState<string | null>(null);
+  const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<NavigationIntent | null>(null);
   const [conflictLatest, setConflictLatest] = useState<WorkflowNode | null>(null);
@@ -103,8 +102,6 @@ export function App() {
   const workspaceScopeRef = useRef<string | null>(null);
   const messageScopeRef = useRef<string | null>(null);
   const projectScopeRef = useRef<string | null>(null);
-  const assistantPreviewScopeRef = useRef<string | null>(null);
-  const assistantApplyScopeRef = useRef<string | null>(null);
   const filePreviewScopeRef = useRef<string | null>(null);
   const sessionMutationScopeRef = useRef<string | null>(null);
   const messageMutationScopeRef = useRef<string | null>(null);
@@ -189,6 +186,7 @@ export function App() {
       setSessions([]);
       setSessionId(null);
       setMessages([]);
+      setTurns([]);
     }
   }, [project, activeNodeId]);
 
@@ -205,7 +203,10 @@ export function App() {
   }, [project]);
 
   useEffect(() => {
-    if (project && activeNodeId && sessionId) void loadMessages(project.id, activeNodeId, sessionId);
+    if (project && activeNodeId && sessionId) {
+      void loadMessages(project.id, activeNodeId, sessionId);
+      void loadTurns(project.id, activeNodeId, sessionId);
+    }
   }, [project, activeNodeId, sessionId]);
 
   useEffect(() => {
@@ -226,8 +227,14 @@ export function App() {
         setRuns((current) => current.map((item) => item.id === run.id ? run : item));
         setMessages((current) => current.filter((message) => message.id !== `stream-${run.id}`));
         if (sessionId) void loadMessages(project.id, nodeId, sessionId);
+        if (sessionId) void loadTurns(project.id, nodeId, sessionId);
         void loadRuns(project.id);
-        setNotice(run.status === "completed" ? "Agent 回复已保存到本地会话" : run.summary ?? "Agent Run 已结束");
+      }),
+      listen<ConversationTurnEvent>("conversation-turn-updated", (event) => {
+        const turn = event.payload.turn;
+        if (!project || turn.projectId !== project.id || turn.nodeId !== nodeId) return;
+        if (sessionId && turn.sessionId !== sessionId) return;
+        setTurns((current) => mergeTurnSnapshot(current, turn));
       }),
     ]);
     return () => { void subscriptions.then((unlisten) => unlisten.forEach((stop) => stop())); };
@@ -430,11 +437,7 @@ export function App() {
       setSendingMessage(false);
       setImportingFile(false);
     }
-    assistantPreviewScopeRef.current = null;
-    assistantApplyScopeRef.current = null;
     filePreviewScopeRef.current = null;
-    setDeliveryPreview(null);
-    setPreviewingMessageId(null);
     setFilePreview(null);
     if (projectChanged) {
       setMessageDraft("");
@@ -444,6 +447,7 @@ export function App() {
       setRunsError(null);
       setSessionsError(null);
     }
+    setTurns([]);
     setWorkspaceView(initialWorkspaceView());
     const existing = ui.projects[item.id];
     const nextProjectUi = existing?.initialized ? existing : initialProjectUi();
@@ -537,67 +541,13 @@ export function App() {
     }
   }
 
-  async function previewAssistant(messageId: string) {
-    if (!project || !node || !sessionId) return;
-    if (markdownDirty) {
-      setNotice("请先保存或处理当前编辑器里的未保存修改，再预览 Assistant 修改");
-      return;
-    }
-    const scope = requestScope(project.id, nodeId, sessionId, messageId);
-    assistantPreviewScopeRef.current = scope;
-    setPreviewingMessageId(messageId);
-    try {
-      const preview = await previewAssistantDelivery(project.id, nodeId, sessionId, messageId);
-      if (!isLatestRequest(scope, assistantPreviewScopeRef.current)) return;
-      setDeliveryPreview(preview);
-      setWorkspaceView((current) => ({
-        ...current,
-        rightSurface: { kind: "delivery-preview", messageId: preview.assistantMessageId },
-      }));
-      setNotice(`已生成修改预览：+${preview.additions} / -${preview.deletions} / ${preview.unchanged} 行保留`);
-    } catch (error) {
-      if (!isLatestRequest(scope, assistantPreviewScopeRef.current)) return;
-      setNotice(`预览 Assistant 修改失败：${String(error)}`);
-    } finally {
-      if (isLatestRequest(scope, assistantPreviewScopeRef.current)) setPreviewingMessageId(null);
-    }
-  }
-
-  async function applyAssistant(messageId: string) {
-    if (!project || !node || !sessionId) return;
-    if (markdownDirty) {
-      setNotice("请先保存或处理当前编辑器里的未保存修改，再应用 Assistant 修改");
-      return;
-    }
-    const scope = requestScope(project.id, nodeId, sessionId, messageId, String(node.revision));
-    assistantApplyScopeRef.current = scope;
-    try {
-      const result = await applyAssistantApi(project.id, nodeId, sessionId, messageId, node.revision, now());
-      if (!isLatestRequest(scope, assistantApplyScopeRef.current)) return;
-      if (result.conflict) {
-        setNode(result.conflict.latest); setDraft(result.conflict.latest.markdown);
-        setDeliveryPreview(null);
-        setWorkspaceView({ rightSurface: { kind: "delivery" }, deliveryView: "preview" });
-        setNotice("节点在确认前已被修改；已显示最新版本，未覆盖它");
-      } else if (result.saved) {
-        setNode(result.saved); setDraft(result.saved.markdown);
-        setDeliveryPreview(null);
-        setWorkspaceView({ rightSurface: { kind: "delivery" }, deliveryView: "preview" });
-        setNotice(`已应用 Assistant 修改到节点 revision ${result.saved.revision}`);
-      }
-    } catch (error) {
-      if (!isLatestRequest(scope, assistantApplyScopeRef.current)) return;
-      setNotice(`应用 Assistant 修改失败：${String(error)}`);
-    }
-  }
-
   async function loadSessions(projectId: string, nextNodeId: NodeId) {
     const scope = requestScope(projectId, nextNodeId);
     setSessionsError(null);
     setSessions([]);
     setSessionId(null);
     setMessages([]);
-    setDeliveryPreview(null);
+    setTurns([]);
     try {
       const loaded = await listSessions(projectId, nextNodeId);
       if (workspaceScopeRef.current !== scope) return;
@@ -642,6 +592,28 @@ export function App() {
       if (messageScopeRef.current !== scope) return;
       setMessages([]);
       setNotice(`读取消息失败：${String(error)}`);
+    }
+  }
+
+  async function loadTurns(projectId: string, nextNodeId: NodeId, nextSessionId: string) {
+    try {
+      const next = await listConversationTurns(projectId, nextNodeId, nextSessionId, now());
+      setTurns(next);
+    } catch (error) {
+      setNotice(`加载会话轮次失败：${String(error)}`);
+    }
+  }
+
+  async function retryDelivery(turnId: string) {
+    if (!project || !sessionId) return;
+    setSavingModelSelection(true);
+    try {
+      await retryConversationTurnDelivery(project.id, nodeId, sessionId, turnId, now());
+      await loadTurns(project.id, nodeId, sessionId);
+    } catch (error) {
+      setNotice(`重新判断交付稿失败：${String(error)}`);
+    } finally {
+      setSavingModelSelection(false);
     }
   }
 
@@ -723,14 +695,13 @@ export function App() {
       const { run } = await startAgentRun(project.id, nodeId, active.id, content, selectedFileIds, node?.revision ?? 0, !markdownDirty, now());
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
       await loadMessages(project.id, nodeId, active.id);
+      void loadTurns(project.id, nodeId, active.id);
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
       setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
       setMessageDraft("");
       setSelectedFileIds([]);
-      setNotice(run.status === "queued" ? "Agent Run 已排队；同一节点不会并发写入" : "Agent 正在本机流式生成回复");
-    } catch (error) {
+    } catch {
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
-      setNotice(`发送失败：${String(error)}`);
     } finally {
       if (isLatestRequest(scope, messageMutationScopeRef.current)) setSendingMessage(false);
     }
@@ -834,12 +805,9 @@ export function App() {
   }
 
   function exitProjectImmediate() {
-    assistantPreviewScopeRef.current = null;
-    assistantApplyScopeRef.current = null;
     filePreviewScopeRef.current = null;
-    setDeliveryPreview(null);
-    setPreviewingMessageId(null);
     setFilePreview(null);
+    setTurns([]);
     selectDestinationImmediate("projects");
   }
 
@@ -854,14 +822,11 @@ export function App() {
     setImportingFile(false);
     setMessageDraft("");
     setSelectedFileIds([]);
-    assistantPreviewScopeRef.current = null;
-    assistantApplyScopeRef.current = null;
     filePreviewScopeRef.current = null;
-    setPreviewingMessageId(null);
     setNode(null);
     setDraft("");
-    setDeliveryPreview(null);
     setFilePreview(null);
+    setTurns([]);
     setWorkspaceView(initialWorkspaceView());
     const current = ui.projects[project.id] ?? initialProjectUi();
     workspaceScopeRef.current = requestScope(project.id, id);
@@ -898,12 +863,7 @@ export function App() {
       setImportingFile(false);
     }
     if (kind === "file") filePreviewScopeRef.current = null;
-    if (kind === "delivery-preview") {
-      assistantPreviewScopeRef.current = null;
-      assistantApplyScopeRef.current = null;
-      setPreviewingMessageId(null);
-    }
-    const action = kind === "file" ? "file-pool" : kind === "delivery-preview" ? "delivery" : kind;
+    const action = kind === "file" ? "file-pool" : kind;
     setWorkspaceView((current) => ({ ...current, rightSurface: null }));
     if (action) {
       window.requestAnimationFrame(() => {
@@ -917,10 +877,7 @@ export function App() {
       fileImportScopeRef.current = null;
       setImportingFile(false);
     }
-    assistantPreviewScopeRef.current = null;
-    assistantApplyScopeRef.current = null;
     filePreviewScopeRef.current = null;
-    setPreviewingMessageId(null);
     setWorkspaceView((current) => ({ ...current, rightSurface: nextSurface }));
   }
 
@@ -1027,10 +984,7 @@ export function App() {
     messageMutationScopeRef.current = null;
     setSavingModelSelection(false);
     setSendingMessage(false);
-    assistantPreviewScopeRef.current = null;
-    assistantApplyScopeRef.current = null;
-    setDeliveryPreview(null);
-    setPreviewingMessageId(null);
+    setTurns([]);
     messageScopeRef.current = requestScope(project?.id, activeNodeId, nextSessionId);
     setSessionId(nextSessionId);
   }
@@ -1079,20 +1033,6 @@ export function App() {
       onBack={() => {
         filePreviewScopeRef.current = null;
         setWorkspaceView((current) => ({ ...current, rightSurface: { kind: "file-pool" } }));
-      }}
-    />
-  ) : surface?.kind === "delivery-preview" ? (
-    <DeliveryPreviewTab
-      preview={deliveryPreview}
-      onCancel={() => {
-        assistantApplyScopeRef.current = null;
-        setDeliveryPreview(null);
-        setWorkspaceView({ rightSurface: { kind: "delivery" }, deliveryView: "preview" });
-      }}
-      onApply={(messageId) => void applyAssistant(messageId)}
-      onBack={() => {
-        assistantApplyScopeRef.current = null;
-        setWorkspaceView({ rightSurface: { kind: "delivery" }, deliveryView: "preview" });
       }}
     />
   ) : null;
@@ -1152,8 +1092,9 @@ export function App() {
       activeRunId={activeRunId}
       onCancelAgent={() => void cancelAgent()}
       messages={messages}
-      previewingMessageId={previewingMessageId}
-      onPreviewAssistant={(id) => void previewAssistant(id)}
+      turns={turns}
+      markdownDirty={markdownDirty}
+      onRetryDelivery={(id) => void retryDelivery(id)}
       messageDraft={messageDraft}
       onMessageDraft={setMessageDraft}
       onSendMessage={() => void sendMessage()}

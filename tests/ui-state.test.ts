@@ -122,10 +122,6 @@ test("nested right surfaces return to their owning workspace", () => {
     parentSurface({ kind: "file", fileId: "brief" }),
     { kind: "file-pool" },
   );
-  assert.deepEqual(
-    parentSurface({ kind: "delivery-preview", messageId: "message" }),
-    { kind: "delivery" },
-  );
   assert.equal(parentSurface({ kind: "delivery" }), null);
 });
 
