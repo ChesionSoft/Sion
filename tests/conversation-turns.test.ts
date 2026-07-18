@@ -70,3 +70,18 @@ test("headline summarizes the terminal delivery outcome", () => {
   );
   assert.equal(turnHeadline(turn({ status: "interrupted" })), "运行在应用退出前中断");
 });
+
+test("response failures headline the mapped provider reason", () => {
+  const failed = turn({
+    status: "failed",
+    deliveryOutcome: {
+      kind: "failed",
+      stage: "response",
+      publicError: "模型服务上游网关超时（HTTP 504），请稍后重新发送",
+    },
+  });
+  assert.equal(
+    turnHeadline(failed),
+    "模型服务上游网关超时（HTTP 504），请稍后重新发送",
+  );
+});

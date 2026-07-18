@@ -56,7 +56,9 @@ export function turnHeadline(turn: ConversationTurn): string {
     case "conflict":
       return "交付稿版本已变化，本次未覆盖";
     case "failed":
-      return "回复已完成，交付稿更新失败";
+      return turn.deliveryOutcome.stage === "response"
+        ? turn.deliveryOutcome.publicError
+        : "回复已完成，交付稿更新失败";
     case "cancelled":
       return "已取消，未保存未完成内容";
     case "pending":

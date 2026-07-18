@@ -1,5 +1,6 @@
 import type { ChatMessage, ConversationTurn } from "../../types";
 import { turnCanRetryDelivery, turnHeadline } from "../../conversation-turns.ts";
+import { ConversationReasoningDisclosure } from "./ConversationReasoningDisclosure";
 
 export type ConversationTurnCardProps = {
   turn: ConversationTurn;
@@ -15,7 +16,7 @@ export function ConversationTurnCard({
   turn,
   userMessage,
   assistantMessage,
-  liveReasoning: _liveReasoning,
+  liveReasoning,
   markdownDirty,
   onRetryDelivery,
   onOpenRunDetail,
@@ -44,6 +45,11 @@ export function ConversationTurnCard({
           </div>
         </section>
       ) : null}
+      <ConversationReasoningDisclosure
+        key={turn.runId}
+        active={turn.status === "queued" || turn.status === "running"}
+        content={liveReasoning || turn.reasoningSummary}
+      />
       <button
         type="button"
         className="conversation-turn-status"
@@ -66,9 +72,6 @@ export function ConversationTurnCard({
             </li>
           ))}
         </ul>
-      ) : null}
-      {turn.reasoningSummary ? (
-        <p className="conversation-turn-reasoning">{turn.reasoningSummary}</p>
       ) : null}
       {canRetry ? (
         <button

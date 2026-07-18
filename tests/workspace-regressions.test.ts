@@ -264,6 +264,26 @@ test("conversation emits public reasoning summaries but never hidden reasoning",
   assert.doesNotMatch(source.slice(start, end), /reasoning_content/);
 });
 
+test("live public reasoning is scoped and cleared at terminal or navigation boundaries", async () => {
+  const app = await readFile("src/App.tsx", "utf8");
+  assert.match(app, /listen<AgentReasoningSummaryEvent>\("agent-reasoning-summary"/);
+  assert.match(app, /appendLiveReasoning/);
+  assert.match(app, /removeLiveReasoning/);
+  assert.match(app, /\[project\?\.id, nodeId, sessionId\]/);
+});
+
+test("reasoning disclosure is collapsed, accessible, and adds no retry action", async () => {
+  const source = await readFile(
+    "src/components/workspace/ConversationReasoningDisclosure.tsx",
+    "utf8",
+  );
+  assert.match(source, /useState\(false\)/);
+  assert.match(source, /aria-expanded=\{open\}/);
+  assert.match(source, /Agent 正在思考/);
+  assert.match(source, /模型暂未提供公开思考内容/);
+  assert.doesNotMatch(source, /reasoning_content|重新请求|自动重试/);
+});
+
 test("delivery regenerates locally while DOCX stays in Export Center", async () => {
   const [delivery, exportCenter, app, shellCss] = await Promise.all([
     readFile("src/components/workspace/DeliveryWorkspace.tsx", "utf8"),
