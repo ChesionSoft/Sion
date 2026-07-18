@@ -6,9 +6,9 @@ mod provider_settings;
 
 use serde::{Deserialize, Serialize};
 use sion_core::{
-    ChatMessage, ChatModelSelection, ChatRole, ChatSession, ContextEstimate, NodeStatus,
-    ProjectFile, ProjectManifest, ReasoningEffort, WorkflowNode, WorkflowNodeId,
-    apply_agent_delivery,
+    ChatMessage, ChatModelSelection, ChatRole, ChatSession, ConversationTurn, ContextEstimate,
+    DeliveryOutcome, DeliveryStage, NodeStatus, ProjectFile, ProjectManifest, ReasoningEffort,
+    TurnStatus, WorkflowNode, WorkflowNodeId, apply_agent_delivery,
 };
 use sion_storage::{
     CreateProjectInput, FilePreview, ProjectDiscovery, ProjectRegistry, ProjectStore,
@@ -55,11 +55,19 @@ impl Default for AgentState {
 #[derive(Clone)]
 struct AgentJob {
     project_root: PathBuf,
+    #[allow(dead_code)]
+    project_id: String,
+    node_id: WorkflowNodeId,
     session_id: String,
     prompt: String,
     model: provider_settings::ResolvedModel,
     reasoning_effort: ReasoningEffort,
     cancellation: CancellationToken,
+    turn_id: String,
+    #[allow(dead_code)]
+    expected_revision: u64,
+    #[allow(dead_code)]
+    delivery_write_allowed: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -76,6 +84,25 @@ struct AgentTokenEvent {
 #[serde(rename_all = "camelCase")]
 struct AgentFinishedEvent {
     run: sion_agent::AgentRun,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRunStartResult {
+    run: sion_agent::AgentRun,
+    turn: ConversationTurn,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ConversationTurnEvent {
+    turn: ConversationTurn,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationTurnList {
+    turns: Vec<ConversationTurn>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,6 +310,8 @@ struct AgentRunStartRequest {
     session_id: String,
     message: String,
     file_ids: Vec<String>,
+    expected_revision: u64,
+    delivery_write_allowed: bool,
     now: String,
 }
 
@@ -697,6 +726,7 @@ struct PreparedSend {
     estimate: ContextEstimate,
     user_message: ChatMessage,
     file_ids: Vec<String>,
+    turn_id: String,
 }
 
 impl PreparedSend {
@@ -725,6 +755,7 @@ struct SendPersistenceError {
     promoted: Vec<sion_agent::AgentRun>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_prepared_send(
     store: &ProjectStore,
     scheduler: &mut sion_agent::RunScheduler,
@@ -732,8 +763,12 @@ fn persist_prepared_send(
     node_id: WorkflowNodeId,
     session_id: &str,
     user_message: ChatMessage,
+    turn_id: String,
+    expected_revision: u64,
+    delivery_write_allowed: bool,
     now: String,
-) -> Result<sion_agent::AgentRun, SendPersistenceError> {
+) -> Result<AgentRunStartResult, SendPersistenceError> {
+    let _ = (expected_revision, delivery_write_allowed);
     scheduler
         .ensure_available(&run_request.project_id, node_id)
         .map_err(|error| SendPersistenceError {
@@ -755,7 +790,24 @@ fn persist_prepared_send(
             promoted,
         });
     }
-    if let Err(error) = store.append_message(node_id, session_id, user_message, now.clone()) {
+    let turn = ConversationTurn {
+        id: turn_id,
+        project_id: run.project_id.clone(),
+        node_id,
+        session_id: session_id.to_string(),
+        run_id: run.id.clone(),
+        user_message_id: user_message.id.clone(),
+        assistant_message_id: None,
+        status: TurnStatus::Queued,
+        activities: Vec::new(),
+        reasoning_summary: None,
+        delivery_outcome: DeliveryOutcome::Pending,
+        started_at: now.clone(),
+        finished_at: None,
+    };
+    if let Err(error) =
+        store.begin_turn(node_id, session_id, user_message, turn.clone(), now.clone())
+    {
         let promoted = scheduler
             .cancel(&run.id, now, Some("用户消息保存失败".into()))
             .unwrap_or_default();
@@ -767,7 +819,7 @@ fn persist_prepared_send(
             promoted,
         });
     }
-    Ok(run)
+    Ok(AgentRunStartResult { run, turn })
 }
 
 fn prepare_agent_send(
@@ -802,6 +854,7 @@ fn prepare_agent_send(
             prepared.estimate.estimated_input_tokens
         ));
     }
+    let turn_id = uuid::Uuid::new_v4().to_string();
     let user_message = ChatMessage {
         id: uuid::Uuid::new_v4().to_string(),
         role: ChatRole::User,
@@ -809,7 +862,7 @@ fn prepare_agent_send(
         reasoning_content: None,
         sources: None,
         created_at: now.to_string(),
-        turn_id: None,
+        turn_id: Some(turn_id.clone()),
         reasoning_duration_ms: None,
         usage: None,
         attachments: prepared.attachments.clone(),
@@ -822,6 +875,7 @@ fn prepare_agent_send(
         estimate: prepared.estimate,
         user_message,
         file_ids: file_ids.to_vec(),
+        turn_id,
     })
 }
 
@@ -830,7 +884,7 @@ fn agent_run_start(
     request: AgentRunStartRequest,
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AgentState>>,
-) -> Result<VersionedResponse<sion_agent::AgentRun>, ApiError> {
+) -> Result<VersionedResponse<AgentRunStartResult>, ApiError> {
     assert_api_version(&request.version)?;
     let app_data_root = sion_root(&app)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
@@ -869,16 +923,19 @@ fn agent_run_start(
         .scheduler
         .lock()
         .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?;
-    let run = match persist_prepared_send(
+    let start_result = match persist_prepared_send(
         &store,
         &mut scheduler,
         run_request,
         request.node_id,
         &request.session_id,
         prepared.user_message.clone(),
+        prepared.turn_id.clone(),
+        request.expected_revision,
+        request.delivery_write_allowed,
         request.now.clone(),
     ) {
-        Ok(run) => run,
+        Ok(start_result) => start_result,
         Err(error) => {
             drop(scheduler);
             spawn_promoted_runs(app.clone(), state.inner().clone(), error.promoted);
@@ -887,25 +944,30 @@ fn agent_run_start(
     };
     let job = AgentJob {
         project_root,
+        project_id: request.project_id.clone(),
+        node_id: request.node_id,
         session_id: request.session_id.clone(),
         prompt: prepared.prompt.clone(),
         model: prepared.resolved.clone(),
         reasoning_effort: prepared.selection.reasoning_effort,
         cancellation: CancellationToken::new(),
+        turn_id: start_result.turn.id.clone(),
+        expected_revision: request.expected_revision,
+        delivery_write_allowed: request.delivery_write_allowed,
     };
     state
         .jobs
         .lock()
         .map_err(|_| ApiError::CheckFailed("agent job lock is poisoned".to_string()))?
-        .insert(run.id.clone(), job.clone());
-    let should_spawn = run.status == sion_agent::AgentRunStatus::Running;
+        .insert(start_result.run.id.clone(), job.clone());
+    let should_spawn = start_result.run.status == sion_agent::AgentRunStatus::Running;
     drop(scheduler);
     if should_spawn {
-        spawn_agent_run(app, state.inner().clone(), run.clone(), job);
+        spawn_agent_run(app, state.inner().clone(), start_result.run.clone(), job);
     }
     Ok(VersionedResponse {
         api_version: API_VERSION,
-        payload: run,
+        payload: start_result,
     })
 }
 
@@ -922,6 +984,34 @@ fn agent_run_list(
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: AgentRunList { runs },
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationTurnListRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    now: String,
+}
+
+#[tauri::command]
+fn conversation_turn_list(
+    request: ConversationTurnListRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ConversationTurnList>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(project_root);
+    let turns = store
+        .recover_interrupted_turns(request.node_id, &request.session_id, request.now)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: ConversationTurnList { turns },
     })
 }
 
@@ -1623,6 +1713,7 @@ fn spawn_agent_run(
                     &run,
                     &job,
                     Err("unsupported provider protocol".to_string()),
+                    turn_runtime::DeliveryStreamProjector::default(),
                 );
                 return;
             }
@@ -1630,6 +1721,8 @@ fn spawn_agent_run(
         let event_app = app.clone();
         let event_run = run.clone();
         let event_session = job.session_id.clone();
+        let projector = Arc::new(Mutex::new(turn_runtime::DeliveryStreamProjector::default()));
+        let projector_for_delta = projector.clone();
         let stream = sion_agent::model_stream::stream_text_with(
             &state.client,
             &sion_agent::model_stream::StreamRequest {
@@ -1643,22 +1736,28 @@ fn spawn_agent_run(
             job.cancellation.clone(),
             move |delta| match delta {
                 sion_agent::model_stream::StreamDelta::OutputText(text) => {
-                    let _ = event_app.emit(
-                        "agent-token",
-                        AgentTokenEvent {
-                            run_id: event_run.id.clone(),
-                            project_id: event_run.project_id.clone(),
-                            node_id: event_run.node_id,
-                            session_id: event_session.clone(),
-                            delta: text.to_string(),
-                        },
-                    );
+                    let visible = projector_for_delta.lock().unwrap().push(text);
+                    if !visible.is_empty() {
+                        let _ = event_app.emit(
+                            "agent-token",
+                            AgentTokenEvent {
+                                run_id: event_run.id.clone(),
+                                project_id: event_run.project_id.clone(),
+                                node_id: event_run.node_id,
+                                session_id: event_session.clone(),
+                                delta: visible,
+                            },
+                        );
+                    }
                 }
                 sion_agent::model_stream::StreamDelta::ReasoningSummary(_) => {}
             },
         )
         .await;
-        complete_agent_run(&app, &state, &run, &job, stream);
+        let projector = Arc::try_unwrap(projector)
+            .map(|mutex| mutex.into_inner().unwrap())
+            .unwrap_or_default();
+        complete_agent_run(&app, &state, &run, &job, stream, projector);
     });
 }
 
@@ -1668,84 +1767,162 @@ fn complete_agent_run(
     run: &sion_agent::AgentRun,
     job: &AgentJob,
     outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
+    projector: turn_runtime::DeliveryStreamProjector,
 ) {
     let finished_at = run.created_at.clone();
-    let completion = completion_from_stream(outcome);
-    let (final_run, promoted) = {
+    let store = ProjectStore::at(&job.project_root);
+    let base_turn = store
+        .turns(job.node_id, &job.session_id)
+        .ok()
+        .and_then(|turns| turns.into_iter().find(|turn| turn.id == job.turn_id))
+        .unwrap_or_else(|| ConversationTurn {
+            id: job.turn_id.clone(),
+            project_id: run.project_id.clone(),
+            node_id: job.node_id,
+            session_id: job.session_id.clone(),
+            run_id: run.id.clone(),
+            user_message_id: String::new(),
+            assistant_message_id: None,
+            status: TurnStatus::Running,
+            activities: Vec::new(),
+            reasoning_summary: None,
+            delivery_outcome: DeliveryOutcome::Pending,
+            started_at: finished_at.clone(),
+            finished_at: None,
+        });
+    let (final_run, promoted, terminal_turn) = {
         let Ok(mut scheduler) = state.scheduler.lock() else {
             return;
         };
-        let transition = match completion {
-            Ok((cancelled, content)) if cancelled => scheduler
-                .cancel(
-                    &run.id,
-                    finished_at.clone(),
-                    Some("已取消；部分输出不会自动写入节点".to_string()),
-                )
-                .map(|promoted| (promoted, content)),
-            Ok((_cancelled, content)) => scheduler
-                .complete(
-                    &run.id,
-                    finished_at.clone(),
-                    Some(format!(
-                        "已使用 {} 的模型回复并保存到本地会话",
-                        job.model.provider_id
-                    )),
-                )
-                .map(|promoted| (promoted, content)),
+        match outcome {
+            Ok(sion_agent::model_stream::StreamOutcome::Completed(_)) => {
+                match projector.finish() {
+                    Ok(projected) => {
+                        let assistant_id = uuid::Uuid::new_v4().to_string();
+                        let _ = store.append_message(
+                            job.node_id,
+                            &job.session_id,
+                            ChatMessage {
+                                id: assistant_id.clone(),
+                                role: ChatRole::Assistant,
+                                content: projected.visible_content,
+                                reasoning_content: None,
+                                sources: None,
+                                created_at: finished_at.clone(),
+                                turn_id: Some(job.turn_id.clone()),
+                                reasoning_duration_ms: None,
+                                usage: None,
+                                attachments: Vec::new(),
+                                model_execution: Some(sion_core::ModelExecution {
+                                    provider_id: run.provider_id.clone().expect("new runs freeze provider"),
+                                    model: run.model.clone().expect("new runs freeze model"),
+                                    reasoning_effort: run.reasoning_effort.expect("new runs freeze effort"),
+                                }),
+                            },
+                            finished_at.clone(),
+                        );
+                        let turn = ConversationTurn {
+                            status: TurnStatus::Completed,
+                            delivery_outcome: DeliveryOutcome::Pending,
+                            assistant_message_id: Some(assistant_id),
+                            finished_at: Some(finished_at.clone()),
+                            ..base_turn.clone()
+                        };
+                        let _ = store.save_turn(job.node_id, &job.session_id, turn.clone());
+                        let promoted = scheduler
+                            .complete(
+                                &run.id,
+                                finished_at.clone(),
+                                Some(format!(
+                                    "已使用 {} 的模型回复并保存到本地会话",
+                                    job.model.provider_id
+                                )),
+                            )
+                            .unwrap_or_default();
+                        let final_run = scheduler.get(&run.id).cloned();
+                        (final_run, promoted, turn)
+                    }
+                    Err(_) => {
+                        let turn = ConversationTurn {
+                            status: TurnStatus::Failed,
+                            delivery_outcome: turn_runtime::safe_delivery_error(
+                                DeliveryStage::Decision,
+                                "",
+                            ),
+                            assistant_message_id: None,
+                            finished_at: Some(finished_at.clone()),
+                            ..base_turn.clone()
+                        };
+                        let _ = store.save_turn(job.node_id, &job.session_id, turn.clone());
+                        let promoted = scheduler
+                            .fail(
+                                &run.id,
+                                finished_at.clone(),
+                                "模型回复未包含有效交付决策".to_string(),
+                            )
+                            .unwrap_or_default();
+                        let final_run = scheduler.get(&run.id).cloned();
+                        (final_run, promoted, turn)
+                    }
+                }
+            }
+            Ok(sion_agent::model_stream::StreamOutcome::Cancelled(_)) => {
+                let turn = ConversationTurn {
+                    status: TurnStatus::Cancelled,
+                    delivery_outcome: DeliveryOutcome::Cancelled,
+                    assistant_message_id: None,
+                    finished_at: Some(finished_at.clone()),
+                    ..base_turn.clone()
+                };
+                let _ = store.save_turn(job.node_id, &job.session_id, turn.clone());
+                let promoted = scheduler
+                    .cancel(
+                        &run.id,
+                        finished_at.clone(),
+                        Some("已取消；部分输出不会自动写入节点".to_string()),
+                    )
+                    .unwrap_or_default();
+                let final_run = scheduler.get(&run.id).cloned();
+                (final_run, promoted, turn)
+            }
             Err(error) => {
+                let turn = ConversationTurn {
+                    status: TurnStatus::Failed,
+                    delivery_outcome: turn_runtime::safe_delivery_error(
+                        DeliveryStage::Response,
+                        &error,
+                    ),
+                    assistant_message_id: None,
+                    finished_at: Some(finished_at.clone()),
+                    ..base_turn
+                };
+                let _ = store.save_turn(job.node_id, &job.session_id, turn.clone());
                 let error = if error.contains("reasoning") {
                     format!("{error}请将推理强度改为“关闭”后重试。")
                 } else {
                     error
                 };
-                scheduler
-                    .fail(
-                        &run.id,
-                        finished_at.clone(),
-                        format!("模型调用失败：{error}"),
-                    )
-                    .map(|promoted| (promoted, None))
+                let promoted = scheduler
+                    .fail(&run.id, finished_at.clone(), format!("模型调用失败：{error}"))
+                    .unwrap_or_default();
+                let final_run = scheduler.get(&run.id).cloned();
+                (final_run, promoted, turn)
             }
-        };
-        let Ok((promoted, content)) = transition else {
-            return;
-        };
-        let Some(final_run) = scheduler.get(&run.id).cloned() else {
-            return;
-        };
-        (final_run, (promoted, content))
+        }
     };
-    let (promoted, content) = promoted;
-    let store = ProjectStore::at(&job.project_root);
-    if let Some(content) = content.filter(|content| !content.is_empty()) {
-        let _ = store.append_message(
-            run.node_id,
-            &job.session_id,
-            ChatMessage {
-                id: uuid::Uuid::new_v4().to_string(),
-                role: ChatRole::Assistant,
-                content,
-                reasoning_content: None,
-                sources: None,
-                created_at: finished_at.clone(),
-                turn_id: Some(run.id.clone()),
-                reasoning_duration_ms: None,
-                usage: None,
-                attachments: Vec::new(),
-                model_execution: Some(sion_core::ModelExecution {
-                    provider_id: run.provider_id.clone().expect("new runs freeze provider"),
-                    model: run.model.clone().expect("new runs freeze model"),
-                    reasoning_effort: run.reasoning_effort.expect("new runs freeze effort"),
-                }),
-            },
-            finished_at.clone(),
-        );
-    }
+    let Some(final_run) = final_run else {
+        return;
+    };
     let _ = store.save_run(&final_run);
     if let Ok(mut jobs) = state.jobs.lock() {
         jobs.remove(&run.id);
     }
+    let _ = app.emit(
+        "conversation-turn-updated",
+        ConversationTurnEvent {
+            turn: terminal_turn,
+        },
+    );
     let _ = app.emit("agent-run-finished", AgentFinishedEvent { run: final_run });
     spawn_promoted_runs(app.clone(), state.clone(), promoted);
 }
@@ -1753,6 +1930,7 @@ fn complete_agent_run(
 /// A cancelled stream may be shown transiently in the UI, but is never an
 /// assistant message on disk. This makes a retry unambiguous and prevents a
 /// user from mistaking a truncated draft for a completed answer.
+#[allow(dead_code)]
 fn completion_from_stream(
     outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
 ) -> Result<(bool, Option<String>), String> {
@@ -1813,6 +1991,7 @@ pub fn run() {
             agent_run_start,
             agent_run_list,
             agent_run_cancel,
+            conversation_turn_list,
             project_create,
             project_list,
             project_reveal,
@@ -2217,13 +2396,21 @@ mod tests {
         std::fs::remove_dir_all(&runs_path).unwrap();
         std::fs::write(&runs_path, "not a directory").unwrap();
         let mut scheduler = sion_agent::RunScheduler::default();
+        let run_request = prepared.run_request(
+            "project-1".into(),
+            WorkflowNodeId::Goals,
+            "now".into(),
+        );
         let result = persist_prepared_send(
             &fixture.store,
             &mut scheduler,
-            prepared.run_request("project-1".into(), WorkflowNodeId::Goals, "now".into()),
+            run_request,
             WorkflowNodeId::Goals,
             &fixture.session.id,
             prepared.user_message,
+            prepared.turn_id,
+            7,
+            true,
             "now".into(),
         );
         assert!(result.is_err());
@@ -2236,5 +2423,74 @@ mod tests {
         );
         assert_eq!(scheduler.active_count(), 0);
         std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn prepared_send_persists_user_message_and_turn_with_one_turn_id() {
+        let fixture = send_fixture(128_000);
+        let prepared = prepare_agent_send(
+            &fixture.provider_root,
+            &fixture.store,
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            "补充目标",
+            &[],
+            "now",
+        )
+        .unwrap();
+        let run_request =
+            prepared.run_request("project-1".into(), WorkflowNodeId::Goals, "now".into());
+        let result = persist_prepared_send(
+            &fixture.store,
+            &mut sion_agent::RunScheduler::default(),
+            run_request,
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            prepared.user_message,
+            prepared.turn_id,
+            4,
+            true,
+            "now".into(),
+        )
+        .unwrap();
+        let turns = fixture
+            .store
+            .turns(WorkflowNodeId::Goals, &fixture.session.id)
+            .unwrap();
+        assert_eq!(turns, vec![result.turn.clone()]);
+        assert_eq!(
+            fixture.store.messages(WorkflowNodeId::Goals, &fixture.session.id).unwrap()[0].turn_id,
+            Some(result.turn.id),
+        );
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn agent_run_start_request_requires_expected_revision_and_delivery_write_allowed() {
+        let request: AgentRunStartRequest = serde_json::from_value(serde_json::json!({
+            "apiVersion": 1,
+            "projectId": "p",
+            "nodeId": "goals",
+            "sessionId": "s",
+            "message": "m",
+            "fileIds": [],
+            "expectedRevision": 7,
+            "deliveryWriteAllowed": true,
+            "now": "now"
+        }))
+        .unwrap();
+        assert_eq!(request.expected_revision, 7);
+        assert!(request.delivery_write_allowed);
+        assert!(serde_json::from_value::<AgentRunStartRequest>(serde_json::json!({
+            "apiVersion": 1,
+            "projectId": "p",
+            "nodeId": "goals",
+            "sessionId": "s",
+            "message": "m",
+            "fileIds": [],
+            "deliveryWriteAllowed": true,
+            "now": "now"
+        }))
+        .is_err());
     }
 }

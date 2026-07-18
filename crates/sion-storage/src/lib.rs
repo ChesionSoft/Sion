@@ -1828,6 +1828,7 @@ mod tests {
             model: None,
             reasoning_effort: None,
             file_ids: Vec::new(),
+            kind: sion_agent::AgentRunKind::Conversation,
         };
         store.save_run(&run).unwrap();
 
