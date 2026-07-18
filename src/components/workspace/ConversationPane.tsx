@@ -51,9 +51,6 @@ export function ConversationPane(props: ConversationPaneProps) {
       selection: modelSelection,
       providers,
       savingSelection: savingModelSelection,
-      estimating: estimatingContext,
-      estimate: contextEstimate,
-      estimateError: contextEstimateError,
     });
 
   function submit() {

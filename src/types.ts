@@ -41,8 +41,49 @@ export type ContextEstimate = {
   ratio: number;
   status: "ready" | "warning" | "blocked";
 };
+export type TokenUsageSource = "exact" | "estimated" | "mixed";
+export type ModelCallCategory = "answer" | "tool_planning" | "document_update" | "other";
+export type ModelCallStatus = "completed" | "interrupted" | "failed";
+export type ModelCallUsage = {
+  id: string;
+  category: ModelCallCategory;
+  providerId: string;
+  model: string;
+  source: TokenUsageSource;
+  status: ModelCallStatus;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+export type TurnTokenUsage = {
+  turnId: string;
+  source: TokenUsageSource;
+  callCount: number;
+  calls: ModelCallUsage[];
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+export type CumulativeTokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  callCount: number;
+  source: TokenUsageSource;
+};
+export type ConversationContextSnapshot = ContextEstimate & {
+  breakdown: {
+    protocolTokens: number;
+    rulesTokens: number;
+    nodeMarkdownTokens: number;
+    conversationTokens: number;
+    attachmentTokens: number;
+  };
+  cumulativeUsage: CumulativeTokenUsage;
+  calculatedAt: string;
+};
 export type ChatSession = { id: string; nodeId: NodeId; name: string; messageCount: number; createdAt: string; updatedAt: string; modelSelection?: ChatModelSelection | null };
-export type ChatMessage = { id: string; role: "user" | "assistant" | "system"; content: string; createdAt: string; turnId?: string; attachments?: MessageAttachmentRef[]; modelExecution?: ModelExecution | null };
+export type ChatMessage = { id: string; role: "user" | "assistant" | "system"; content: string; createdAt: string; turnId?: string; usage?: TurnTokenUsage; attachments?: MessageAttachmentRef[]; modelExecution?: ModelExecution | null };
 export type FileExtractionStatus = "available" | "failed" | "unsupported";
 export type ProjectFile = {
   id: string;
@@ -120,13 +161,29 @@ export type AgentRun = {
   nodeId: NodeId;
   kind: AgentRunKind;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
   summary?: string;
   providerId?: string;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   fileIds?: string[];
+  sessionId?: string;
+  turnId?: string;
+  contextSnapshot?: ConversationContextSnapshot;
+  usage?: TurnTokenUsage;
+  durationMs?: number;
 };
 export type AgentRunStartResult = { run: AgentRun; turn: ConversationTurn };
+export type AgentRunStartOutcome =
+  | { kind: "started"; run: AgentRun; turn: ConversationTurn }
+  | {
+      kind: "context_blocked";
+      snapshot: ConversationContextSnapshot;
+      excessTokens: number;
+      largestSection: string;
+    };
 export type AgentTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
 export type AgentFinishedEvent = { run: AgentRun };
 export type TurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -164,6 +221,11 @@ export type ConversationTurn = {
   deliveryOutcome: DeliveryOutcome;
   startedAt: string;
   finishedAt?: string;
+};
+export type AgentRunDetail = {
+  run: AgentRun;
+  turn?: ConversationTurn;
+  assistantMessage?: ChatMessage;
 };
 export type ConversationTurnEvent = { turn: ConversationTurn; savedNode?: WorkflowNode };
 export type DeliveryGenerationStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "conflict";

@@ -7,12 +7,15 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   API_VERSION,
   type AgentRun,
+  type AgentRunDetail,
+  type AgentRunStartOutcome,
   type AgentRunStartResult,
   type AppSettings,
   type ChatMessage,
   type ChatModelSelection,
   type ChatSession,
   type ConversationTurn,
+  type ConversationContextSnapshot,
   type ContextEstimate,
   type DeliveryGeneration,
   type EffectiveAgentRules,
@@ -144,6 +147,22 @@ export const estimateAgentContext = (
     message,
     fileIds,
   });
+export const getConversationContext = (
+  projectId: string,
+  nodeId: NodeId,
+  sessionId: string,
+  modelSelection: ChatModelSelection,
+  fileIds: string[],
+  now: string,
+) =>
+  invokePayload<ConversationContextSnapshot>("conversation_context_get", {
+    projectId,
+    nodeId,
+    sessionId,
+    modelSelection,
+    fileIds,
+    now,
+  });
 export const listMessages = async (
   projectId: string,
   nodeId: NodeId,
@@ -201,7 +220,7 @@ export const startAgentRun = (
   deliveryWriteAllowed: boolean,
   now: string,
 ) =>
-  invokePayload<AgentRunStartResult>("agent_run_start", {
+  invokePayload<AgentRunStartOutcome>("agent_run_start", {
     projectId,
     nodeId,
     sessionId,
@@ -273,5 +292,7 @@ export const cancelDeliveryRegeneration = (
   });
 export const listRuns = async (projectId: string): Promise<AgentRun[]> =>
   (await invokePayload<{ runs: AgentRun[] }>("agent_run_list", { projectId })).runs;
+export const getAgentRunDetail = (projectId: string, runId: string) =>
+  invokePayload<AgentRunDetail>("agent_run_detail", { projectId, runId });
 export const cancelAgentRun = (projectId: string, runId: string, now: string) =>
   invokePayload<AgentRun>("agent_run_cancel", { projectId, runId, now });

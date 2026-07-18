@@ -53,6 +53,13 @@ import { mergeTurnSnapshot } from "./conversation-turns.ts";
 import { isCurrentGenerationEvent, reconcileGeneratedNode, reconcileSavedNode } from "./delivery-generation.ts";
 
 const now = () => new Date().toISOString();
+const contextSectionLabel: Record<string, string> = {
+  protocol: "协议提示",
+  rules: "Agent 规则",
+  node_markdown: "节点文稿",
+  conversation: "会话历史",
+  attachment: "本轮资料",
+};
 
 export function App() {
   const [projects, setProjects] = useState<RecentProject[]>([]);
@@ -774,9 +781,6 @@ export function App() {
       selection: modelSelection,
       providers,
       savingSelection: savingModelSelection,
-      estimating: estimatingContext,
-      estimate: contextEstimate,
-      estimateError: contextEstimateError,
     })) return;
     const contextScope = requestScope(project.id, nodeId);
     const scope = requestScope(project.id, nodeId, sessionId ?? "new-session", "send-message", crypto.randomUUID());
@@ -785,8 +789,15 @@ export function App() {
     try {
       const active = sessionId ? sessions.find((session) => session.id === sessionId) ?? null : await createSession();
       if (!active || !isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
-      const { run } = await startAgentRun(project.id, nodeId, active.id, content, selectedFileIds, node?.revision ?? 0, !markdownDirty, now());
+      const outcome = await startAgentRun(project.id, nodeId, active.id, content, selectedFileIds, node?.revision ?? 0, !markdownDirty, now());
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
+      if (outcome.kind === "context_blocked") {
+        setContextEstimate(outcome.snapshot);
+        const largest = contextSectionLabel[outcome.largestSection] ?? outcome.largestSection;
+        setNotice(`上下文超出模型窗口：超出 ${outcome.excessTokens} tokens，最大占用来自${largest}`);
+        return;
+      }
+      const { run } = outcome;
       await loadMessages(project.id, nodeId, active.id);
       void loadTurns(project.id, nodeId, active.id);
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;

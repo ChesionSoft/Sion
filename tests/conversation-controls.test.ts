@@ -33,23 +33,18 @@ test("maps context thresholds to compact indicator states", () => {
   assert.equal(contextIndicatorKind({ ratio: 1.01, status: "blocked" }), "blocked");
 });
 
-test("send waits for a current context estimate and a valid model", () => {
-  const selection = { providerId: "p", model: "ready", reasoningEffort: "medium" as const };
-  const ready = { estimatedInputTokens: 10, contextWindowTokens: 100, ratio: .1, status: "ready" as const };
+test("send eligibility does not depend on context telemetry", () => {
   const base = {
     nodeAvailable: true,
     draft: "hello",
-    selection,
+    selection: { providerId: "p", model: "ready", reasoningEffort: "medium" as const },
     providers,
     savingSelection: false,
-    estimating: false,
-    estimateError: null,
   };
-  assert.equal(conversationCanSend({ ...base, estimate: null }), false);
-  assert.equal(conversationCanSend({ ...base, estimate: ready, estimating: true }), false);
-  assert.equal(conversationCanSend({ ...base, estimate: ready }), true);
-  assert.equal(conversationCanSend({ ...base, estimate: { ...ready, status: "blocked" } }), false);
-  assert.equal(conversationCanSend({ ...base, selection: { ...selection, model: "deleted" }, estimate: ready }), false);
+  assert.equal(conversationCanSend(base), true);
+  assert.equal(conversationCanSend({ ...base, draft: "  " }), false);
+  assert.equal(conversationCanSend({ ...base, selection: null }), false);
+  assert.equal(conversationCanSend({ ...base, selection: { ...base.selection, model: "deleted" } }), false);
 });
 
 test("a deleted session model is invalid instead of silently remaining selected", () => {

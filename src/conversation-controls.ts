@@ -42,18 +42,11 @@ export const conversationCanSend = (state: {
   selection: ChatModelSelection | null;
   providers: Provider[];
   savingSelection: boolean;
-  estimating: boolean;
-  estimate: ContextEstimate | null;
-  estimateError: string | null;
 }) =>
   state.nodeAvailable
   && Boolean(state.draft.trim())
   && selectionIsValid(state.selection, state.providers)
-  && !state.savingSelection
-  && !state.estimating
-  && state.estimate !== null
-  && state.estimate.status !== "blocked"
-  && !state.estimateError;
+  && !state.savingSelection;
 
 export const toggleAttachment = (ids: string[], fileId: string) =>
   ids.includes(fileId) ? ids.filter((id) => id !== fileId) : [...ids, fileId];
