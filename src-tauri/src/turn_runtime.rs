@@ -8,7 +8,9 @@
 // Task 5-7; remove this allowance once every helper has a non-test caller.
 #![allow(dead_code)]
 
-use sion_core::{AgentDelivery, DeliveryOutcome, DeliveryStage};
+use sion_core::{
+    AgentDelivery, DeliveryOutcome, DeliveryResolution, DeliveryStage, WorkflowNodeId,
+};
 
 const DELIVERY_FENCE_START: &str = "```delivery";
 
@@ -106,6 +108,53 @@ pub fn safe_delivery_error(stage: DeliveryStage, _error: &str) -> DeliveryOutcom
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryCompletionPlan {
+    Unchanged,
+    Apply {
+        markdown: String,
+        expected_revision: u64,
+        section_titles: Vec<String>,
+    },
+    AwaitingManualDraftResolution {
+        expected_revision: u64,
+    },
+}
+
+/// Validates the explicit delivery decision and decides whether the run should
+/// apply a patch, stay unchanged, or defer to manual draft resolution. When the
+/// draft is dirty (`delivery_write_allowed == false`) the patch payload is
+/// discarded after validation so a retry must produce a fresh decision.
+pub fn plan_delivery_completion(
+    delivery: AgentDelivery,
+    current_markdown: &str,
+    node_id: WorkflowNodeId,
+    expected_revision: u64,
+    delivery_write_allowed: bool,
+) -> Result<DeliveryCompletionPlan, sion_core::DeliveryError> {
+    let section_titles: Vec<String> = match &delivery {
+        AgentDelivery::Patch { sections } => {
+            sections.iter().map(|section| section.title.clone()).collect()
+        }
+        _ => Vec::new(),
+    };
+    let resolution = sion_core::resolve_agent_delivery(delivery, node_id, current_markdown)?;
+    match resolution {
+        DeliveryResolution::Unchanged => Ok(DeliveryCompletionPlan::Unchanged),
+        DeliveryResolution::Markdown(markdown) => {
+            if delivery_write_allowed {
+                Ok(DeliveryCompletionPlan::Apply {
+                    markdown,
+                    expected_revision,
+                    section_titles,
+                })
+            } else {
+                Ok(DeliveryCompletionPlan::AwaitingManualDraftResolution { expected_revision })
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +180,47 @@ mod tests {
         };
         assert_eq!(public_error, "交付稿结构校验失败");
         assert!(!public_error.contains("secret"));
+    }
+
+    fn goals_markdown() -> &'static str {
+        "# 需求背景与建设目标\n\n## 需求背景\n已有背景\n\n## 建设目标\n已有目标\n\n## 范围边界\n已有边界"
+    }
+
+    fn valid_goals_patch() -> AgentDelivery {
+        AgentDelivery::Patch {
+            sections: vec![sion_core::AgentDeliverySection {
+                title: "建设目标".into(),
+                content: "补充后的目标".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn unchanged_completion_does_not_request_a_node_save() {
+        let plan = plan_delivery_completion(
+            AgentDelivery::Unchanged,
+            "# 目标\n\n## 建设目标\n已有",
+            WorkflowNodeId::Goals,
+            7,
+            true,
+        )
+        .unwrap();
+        assert_eq!(plan, DeliveryCompletionPlan::Unchanged);
+    }
+
+    #[test]
+    fn dirty_start_defers_a_valid_patch_without_reusing_it() {
+        let plan = plan_delivery_completion(
+            valid_goals_patch(),
+            goals_markdown(),
+            WorkflowNodeId::Goals,
+            7,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            plan,
+            DeliveryCompletionPlan::AwaitingManualDraftResolution { expected_revision: 7 }
+        );
     }
 }

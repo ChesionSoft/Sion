@@ -6,9 +6,9 @@ mod provider_settings;
 
 use serde::{Deserialize, Serialize};
 use sion_core::{
-    ChatMessage, ChatModelSelection, ChatRole, ChatSession, ConversationTurn, ContextEstimate,
-    DeliveryOutcome, DeliveryStage, NodeStatus, ProjectFile, ProjectManifest, ReasoningEffort,
-    TurnStatus, WorkflowNode, WorkflowNodeId, apply_agent_delivery,
+    AgentDelivery, ChatMessage, ChatModelSelection, ChatRole, ChatSession, ConversationTurn,
+    ContextEstimate, DeliveryOutcome, DeliveryStage, NodeStatus, ProjectFile, ProjectManifest,
+    ReasoningEffort, TurnStatus, WorkflowNode, WorkflowNodeId, apply_agent_delivery,
 };
 use sion_storage::{
     CreateProjectInput, FilePreview, ProjectDiscovery, ProjectRegistry, ProjectStore,
@@ -64,9 +64,7 @@ struct AgentJob {
     reasoning_effort: ReasoningEffort,
     cancellation: CancellationToken,
     turn_id: String,
-    #[allow(dead_code)]
     expected_revision: u64,
-    #[allow(dead_code)]
     delivery_write_allowed: bool,
 }
 
@@ -1015,6 +1013,134 @@ fn conversation_turn_list(
     })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationTurnRetryRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    turn_id: String,
+    now: String,
+}
+
+#[tauri::command]
+fn conversation_turn_retry_delivery(
+    request: ConversationTurnRetryRequest,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AgentState>>,
+) -> Result<VersionedResponse<sion_agent::AgentRun>, ApiError> {
+    assert_api_version(&request.version)?;
+    let app_data_root = sion_root(&app)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(&project_root);
+    let turns = store
+        .turns(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let turn = turns
+        .iter()
+        .find(|turn| turn.id == request.turn_id)
+        .ok_or_else(|| ApiError::CheckFailed("会话轮次未找到".to_string()))?;
+    if !matches!(
+        turn.delivery_outcome,
+        DeliveryOutcome::AwaitingManualDraftResolution { .. }
+    ) {
+        return Err(ApiError::CheckFailed(
+            "该轮次未处于等待草稿处理状态".to_string(),
+        ));
+    }
+    let assistant_message_id = turn
+        .assistant_message_id
+        .clone()
+        .ok_or_else(|| ApiError::CheckFailed("轮次缺少助手回复".to_string()))?;
+    let messages = store
+        .messages(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let assistant_message = messages
+        .iter()
+        .find(|message| message.id == assistant_message_id)
+        .ok_or_else(|| ApiError::CheckFailed("助手回复未找到".to_string()))?
+        .clone();
+    let session = store
+        .session(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let selection = match session.model_selection {
+        Some(selection) => selection,
+        None => provider_settings::default_selection(&app_data_root)
+            .map_err(ApiError::CheckFailed)?,
+    };
+    let resolved = provider_settings::resolve_model(
+        &app_data_root,
+        &selection.provider_id,
+        &selection.model,
+    )
+    .map_err(ApiError::CheckFailed)?;
+    let node = store
+        .node(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let override_markdown = store
+        .agent_override(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let rules = compose_effective_agent_rules(request.node_id, override_markdown);
+    let prompt = conversation_runtime::build_delivery_retry_prompt(
+        &node,
+        &messages,
+        &assistant_message,
+        &rules.effective_markdown,
+    );
+    let run_request = sion_agent::RunRequest {
+        project_id: request.project_id.clone(),
+        node_id: request.node_id,
+        provider_id: selection.provider_id.clone(),
+        model: selection.model.clone(),
+        reasoning_effort: selection.reasoning_effort,
+        file_ids: Vec::new(),
+        kind: sion_agent::AgentRunKind::DeliveryRetry,
+        created_at: request.now.clone(),
+    };
+    let mut scheduler = state
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?;
+    scheduler
+        .ensure_available(&run_request.project_id, request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let run = scheduler
+        .enqueue(run_request)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    store
+        .save_run(&run)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let job = AgentJob {
+        project_root,
+        project_id: request.project_id.clone(),
+        node_id: request.node_id,
+        session_id: request.session_id.clone(),
+        prompt,
+        model: resolved,
+        reasoning_effort: selection.reasoning_effort,
+        cancellation: CancellationToken::new(),
+        turn_id: request.turn_id.clone(),
+        expected_revision: node.revision,
+        delivery_write_allowed: true,
+    };
+    state
+        .jobs
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent job lock is poisoned".to_string()))?
+        .insert(run.id.clone(), job.clone());
+    let should_spawn = run.status == sion_agent::AgentRunStatus::Running;
+    drop(scheduler);
+    if should_spawn {
+        spawn_agent_run(app, state.inner().clone(), run.clone(), job);
+    }
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: run,
+    })
+}
+
 fn validate_run_project(run: &sion_agent::AgentRun, project_id: &str) -> Result<(), ApiError> {
     if run.project_id == project_id {
         Ok(())
@@ -1761,6 +1887,56 @@ fn spawn_agent_run(
     });
 }
 
+fn apply_delivery_outcome(
+    store: &ProjectStore,
+    delivery: AgentDelivery,
+    node: Option<WorkflowNode>,
+    job: &AgentJob,
+    finished_at: &str,
+) -> DeliveryOutcome {
+    let Some(node) = node else {
+        return turn_runtime::safe_delivery_error(DeliveryStage::Validation, "");
+    };
+    match turn_runtime::plan_delivery_completion(
+        delivery,
+        &node.markdown,
+        job.node_id,
+        job.expected_revision,
+        job.delivery_write_allowed,
+    ) {
+        Ok(turn_runtime::DeliveryCompletionPlan::Unchanged) => DeliveryOutcome::Unchanged,
+        Ok(turn_runtime::DeliveryCompletionPlan::Apply {
+            markdown,
+            expected_revision,
+            section_titles,
+        }) => {
+            let previous_revision = node.revision;
+            match store.save_node_if_revision(
+                job.node_id,
+                expected_revision,
+                markdown,
+                NodeStatus::Generated,
+                finished_at.to_string(),
+            ) {
+                Ok(SaveNodeResult::Saved(saved)) => DeliveryOutcome::PatchApplied {
+                    previous_revision,
+                    revision: saved.revision,
+                    section_titles,
+                },
+                Ok(SaveNodeResult::Conflict { latest }) => DeliveryOutcome::Conflict {
+                    expected_revision,
+                    actual_revision: latest.revision,
+                },
+                Err(_) => turn_runtime::safe_delivery_error(DeliveryStage::Save, ""),
+            }
+        }
+        Ok(turn_runtime::DeliveryCompletionPlan::AwaitingManualDraftResolution { expected_revision }) => {
+            DeliveryOutcome::AwaitingManualDraftResolution { expected_revision }
+        }
+        Err(_) => turn_runtime::safe_delivery_error(DeliveryStage::Validation, ""),
+    }
+}
+
 fn complete_agent_run(
     app: &tauri::AppHandle,
     state: &Arc<AgentState>,
@@ -1798,33 +1974,49 @@ fn complete_agent_run(
             Ok(sion_agent::model_stream::StreamOutcome::Completed(_)) => {
                 match projector.finish() {
                     Ok(projected) => {
-                        let assistant_id = uuid::Uuid::new_v4().to_string();
-                        let _ = store.append_message(
-                            job.node_id,
-                            &job.session_id,
-                            ChatMessage {
-                                id: assistant_id.clone(),
-                                role: ChatRole::Assistant,
-                                content: projected.visible_content,
-                                reasoning_content: None,
-                                sources: None,
-                                created_at: finished_at.clone(),
-                                turn_id: Some(job.turn_id.clone()),
-                                reasoning_duration_ms: None,
-                                usage: None,
-                                attachments: Vec::new(),
-                                model_execution: Some(sion_core::ModelExecution {
-                                    provider_id: run.provider_id.clone().expect("new runs freeze provider"),
-                                    model: run.model.clone().expect("new runs freeze model"),
-                                    reasoning_effort: run.reasoning_effort.expect("new runs freeze effort"),
-                                }),
-                            },
-                            finished_at.clone(),
+                        let assistant_message_id = match run.kind {
+                            sion_agent::AgentRunKind::DeliveryRetry => {
+                                base_turn.assistant_message_id.clone()
+                            }
+                            _ => {
+                                let assistant_id = uuid::Uuid::new_v4().to_string();
+                                let _ = store.append_message(
+                                    job.node_id,
+                                    &job.session_id,
+                                    ChatMessage {
+                                        id: assistant_id.clone(),
+                                        role: ChatRole::Assistant,
+                                        content: projected.visible_content,
+                                        reasoning_content: None,
+                                        sources: None,
+                                        created_at: finished_at.clone(),
+                                        turn_id: Some(job.turn_id.clone()),
+                                        reasoning_duration_ms: None,
+                                        usage: None,
+                                        attachments: Vec::new(),
+                                        model_execution: Some(sion_core::ModelExecution {
+                                            provider_id: run.provider_id.clone().expect("new runs freeze provider"),
+                                            model: run.model.clone().expect("new runs freeze model"),
+                                            reasoning_effort: run.reasoning_effort.expect("new runs freeze effort"),
+                                        }),
+                                    },
+                                    finished_at.clone(),
+                                );
+                                Some(assistant_id)
+                            }
+                        };
+                        let node = store.node(job.node_id).ok();
+                        let delivery_outcome = apply_delivery_outcome(
+                            &store,
+                            projected.delivery,
+                            node,
+                            job,
+                            &finished_at,
                         );
                         let turn = ConversationTurn {
                             status: TurnStatus::Completed,
-                            delivery_outcome: DeliveryOutcome::Pending,
-                            assistant_message_id: Some(assistant_id),
+                            delivery_outcome,
+                            assistant_message_id,
                             finished_at: Some(finished_at.clone()),
                             ..base_turn.clone()
                         };
@@ -1992,6 +2184,7 @@ pub fn run() {
             agent_run_list,
             agent_run_cancel,
             conversation_turn_list,
+            conversation_turn_retry_delivery,
             project_create,
             project_list,
             project_reveal,
@@ -2492,5 +2685,107 @@ mod tests {
             "now": "now"
         }))
         .is_err());
+    }
+
+    fn test_delivery_job(
+        fixture: &SendFixture,
+        expected_revision: u64,
+        delivery_write_allowed: bool,
+    ) -> AgentJob {
+        let resolved =
+            provider_settings::resolve_model(&fixture.provider_root, "provider-a", "model-a")
+                .unwrap();
+        AgentJob {
+            project_root: fixture.root.join("projects").join("project-1"),
+            project_id: "project-1".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: fixture.session.id.clone(),
+            prompt: "prompt".into(),
+            model: resolved,
+            reasoning_effort: ReasoningEffort::Medium,
+            cancellation: CancellationToken::new(),
+            turn_id: "turn-1".into(),
+            expected_revision,
+            delivery_write_allowed,
+        }
+    }
+
+    #[test]
+    fn apply_delivery_outcome_handles_unchanged_patch_and_conflict() {
+        let fixture = send_fixture(128_000);
+        let node = fixture.store.node(WorkflowNodeId::Goals).unwrap();
+        let saved = fixture
+            .store
+            .save_node_if_revision(
+                WorkflowNodeId::Goals,
+                node.revision,
+                "# 需求背景与建设目标\n\n## 需求背景\n已有\n\n## 建设目标\n已有\n\n## 范围边界\n已有"
+                    .into(),
+                NodeStatus::Draft,
+                "now".into(),
+            )
+            .unwrap();
+        let SaveNodeResult::Saved(saved) = saved else {
+            unreachable!()
+        };
+        let base_revision = saved.revision;
+
+        let job = test_delivery_job(&fixture, base_revision, true);
+        let outcome = apply_delivery_outcome(
+            &fixture.store,
+            AgentDelivery::Unchanged,
+            fixture.store.node(WorkflowNodeId::Goals).ok(),
+            &job,
+            "now",
+        );
+        assert_eq!(outcome, DeliveryOutcome::Unchanged);
+        assert_eq!(
+            fixture.store.node(WorkflowNodeId::Goals).unwrap().revision,
+            base_revision
+        );
+
+        let patch = AgentDelivery::Patch {
+            sections: vec![sion_core::AgentDeliverySection {
+                title: "建设目标".into(),
+                content: "补充后的目标".into(),
+            }],
+        };
+        let outcome = apply_delivery_outcome(
+            &fixture.store,
+            patch,
+            fixture.store.node(WorkflowNodeId::Goals).ok(),
+            &job,
+            "now",
+        );
+        assert!(matches!(
+            outcome,
+            DeliveryOutcome::PatchApplied { revision, .. } if revision == base_revision + 1
+        ));
+
+        let latest_revision = fixture.store.node(WorkflowNodeId::Goals).unwrap().revision;
+        let stale_job = test_delivery_job(&fixture, base_revision, true);
+        let patch2 = AgentDelivery::Patch {
+            sections: vec![sion_core::AgentDeliverySection {
+                title: "建设目标".into(),
+                content: "再次补充".into(),
+            }],
+        };
+        let outcome = apply_delivery_outcome(
+            &fixture.store,
+            patch2,
+            fixture.store.node(WorkflowNodeId::Goals).ok(),
+            &stale_job,
+            "now",
+        );
+        assert!(matches!(
+            outcome,
+            DeliveryOutcome::Conflict { expected_revision, actual_revision }
+                if expected_revision == base_revision && actual_revision == latest_revision
+        ));
+        assert_eq!(
+            fixture.store.node(WorkflowNodeId::Goals).unwrap().revision,
+            latest_revision
+        );
+        std::fs::remove_dir_all(fixture.root).unwrap();
     }
 }
