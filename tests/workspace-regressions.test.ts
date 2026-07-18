@@ -320,3 +320,22 @@ test("obsolete manual assistant delivery flow is gone", async () => {
     assert.doesNotMatch(source, /project_preview_assistant_delivery|project_apply_assistant|previewAssistantDelivery|applyAssistant/);
   }
 });
+
+test("live reasoning and provider errors preserve the public-only boundary", async () => {
+  const [transport, desktop, app, disclosure] = await Promise.all([
+    readFile("crates/sion-agent/src/model_stream.rs", "utf8"),
+    readFile("src-tauri/src/lib.rs", "utf8"),
+    readFile("src/App.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationReasoningDisclosure.tsx", "utf8"),
+  ]);
+  assert.match(transport, /StreamFailure/);
+  assert.match(desktop, /agent-reasoning-summary/);
+  assert.match(app, /AgentReasoningSummaryEvent/);
+  assert.match(disclosure, /aria-expanded/);
+  const eventStart = desktop.indexOf("struct AgentReasoningSummaryEvent");
+  const eventEnd = desktop.indexOf("struct AgentFinishedEvent", eventStart);
+  assert.ok(eventStart >= 0 && eventEnd > eventStart);
+  assert.doesNotMatch(desktop.slice(eventStart, eventEnd), /reasoning_content/);
+  assert.doesNotMatch([app, disclosure].join("\n"), /reasoning_content/);
+  assert.doesNotMatch(disclosure, /重新请求/);
+});
