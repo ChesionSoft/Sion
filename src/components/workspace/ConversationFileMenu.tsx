@@ -36,12 +36,15 @@ export function ConversationFileMenu(props: {
       <button
         type="button"
         className="conversation-file-trigger"
+        aria-label={`添加文件${selectedFileIds.length > 0 ? `，已选择 ${selectedFileIds.length} 个` : ""}`}
+        title="从文件池添加到下一条消息"
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
-        文件（{selectedFileIds.length}）
+        <span aria-hidden="true">＋</span>
+        {selectedFileIds.length > 0 ? <small aria-hidden="true">{selectedFileIds.length}</small> : null}
       </button>
       {open ? (
         <div className="conversation-file-panel" role="menu">

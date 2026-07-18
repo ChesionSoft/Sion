@@ -3,6 +3,7 @@ import { Button } from "../ui";
 import { ConversationModelMenu } from "./ConversationModelMenu";
 import { ConversationFileMenu } from "./ConversationFileMenu";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
+import { conversationCanSend } from "../../conversation-controls";
 
 export type ConversationPaneProps = {
   nodeAvailable: boolean;
@@ -39,13 +40,18 @@ export function ConversationPane(props: ConversationPaneProps) {
     contextEstimate, estimatingContext, contextEstimateError, onModelSelection, onToggleFile, onImportFile,
   } = props;
   const composerMode = activeRunId ? "stop" : sendingMessage ? "sending" : "send";
-  const sendDisabled = !nodeAvailable
-    || composerMode === "sending"
-    || (composerMode === "send" && !messageDraft.trim())
-    || !modelSelection
-    || savingModelSelection
-    || contextEstimate?.status === "blocked"
-    || Boolean(contextEstimateError);
+  const sendDisabled = composerMode === "stop"
+    ? !nodeAvailable
+    : composerMode === "sending" || !conversationCanSend({
+      nodeAvailable,
+      draft: messageDraft,
+      selection: modelSelection,
+      providers,
+      savingSelection: savingModelSelection,
+      estimating: estimatingContext,
+      estimate: contextEstimate,
+      estimateError: contextEstimateError,
+    });
 
   function submit() {
     if (composerMode === "stop") onCancel();

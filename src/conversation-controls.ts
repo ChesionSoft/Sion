@@ -36,8 +36,48 @@ export const selectionIsValid = (
       ),
   );
 
+export const conversationCanSend = (state: {
+  nodeAvailable: boolean;
+  draft: string;
+  selection: ChatModelSelection | null;
+  providers: Provider[];
+  savingSelection: boolean;
+  estimating: boolean;
+  estimate: ContextEstimate | null;
+  estimateError: string | null;
+}) =>
+  state.nodeAvailable
+  && Boolean(state.draft.trim())
+  && selectionIsValid(state.selection, state.providers)
+  && !state.savingSelection
+  && !state.estimating
+  && state.estimate !== null
+  && state.estimate.status !== "blocked"
+  && !state.estimateError;
+
 export const toggleAttachment = (ids: string[], fileId: string) =>
   ids.includes(fileId) ? ids.filter((id) => id !== fileId) : [...ids, fileId];
 
 export const contextIndicatorKind = (estimate: Pick<ContextEstimate, "status">) =>
   estimate.status;
+
+export const providerModelValidationError = (rows: Array<{
+  name: string;
+  contextWindow: string;
+  isDefault: boolean;
+}>): string | null => {
+  const names = rows.map((row) => row.name.trim());
+  if (names.some((name, index) => name && names.indexOf(name) !== index)) {
+    return "模型名称不能重复";
+  }
+  if (rows.filter((row) => row.isDefault).length !== 1) {
+    return "需要恰好一个默认模型";
+  }
+  if (names.some((name) => !name)) {
+    return "请填写所有模型名称";
+  }
+  if (rows.some((row) => !(Number.isSafeInteger(Number(row.contextWindow)) && Number(row.contextWindow) > 0))) {
+    return "每个模型需要正整数的上下文窗口";
+  }
+  return null;
+};

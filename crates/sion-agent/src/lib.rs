@@ -127,7 +127,10 @@ impl RunScheduler {
         project_id: &str,
         node_id: WorkflowNodeId,
     ) -> Result<(), SchedulerError> {
-        if self.reserved_nodes.contains(&(project_id.to_string(), node_id)) {
+        if self
+            .reserved_nodes
+            .contains(&(project_id.to_string(), node_id))
+        {
             return Err(SchedulerError::NodeBusy {
                 project_id: project_id.to_string(),
                 node_id: node_id.as_str().to_string(),

@@ -39,11 +39,10 @@ export function ContextUsageIndicator(props: {
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       />
-      {open ? (
-        <div className="context-usage-detail" role="status" aria-live="polite">
-          {detail}
-        </div>
-      ) : null}
+      <div className={`context-usage-detail ${open ? "is-pinned" : ""}`} role="status" aria-live="polite">
+        <strong>{headline}</strong>
+        <span>{detail}</span>
+      </div>
     </div>
   );
 }

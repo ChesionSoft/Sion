@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatModelSelection, Provider, ReasoningEffort } from "../../types";
+import { selectionIsValid } from "../../conversation-controls";
 
 const REASONING_OPTIONS: { value: ReasoningEffort; label: string }[] = [
   { value: "off", label: "关闭" },
@@ -49,6 +50,56 @@ export function ConversationModelMenu(props: {
     triggerRef.current?.focus();
   }
 
+  function openMainMenu() {
+    setOpen(true);
+    setSubmenu(null);
+    window.requestAnimationFrame(() => {
+      containerRef.current?.querySelector<HTMLButtonElement>(".conversation-model-main-panel button")?.focus();
+    });
+  }
+
+  function openSubmenu(next: "model" | "reasoning", focusFirst = false) {
+    setSubmenu(next);
+    if (focusFirst) {
+      window.requestAnimationFrame(() => {
+        containerRef.current?.querySelector<HTMLButtonElement>(".conversation-model-submenu button:not(:disabled)")?.focus();
+      });
+    }
+  }
+
+  function handleMenuKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+      return;
+    }
+    const target = event.target as HTMLElement;
+    if (event.key === "ArrowRight") {
+      const next = target.dataset.submenu as "model" | "reasoning" | undefined;
+      if (next) {
+        event.preventDefault();
+        openSubmenu(next, true);
+      }
+      return;
+    }
+    if (event.key === "ArrowLeft" && target.closest(".conversation-model-submenu")) {
+      event.preventDefault();
+      setSubmenu(null);
+      containerRef.current?.querySelector<HTMLButtonElement>(`[data-submenu="${submenu}"]`)?.focus();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const menu = target.closest<HTMLElement>('[role="menu"]');
+    const buttons = Array.from(
+      menu?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [],
+    );
+    const current = buttons.indexOf(target as HTMLButtonElement);
+    if (current < 0 || buttons.length === 0) return;
+    event.preventDefault();
+    const offset = event.key === "ArrowDown" ? 1 : -1;
+    buttons[(current + offset + buttons.length) % buttons.length]?.focus();
+  }
+
   async function chooseModel(providerId: string, model: string) {
     const next: ChatModelSelection = { providerId, model, reasoningEffort: selection?.reasoningEffort ?? "medium" };
     await onSelection(next);
@@ -60,9 +111,14 @@ export function ConversationModelMenu(props: {
     close();
   }
 
-  const triggerLabel = selection ? `${selection.model} · ${labelFor(selection.reasoningEffort)}` : "选择模型";
+  const validSelection = selectionIsValid(selection, providers);
+  const triggerLabel = selection
+    ? validSelection
+      ? `${selection.model} · ${labelFor(selection.reasoningEffort)}`
+      : "模型已失效 · 请重新选择"
+    : "选择模型";
   return (
-    <div className="conversation-model-menu" ref={containerRef}>
+    <div className="conversation-model-menu" ref={containerRef} onKeyDown={handleMenuKeyDown}>
       <button
         ref={triggerRef}
         type="button"
@@ -70,16 +126,28 @@ export function ConversationModelMenu(props: {
         aria-haspopup="menu"
         aria-expanded={open}
         disabled={disabled || saving}
-        onClick={() => { setOpen((current) => !current); setSubmenu(null); }}
+        onClick={() => { if (open) close(); else openMainMenu(); }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            openMainMenu();
+          }
+        }}
       >
         {saving ? "保存中…" : triggerLabel}
       </button>
       {open ? (
-        <div className="conversation-model-panel" role="menu">
-          <button type="button" role="menuitem" className={submenu === "model" ? "is-active" : ""} onClick={() => setSubmenu(submenu === "model" ? null : "model")}>模型</button>
-          <button type="button" role="menuitem" className={submenu === "reasoning" ? "is-active" : ""} onClick={() => setSubmenu(submenu === "reasoning" ? null : "reasoning")}>推理强度</button>
+        <div className="conversation-model-popover">
+          <div className="conversation-model-main-panel" role="menu" aria-label="模型运行参数">
+            <button data-submenu="model" type="button" role="menuitem" className={submenu === "model" ? "is-active" : ""} onClick={() => openSubmenu("model")}>
+              <span>模型</span><small>{validSelection ? selection?.model : "请选择"}</small><i aria-hidden="true">›</i>
+            </button>
+            <button data-submenu="reasoning" type="button" role="menuitem" className={submenu === "reasoning" ? "is-active" : ""} onClick={() => openSubmenu("reasoning")}>
+              <span>推理强度</span><small>{selection ? labelFor(selection.reasoningEffort) : "中"}</small><i aria-hidden="true">›</i>
+            </button>
+          </div>
           {submenu === "model" ? (
-            <div className="conversation-model-submenu">
+            <div className="conversation-model-submenu" role="menu" aria-label="选择模型">
               {providers.map((provider) => (
                 <div key={provider.id} className="conversation-model-group">
                   <div className="conversation-model-group-title">{provider.name}</div>
@@ -105,14 +173,14 @@ export function ConversationModelMenu(props: {
             </div>
           ) : null}
           {submenu === "reasoning" ? (
-            <div className="conversation-model-submenu">
+            <div className="conversation-model-submenu" role="menu" aria-label="选择推理强度">
               {REASONING_OPTIONS.map((option) => (
                 <button
                   key={option.value}
                   type="button"
                   role="menuitem"
                   className={selection?.reasoningEffort === option.value ? "is-selected" : ""}
-                  disabled={!selection}
+                  disabled={!validSelection}
                   onClick={() => void chooseReasoning(option.value)}
                 >
                   {option.label}

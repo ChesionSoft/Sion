@@ -182,7 +182,7 @@ pub fn prepare_conversation(
 
 #[cfg(test)]
 mod tests {
-    use sion_core::{estimate_context, NodeStatus, WorkflowNode, WorkflowNodeId};
+    use sion_core::{NodeStatus, WorkflowNode, WorkflowNodeId, estimate_context};
 
     use super::*;
 
@@ -213,6 +213,9 @@ mod tests {
         assert!(prepared.prompt.contains("当前草稿消息"));
         assert_eq!(prepared.prompt.matches("当前草稿消息").count(), 1);
         assert!(prepared.prompt.contains(&"中".repeat(60_000)));
-        assert_eq!(prepared.estimate, estimate_context(&prepared.prompt, 100_000));
+        assert_eq!(
+            prepared.estimate,
+            estimate_context(&prepared.prompt, 100_000)
+        );
     }
 }

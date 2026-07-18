@@ -107,7 +107,10 @@ mod tests {
     #[test]
     fn reasoning_effort_defaults_to_medium_and_serializes_snake_case() {
         assert_eq!(ReasoningEffort::default(), ReasoningEffort::Medium);
-        assert_eq!(serde_json::to_string(&ReasoningEffort::Off).unwrap(), "\"off\"");
+        assert_eq!(
+            serde_json::to_string(&ReasoningEffort::Off).unwrap(),
+            "\"off\""
+        );
         assert_eq!(ReasoningEffort::High.provider_value(), Some("high"));
         assert_eq!(ReasoningEffort::Off.provider_value(), None);
     }
@@ -116,7 +119,13 @@ mod tests {
     fn estimates_ascii_unicode_and_thresholds_deterministically() {
         assert_eq!(estimate_input_tokens("abcdefgh"), 3); // ceil(2 * 1.15)
         assert_eq!(estimate_input_tokens("需求"), 3); // ceil(2 * 1.15)
-        assert_eq!(estimate_context("a".repeat(276).as_str(), 100).status, ContextEstimateStatus::Warning);
-        assert_eq!(estimate_context("a".repeat(348).as_str(), 100).status, ContextEstimateStatus::Blocked);
+        assert_eq!(
+            estimate_context("a".repeat(276).as_str(), 100).status,
+            ContextEstimateStatus::Warning
+        );
+        assert_eq!(
+            estimate_context("a".repeat(348).as_str(), 100).status,
+            ContextEstimateStatus::Blocked
+        );
     }
 }

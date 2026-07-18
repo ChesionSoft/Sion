@@ -47,7 +47,7 @@ import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
 import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
 import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type AssistantDeliveryPreview, type ChatMessage, type ChatModelSelection, type ChatSession, type ContextEstimate, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
-import { defaultModelSelection } from "./conversation-controls";
+import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
 
 const now = () => new Date().toISOString();
 
@@ -426,6 +426,7 @@ export function App() {
       sessionMutationScopeRef.current = null;
       messageMutationScopeRef.current = null;
       fileImportScopeRef.current = null;
+      setSavingModelSelection(false);
       setSendingMessage(false);
       setImportingFile(false);
     }
@@ -436,6 +437,7 @@ export function App() {
     setPreviewingMessageId(null);
     setFilePreview(null);
     if (projectChanged) {
+      setMessageDraft("");
       setSelectedFileIds([]);
       setFiles([]);
       setRuns([]);
@@ -654,13 +656,16 @@ export function App() {
     if (!project || !modelSelection || !messageDraft.trim()) {
       contextEstimateScopeRef.current = null;
       setContextEstimate(null);
+      setEstimatingContext(false);
       setContextEstimateError(null);
       return;
     }
     const scope = requestScope(project.id, nodeId, sessionId ?? "draft", modelSelection.providerId, modelSelection.model, modelSelection.reasoningEffort, messageDraft, ...selectedFileIds);
     contextEstimateScopeRef.current = scope;
+    setContextEstimate(null);
+    setEstimatingContext(true);
+    setContextEstimateError(null);
     const timer = window.setTimeout(() => {
-      setEstimatingContext(true);
       void estimateAgentContext(project.id, nodeId, sessionId, modelSelection, messageDraft, selectedFileIds).then((estimate) => {
         if (contextEstimateScopeRef.current !== scope) return;
         setContextEstimate(estimate);
@@ -678,21 +683,36 @@ export function App() {
 
   async function changeModelSelection(selection: ChatModelSelection) {
     if (!project || !sessionId) { setModelSelection(selection); return; }
+    const contextScope = requestScope(project.id, nodeId);
+    const activeSessionId = sessionId;
+    const scope = requestScope(project.id, nodeId, activeSessionId, "update-model", crypto.randomUUID());
+    sessionMutationScopeRef.current = scope;
     setSavingModelSelection(true);
     try {
-      const updated = await updateSessionModel(project.id, nodeId, sessionId, selection, now());
-      setSessions((current) => current.map((item) => item.id === sessionId ? updated : item));
+      const updated = await updateSessionModel(project.id, nodeId, activeSessionId, selection, now());
+      if (!isLatestRequest(scope, sessionMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
+      setSessions((current) => current.map((item) => item.id === activeSessionId ? updated : item));
       setModelSelection(selection);
     } catch (error) {
+      if (!isLatestRequest(scope, sessionMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
       setNotice(`保存模型选择失败：${String(error)}`);
     } finally {
-      setSavingModelSelection(false);
+      if (isLatestRequest(scope, sessionMutationScopeRef.current) && isLatestRequest(contextScope, workspaceScopeRef.current)) setSavingModelSelection(false);
     }
   }
 
   async function sendMessage() {
     const content = messageDraft.trim();
-    if (!project || !modelSelection || !content || contextEstimate?.status === "blocked") return;
+    if (!project || !content || !conversationCanSend({
+      nodeAvailable: Boolean(node),
+      draft: content,
+      selection: modelSelection,
+      providers,
+      savingSelection: savingModelSelection,
+      estimating: estimatingContext,
+      estimate: contextEstimate,
+      estimateError: contextEstimateError,
+    })) return;
     const contextScope = requestScope(project.id, nodeId);
     const scope = requestScope(project.id, nodeId, sessionId ?? "new-session", "send-message", crypto.randomUUID());
     messageMutationScopeRef.current = scope;
@@ -703,6 +723,7 @@ export function App() {
       const run = await startAgentRun(project.id, nodeId, active.id, content, selectedFileIds, now());
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
       await loadMessages(project.id, nodeId, active.id);
+      if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
       setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
       setMessageDraft("");
       setSelectedFileIds([]);
@@ -828,8 +849,11 @@ export function App() {
     sessionMutationScopeRef.current = null;
     messageMutationScopeRef.current = null;
     fileImportScopeRef.current = null;
+    setSavingModelSelection(false);
     setSendingMessage(false);
     setImportingFile(false);
+    setMessageDraft("");
+    setSelectedFileIds([]);
     assistantPreviewScopeRef.current = null;
     assistantApplyScopeRef.current = null;
     filePreviewScopeRef.current = null;
@@ -993,8 +1017,15 @@ export function App() {
   }
 
   function selectSession(nextSessionId: string) {
+    if (nextSessionId !== sessionId) {
+      fileImportScopeRef.current = null;
+      setImportingFile(false);
+      setMessageDraft("");
+      setSelectedFileIds([]);
+    }
     sessionMutationScopeRef.current = null;
     messageMutationScopeRef.current = null;
+    setSavingModelSelection(false);
     setSendingMessage(false);
     assistantPreviewScopeRef.current = null;
     assistantApplyScopeRef.current = null;

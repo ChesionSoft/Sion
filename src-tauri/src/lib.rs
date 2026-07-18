@@ -26,7 +26,7 @@ use tauri_plugin_dialog::DialogExt;
 use tokio_util::sync::CancellationToken;
 
 mod conversation_runtime;
-use conversation_runtime::{compose_effective_agent_rules, EffectiveAgentRules};
+use conversation_runtime::{EffectiveAgentRules, compose_effective_agent_rules};
 
 const API_VERSION: u16 = 1;
 
@@ -717,6 +717,57 @@ impl PreparedSend {
     }
 }
 
+#[derive(Debug)]
+struct SendPersistenceError {
+    message: String,
+    promoted: Vec<sion_agent::AgentRun>,
+}
+
+fn persist_prepared_send(
+    store: &ProjectStore,
+    scheduler: &mut sion_agent::RunScheduler,
+    run_request: sion_agent::RunRequest,
+    node_id: WorkflowNodeId,
+    session_id: &str,
+    user_message: ChatMessage,
+    now: String,
+) -> Result<sion_agent::AgentRun, SendPersistenceError> {
+    scheduler
+        .ensure_available(&run_request.project_id, node_id)
+        .map_err(|error| SendPersistenceError {
+            message: error.to_string(),
+            promoted: Vec::new(),
+        })?;
+    let run = scheduler
+        .enqueue(run_request)
+        .map_err(|error| SendPersistenceError {
+            message: error.to_string(),
+            promoted: Vec::new(),
+        })?;
+    if let Err(error) = store.save_run(&run) {
+        let promoted = scheduler
+            .cancel(&run.id, now, Some("运行记录保存失败".into()))
+            .unwrap_or_default();
+        return Err(SendPersistenceError {
+            message: error.to_string(),
+            promoted,
+        });
+    }
+    if let Err(error) = store.append_message(node_id, session_id, user_message, now.clone()) {
+        let promoted = scheduler
+            .cancel(&run.id, now, Some("用户消息保存失败".into()))
+            .unwrap_or_default();
+        if let Some(cancelled) = scheduler.get(&run.id) {
+            let _ = store.save_run(cancelled);
+        }
+        return Err(SendPersistenceError {
+            message: error.to_string(),
+            promoted,
+        });
+    }
+    Ok(run)
+}
+
 fn prepare_agent_send(
     provider_root: &Path,
     store: &ProjectStore,
@@ -733,11 +784,8 @@ fn prepare_agent_send(
         Some(selection) => selection,
         None => provider_settings::default_selection(provider_root)?,
     };
-    let resolved = provider_settings::resolve_model(
-        provider_root,
-        &selection.provider_id,
-        &selection.model,
-    )?;
+    let resolved =
+        provider_settings::resolve_model(provider_root, &selection.provider_id, &selection.model)?;
     let prepared = conversation_runtime::prepare_conversation(
         store,
         node_id,
@@ -819,28 +867,22 @@ fn agent_run_start(
         .scheduler
         .lock()
         .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?;
-    scheduler
-        .ensure_available(&request.project_id, request.node_id)
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    store
-        .append_message(
-            request.node_id,
-            &request.session_id,
-            prepared.user_message.clone(),
-            request.now.clone(),
-        )
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let run = scheduler
-        .enqueue(run_request)
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    if let Err(error) = store.save_run(&run) {
-        let promoted = scheduler
-            .cancel(&run.id, request.now.clone(), Some("运行记录保存失败".into()))
-            .unwrap_or_default();
-        drop(scheduler);
-        spawn_promoted_runs(app.clone(), state.inner().clone(), promoted);
-        return Err(ApiError::CheckFailed(error.to_string()));
-    }
+    let run = match persist_prepared_send(
+        &store,
+        &mut scheduler,
+        run_request,
+        request.node_id,
+        &request.session_id,
+        prepared.user_message.clone(),
+        request.now.clone(),
+    ) {
+        Ok(run) => run,
+        Err(error) => {
+            drop(scheduler);
+            spawn_promoted_runs(app.clone(), state.inner().clone(), error.promoted);
+            return Err(ApiError::CheckFailed(error.message));
+        }
+    };
     let job = AgentJob {
         project_root,
         session_id: request.session_id.clone(),
@@ -1653,7 +1695,11 @@ fn complete_agent_run(
                     error
                 };
                 scheduler
-                    .fail(&run.id, finished_at.clone(), format!("模型调用失败：{error}"))
+                    .fail(
+                        &run.id,
+                        finished_at.clone(),
+                        format!("模型调用失败：{error}"),
+                    )
                     .map(|promoted| (promoted, None))
             }
         };
@@ -1984,17 +2030,18 @@ mod tests {
             revision: 0,
             updated_at: "now".to_string(),
         };
-        let prompt = conversation_runtime::build_agent_prompt(conversation_runtime::ConversationParts {
-            node: &node,
-            messages: &[],
-            project_override: Some("只写确认事实"),
-            attachments: &[conversation_runtime::SelectedFileContext {
-                file_id: "file-1".to_string(),
-                original_name: "资料.txt".to_string(),
-                text: "资料正文".to_string(),
-            }],
-            draft: "",
-        });
+        let prompt =
+            conversation_runtime::build_agent_prompt(conversation_runtime::ConversationParts {
+                node: &node,
+                messages: &[],
+                project_override: Some("只写确认事实"),
+                attachments: &[conversation_runtime::SelectedFileContext {
+                    file_id: "file-1".to_string(),
+                    original_name: "资料.txt".to_string(),
+                    text: "资料正文".to_string(),
+                }],
+                draft: "",
+            });
         assert!(prompt.contains("你只负责项目基本信息"));
         assert!(prompt.contains("只写确认事实"));
         assert!(prompt.contains("资料正文"));
@@ -2024,8 +2071,10 @@ mod tests {
 
     #[test]
     fn empty_agent_override_is_not_part_of_effective_rules() {
-        let rules =
-            conversation_runtime::compose_effective_agent_rules(WorkflowNodeId::BasicInfo, Some(" \n ".to_string()));
+        let rules = conversation_runtime::compose_effective_agent_rules(
+            WorkflowNodeId::BasicInfo,
+            Some(" \n ".to_string()),
+        );
         assert_eq!(rules.custom_markdown, None);
         assert_eq!(rules.effective_markdown, rules.built_in_markdown);
     }
@@ -2071,7 +2120,12 @@ mod tests {
             reasoning_effort: ReasoningEffort::High,
         };
         let session = store
-            .create_session(WorkflowNodeId::Goals, "会话".into(), Some(selection), "now".into())
+            .create_session(
+                WorkflowNodeId::Goals,
+                "会话".into(),
+                Some(selection),
+                "now".into(),
+            )
             .unwrap();
         let source = root.join("brief.md");
         std::fs::write(&source, "brief content").unwrap();
@@ -2098,11 +2152,13 @@ mod tests {
             "now",
         );
         assert!(result.unwrap_err().contains("context window"));
-        assert!(fixture
-            .store
-            .messages(WorkflowNodeId::Goals, &fixture.session.id)
-            .unwrap()
-            .is_empty());
+        assert!(
+            fixture
+                .store
+                .messages(WorkflowNodeId::Goals, &fixture.session.id)
+                .unwrap()
+                .is_empty()
+        );
         assert!(fixture.store.list_runs().unwrap().is_empty());
         std::fs::remove_dir_all(fixture.root).unwrap();
     }
@@ -2116,7 +2172,7 @@ mod tests {
             WorkflowNodeId::Goals,
             &fixture.session.id,
             "use the brief",
-            &[fixture.file.id.clone()],
+            std::slice::from_ref(&fixture.file.id),
             "now",
         )
         .unwrap();
@@ -2130,6 +2186,44 @@ mod tests {
             .unwrap();
         assert_eq!(run.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(run.file_ids, vec![fixture.file.id.clone()]);
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn run_persistence_failure_does_not_commit_the_user_message() {
+        let fixture = send_fixture(128_000);
+        let prepared = prepare_agent_send(
+            &fixture.provider_root,
+            &fixture.store,
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            "use the brief",
+            &[],
+            "now",
+        )
+        .unwrap();
+        let runs_path = fixture.root.join("projects/project-1/runs");
+        std::fs::remove_dir_all(&runs_path).unwrap();
+        std::fs::write(&runs_path, "not a directory").unwrap();
+        let mut scheduler = sion_agent::RunScheduler::default();
+        let result = persist_prepared_send(
+            &fixture.store,
+            &mut scheduler,
+            prepared.run_request("project-1".into(), WorkflowNodeId::Goals, "now".into()),
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            prepared.user_message,
+            "now".into(),
+        );
+        assert!(result.is_err());
+        assert!(
+            fixture
+                .store
+                .messages(WorkflowNodeId::Goals, &fixture.session.id)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(scheduler.active_count(), 0);
         std::fs::remove_dir_all(fixture.root).unwrap();
     }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Provider, ProviderDraft, ProviderModel } from "../../types";
 import { Button, Dialog, Field, SelectField } from "../ui";
+import { providerModelValidationError } from "../../conversation-controls";
 
 const DEFAULT_URL = "https://api.openai.com/v1";
 const now = () => new Date().toISOString();
@@ -76,20 +77,8 @@ export function ProviderEditorDialog({
     });
   }
 
-  const trimmedNames = models.map((row) => row.name.trim());
-  const duplicateName = trimmedNames.some((itemName, index) => itemName && trimmedNames.indexOf(itemName) !== index);
-  const defaultCount = models.filter((row) => row.isDefault).length;
-  const modelsError = submitted
-    ? duplicateName
-      ? "模型名称不能重复"
-      : defaultCount !== 1
-        ? "需要恰好一个默认模型"
-        : models.some((row) => !row.name.trim())
-          ? "请填写所有模型名称"
-          : models.some((row) => !(Number.isSafeInteger(Number(row.contextWindow)) && Number(row.contextWindow) > 0))
-            ? "每个模型需要正整数的上下文窗口"
-            : undefined
-    : undefined;
+  const modelValidationError = providerModelValidationError(models);
+  const modelsError = submitted ? modelValidationError ?? undefined : undefined;
   const errors = {
     name: submitted && !name.trim() ? "请输入提供商名称" : undefined,
     url: submitted && !url.trim() ? "请输入 API URL" : undefined,
@@ -98,7 +87,7 @@ export function ProviderEditorDialog({
 
   async function submit() {
     setSubmitted(true);
-    if (!name.trim() || !url.trim() || modelsError || (!provider && !key.trim()) || saving) return;
+    if (!name.trim() || !url.trim() || modelValidationError || (!provider && !key.trim()) || saving) return;
     setSaving(true);
     const builtModels: ProviderModel[] = models.map((row) => ({
       name: row.name.trim(),

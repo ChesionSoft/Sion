@@ -219,7 +219,11 @@ pub fn resolve_model(
     let context_window_tokens = model
         .context_window_tokens
         .ok_or_else(|| format!("model {model_name} is missing a context window"))?;
-    let endpoint = build_endpoint(&provider.api_base_url, &provider.api_url_mode, &provider.protocol)?;
+    let endpoint = build_endpoint(
+        &provider.api_base_url,
+        &provider.api_url_mode,
+        &provider.protocol,
+    )?;
     Ok(ResolvedModel {
         provider_id: provider.id.clone(),
         endpoint,
@@ -230,7 +234,11 @@ pub fn resolve_model(
     })
 }
 
-fn build_endpoint(api_base_url: &str, api_url_mode: &str, protocol: &str) -> Result<String, String> {
+fn build_endpoint(
+    api_base_url: &str,
+    api_url_mode: &str,
+    protocol: &str,
+) -> Result<String, String> {
     match api_url_mode {
         "full" => Ok(api_base_url.to_string()),
         "base" => {
@@ -424,7 +432,9 @@ mod tests {
         edited.api_key = None;
         save(&root, edited).unwrap();
         assert_eq!(
-            resolve_model(&root, "provider-a", "model-a").unwrap().api_key,
+            resolve_model(&root, "provider-a", "model-a")
+                .unwrap()
+                .api_key,
             "secret-value"
         );
         let _ = fs::remove_dir_all(root);
@@ -465,7 +475,10 @@ mod tests {
             r#"{"schemaVersion":1,"providers":[{"id":"p","name":"P","apiBaseUrl":"https://example.invalid/v1","apiUrlMode":"base","protocol":"chat_completions","models":[{"name":"m","isDefault":true,"toolCalling":false}],"isDefault":true,"createdAt":"now","updatedAt":"now","apiKey":"secret"}]}"#,
         )
         .unwrap();
-        assert_eq!(list(&root).unwrap()[0].models[0].context_window_tokens, None);
+        assert_eq!(
+            list(&root).unwrap()[0].models[0].context_window_tokens,
+            None
+        );
         assert!(
             resolve_model(&root, "p", "m")
                 .unwrap_err()

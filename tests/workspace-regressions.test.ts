@@ -52,6 +52,7 @@ test("leaving the file-pool context invalidates pending import presentation", as
   const source = await readFile("src/App.tsx", "utf8");
 
   for (const [startMarker, endMarker] of [
+    ["function openProjectImmediate", "async function loadNode"],
     ["function selectNodeImmediate", "function updateActiveProjectUi"],
     ["function closeRightSurface", "function openRightSurface"],
     ["function openRightSurface", "function selectDestinationImmediate"],
@@ -105,4 +106,66 @@ test("conversation pane composes controls and app uses combined send", async () 
   assert.match(appSource, /estimateAgentContext/);
   assert.doesNotMatch(sendMessageSource, /appendMessage\(/);
   assert.match(sendMessageSource, /startAgentRun\([^)]*content[^)]*selectedFileIds/s);
+});
+
+test("conversation drafts and one-message files do not leak across nodes or sessions", async () => {
+  const source = await readFile("src/App.tsx", "utf8");
+  for (const [startMarker, endMarker] of [
+    ["function openProjectImmediate", "async function loadNode"],
+    ["function selectNodeImmediate", "function updateActiveProjectUi"],
+    ["function selectSession", "const surface = workspaceView.rightSurface"],
+  ]) {
+    const start = source.indexOf(startMarker);
+    const end = source.indexOf(endMarker, start);
+    assert.ok(start >= 0 && end > start);
+    const body = source.slice(start, end);
+    assert.match(body, /setMessageDraft\(""\)/);
+    assert.match(body, /setSelectedFileIds\(\[\]\)/);
+  }
+  const sessionStart = source.indexOf("function selectSession");
+  const sessionEnd = source.indexOf("const surface = workspaceView.rightSurface", sessionStart);
+  const sessionBody = source.slice(sessionStart, sessionEnd);
+  assert.match(sessionBody, /fileImportScopeRef\.current = null/);
+  assert.match(sessionBody, /setImportingFile\(false\)/);
+});
+
+test("conversation controls match the approved two-panel compact interaction", async () => {
+  const [modelMenu, fileMenu, indicator, css] = await Promise.all([
+    readFile("src/components/workspace/ConversationModelMenu.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationFileMenu.tsx", "utf8"),
+    readFile("src/components/workspace/ContextUsageIndicator.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+  assert.match(modelMenu, /conversation-model-main-panel/);
+  assert.match(modelMenu, /conversation-model-submenu/);
+  assert.match(modelMenu, /ArrowRight/);
+  assert.match(css, /\.conversation-model-popover\s*\{[^}]*display:\s*flex/s);
+  assert.match(fileMenu, /aria-label=\{`添加文件/);
+  assert.match(fileMenu, />＋</);
+  assert.doesNotMatch(fileMenu, /文件（\{selectedFileIds\.length\}）/);
+  assert.match(indicator, /context-usage-detail/);
+  assert.match(css, /\.context-usage-indicator:hover\s+\.context-usage-detail/);
+  assert.match(css, /\.context-usage-indicator:focus-within\s+\.context-usage-detail/);
+});
+
+test("model selection mutations ignore stale session responses", async () => {
+  const source = await readFile("src/App.tsx", "utf8");
+  const start = source.indexOf("async function changeModelSelection");
+  const end = source.indexOf("async function sendMessage", start);
+  const body = source.slice(start, end);
+  assert.match(body, /sessionMutationScopeRef\.current = scope/);
+  assert.match(body, /isLatestRequest\(scope, sessionMutationScopeRef\.current\)/);
+  assert.match(body, /isLatestRequest\(contextScope, workspaceScopeRef\.current\)/);
+});
+
+test("model menu keyboard navigation stays within its active panel", async () => {
+  const source = await readFile("src/components/workspace/ConversationModelMenu.tsx", "utf8");
+  assert.match(source, /target\.closest<HTMLElement>\('\[role="menu"\]'\)/);
+  assert.match(source, /menu\?\.querySelectorAll<HTMLButtonElement>/);
+  assert.match(source, /ArrowLeft[\s\S]*setSubmenu\(null\)/);
+});
+
+test("model submenu can shrink inside narrow viewports", async () => {
+  const css = await readFile("src/styles/workspace.css", "utf8");
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.conversation-model-submenu\s*\{[^}]*min-width:\s*0/s);
 });
