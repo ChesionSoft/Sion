@@ -5,6 +5,7 @@ import { Button, IconButton, Popover, StatusDot, Icon } from "../ui";
 import { WORKSPACE_HEADER_ACTIONS } from "../../workspace-config";
 import { ConversationHistoryDrawer } from "./ConversationHistoryDrawer";
 import { ConversationPane } from "./ConversationPane";
+import { RunHistoryList } from "./RunHistoryList";
 
 type ProjectWorkspaceProps = {
   project: RecentProject;
@@ -38,6 +39,7 @@ type ProjectWorkspaceProps = {
   onCreateSession: () => void;
   onCancelAgent: () => void;
   onRetryDelivery: (turnId: string) => void;
+  onOpenRunDetail: (runId: string) => void;
   onMessageDraft: (value: string) => void;
   onSendMessage: () => void;
   onModelSelection: (selection: ChatModelSelection) => Promise<void>;
@@ -45,24 +47,9 @@ type ProjectWorkspaceProps = {
   onImportFile: () => Promise<ProjectFile | null>;
 };
 
-const runLabel: Record<AgentRun["status"], string> = {
-  queued: "排队中",
-  running: "运行中",
-  completed: "已完成",
-  failed: "失败",
-  cancelled: "已取消",
-};
-
 function statusKind(status: NodeStatus | undefined) {
   if (status === "confirmed") return "success" as const;
   if (status === "needs_confirmation") return "warning" as const;
-  return "neutral" as const;
-}
-
-function runStatusKind(status: AgentRun["status"]) {
-  if (status === "completed") return "success" as const;
-  if (status === "failed") return "error" as const;
-  if (status === "running" || status === "queued") return "running" as const;
   return "neutral" as const;
 }
 
@@ -117,12 +104,7 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             <div className="workspace-overflow-menu">
               <section aria-label="运行记录">
                 <h3><Icon name="run-history" />运行记录</h3>
-                {props.runsError ? <p role="alert">{props.runsError}</p> : props.runs.length === 0 ? <p>还没有运行记录。</p> : props.runs.slice(0, 8).map((run) => (
-                  <div className="run-history-row" key={run.id}>
-                    <StatusDot kind={runStatusKind(run.status)} />
-                    <span><strong>{run.nodeId}</strong><small>{runLabel[run.status]}</small></span>
-                  </div>
-                ))}
+                <RunHistoryList runs={props.runs} error={props.runsError} onOpen={props.onOpenRunDetail} />
               </section>
             </div>
           </Popover>
@@ -149,6 +131,7 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             onSend={props.onSendMessage}
             onCancel={props.onCancelAgent}
             onRetryDelivery={props.onRetryDelivery}
+            onOpenRunDetail={props.onOpenRunDetail}
             providers={props.providers}
             files={props.files}
             selectedFileIds={props.selectedFileIds}

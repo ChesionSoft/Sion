@@ -7,6 +7,7 @@ export type ConversationTurnCardProps = {
   assistantMessage?: ChatMessage;
   markdownDirty: boolean;
   onRetryDelivery: (turnId: string) => void;
+  onOpenRunDetail: (runId: string) => void;
 };
 
 export function ConversationTurnCard({
@@ -15,6 +16,7 @@ export function ConversationTurnCard({
   assistantMessage,
   markdownDirty,
   onRetryDelivery,
+  onOpenRunDetail,
 }: ConversationTurnCardProps) {
   const canRetry = turnCanRetryDelivery(turn, markdownDirty);
   return (
@@ -40,10 +42,16 @@ export function ConversationTurnCard({
           </div>
         </section>
       ) : null}
-      <div className="conversation-turn-status" role="status">
+      <button
+        type="button"
+        className="conversation-turn-status"
+        onClick={() => onOpenRunDetail(turn.runId)}
+        aria-label={`查看运行详情：${turnHeadline(turn)}`}
+      >
         <span className="conversation-turn-activity-dot" aria-hidden="true" />
         <strong>{turnHeadline(turn)}</strong>
-      </div>
+        <span className="conversation-turn-status-arrow" aria-hidden="true">›</span>
+      </button>
       {turn.activities.length > 0 ? (
         <ul className="conversation-turn-activities">
           {turn.activities.map((activity) => (

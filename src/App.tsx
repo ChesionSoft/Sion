@@ -9,6 +9,7 @@ import {
   createSession as createSessionApi,
   deleteProvider,
   getConversationContext,
+  getAgentRunDetail,
   exportDocx as exportDocxApi,
   getAgentRules,
   getFilePreview,
@@ -46,7 +47,8 @@ import { DeliveryWorkspace } from "./components/workspace/DeliveryWorkspace";
 import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
 import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
+import { RunDetailDialog } from "./components/workspace/RunDetailDialog";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentRunDetail, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
 import { mergeTurnSnapshot } from "./conversation-turns.ts";
@@ -95,6 +97,10 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [runsError, setRunsError] = useState<string | null>(null);
+  const [runDetailId, setRunDetailId] = useState<string | null>(null);
+  const [runDetail, setRunDetail] = useState<AgentRunDetail | null>(null);
+  const [runDetailLoading, setRunDetailLoading] = useState(false);
+  const [runDetailError, setRunDetailError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportProjectId, setExportProjectId] = useState<string | null>(null);
   const [lastExportResult, setLastExportResult] = useState<ExportResult | null>(null);
@@ -121,6 +127,7 @@ export function App() {
   const fileImportScopeRef = useRef<string | null>(null);
   const projectsRequestScopeRef = useRef<string | null>(null);
   const conversationContextScopeRef = useRef<string | null>(null);
+  const runDetailScopeRef = useRef<string | null>(null);
   const nodeRef = useRef<WorkflowNode | null>(null);
   const draftRef = useRef("");
   const activeGenerationIdRef = useRef<string | null>(null);
@@ -223,6 +230,14 @@ export function App() {
   useEffect(() => {
     if (project) void loadRuns(project.id);
   }, [project]);
+
+  useEffect(() => {
+    runDetailScopeRef.current = null;
+    setRunDetailId(null);
+    setRunDetail(null);
+    setRunDetailLoading(false);
+    setRunDetailError(null);
+  }, [project?.id]);
 
   useEffect(() => {
     if (project && activeNodeId && sessionId) {
@@ -466,6 +481,45 @@ export function App() {
       setRunsError(message);
       setNotice(message);
     }
+  }
+
+  async function loadRunDetail(projectId: string, runId: string) {
+    const scope = requestScope("run-detail", projectId, runId, crypto.randomUUID());
+    runDetailScopeRef.current = scope;
+    setRunDetailId(runId);
+    setRunDetail(null);
+    setRunDetailError(null);
+    setRunDetailLoading(true);
+    try {
+      const loaded = await getAgentRunDetail(projectId, runId);
+      if (!isLatestRequest(scope, runDetailScopeRef.current) || projectScopeRef.current !== projectId) return;
+      setRunDetail(loaded);
+    } catch (error) {
+      if (!isLatestRequest(scope, runDetailScopeRef.current) || projectScopeRef.current !== projectId) return;
+      setRunDetailError(`读取运行详情失败：${String(error)}`);
+    } finally {
+      if (isLatestRequest(scope, runDetailScopeRef.current) && projectScopeRef.current === projectId) {
+        setRunDetailLoading(false);
+      }
+    }
+  }
+
+  function openRunDetail(runId: string) {
+    if (!project) return;
+    void loadRunDetail(project.id, runId);
+  }
+
+  function retryRunDetail() {
+    if (!project || !runDetailId) return;
+    void loadRunDetail(project.id, runDetailId);
+  }
+
+  function closeRunDetail() {
+    runDetailScopeRef.current = null;
+    setRunDetailId(null);
+    setRunDetail(null);
+    setRunDetailLoading(false);
+    setRunDetailError(null);
   }
 
   async function createProjectFromForm(name: string, customer: string, author: string): Promise<boolean> {
@@ -1244,6 +1298,7 @@ export function App() {
       turns={turns}
       markdownDirty={markdownDirty}
       onRetryDelivery={(id) => void retryDelivery(id)}
+      onOpenRunDetail={openRunDetail}
       messageDraft={messageDraft}
       onMessageDraft={setMessageDraft}
       onSendMessage={() => void sendMessage()}
@@ -1293,6 +1348,14 @@ export function App() {
         onCancel={cancelPendingNavigation}
       />
       <RevisionConflictDialog latest={conflictLatest} onKeepDraft={keepConflictedDraft} onLoadLatest={loadLatestAfterConflict} />
+      <RunDetailDialog
+        open={runDetailId !== null}
+        detail={runDetail}
+        loading={runDetailLoading}
+        error={runDetailError}
+        onClose={closeRunDetail}
+        onRetry={retryRunDetail}
+      />
       {settingsOpen ? (
         <SettingsDialog
           settings={settings}

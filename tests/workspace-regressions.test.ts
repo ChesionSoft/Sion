@@ -138,6 +138,19 @@ test("empty conversation offers four editable presets", async () => {
   assert.doesNotMatch(presets, /onSend|submit/);
 });
 
+test("run history and turn status open one centered detail dialog", async () => {
+  const [history, turn, dialog] = await Promise.all([
+    readFile("src/components/workspace/RunHistoryList.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationTurnCard.tsx", "utf8"),
+    readFile("src/components/workspace/RunDetailDialog.tsx", "utf8"),
+  ]);
+  assert.match(history, /onOpen\(run\.id\)/);
+  assert.match(turn, /onOpenRunDetail\(turn\.runId\)/);
+  assert.match(dialog, /title="运行详情"/);
+  assert.match(dialog, /活动时间线/);
+  assert.match(dialog, /历史记录未保存此信息/);
+});
+
 test("conversation drafts and one-message files do not leak across nodes or sessions", async () => {
   const source = await readFile("src/App.tsx", "utf8");
   for (const [startMarker, endMarker] of [

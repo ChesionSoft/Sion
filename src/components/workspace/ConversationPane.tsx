@@ -21,6 +21,7 @@ export type ConversationPaneProps = {
   onSend: () => void;
   onCancel: () => void;
   onRetryDelivery: (turnId: string) => void;
+  onOpenRunDetail: (runId: string) => void;
   providers: Provider[];
   files: ProjectFile[];
   selectedFileIds: string[];
@@ -40,7 +41,7 @@ const reasoningLabel: Record<string, string> = { off: "关闭", low: "低", medi
 export function ConversationPane(props: ConversationPaneProps) {
   const {
     nodeAvailable, messages, turns, activeRunId, sendingMessage, messageDraft, markdownDirty,
-    onMessageDraft, onSend, onCancel, onRetryDelivery,
+    onMessageDraft, onSend, onCancel, onRetryDelivery, onOpenRunDetail,
     providers, files, selectedFileIds, importing, modelSelection, savingModelSelection,
     conversationContext, loadingConversationContext, conversationContextError, onModelSelection, onToggleFile, onImportFile,
   } = props;
@@ -106,6 +107,7 @@ export function ConversationPane(props: ConversationPaneProps) {
               assistantMessage={item.assistantMessage}
               markdownDirty={markdownDirty}
               onRetryDelivery={onRetryDelivery}
+              onOpenRunDetail={onOpenRunDetail}
             />
           );
         })}
