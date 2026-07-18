@@ -1,9 +1,11 @@
+import { useRef } from "react";
 import type { ChatMessage, ChatModelSelection, ConversationContextSnapshot, ConversationTurn, ProjectFile, Provider } from "../../types";
 import { Button } from "../ui";
 import { ConversationModelMenu } from "./ConversationModelMenu";
 import { ConversationFileMenu } from "./ConversationFileMenu";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ConversationTurnCard } from "./ConversationTurnCard";
+import { ConversationPresets } from "./ConversationPresets";
 import { conversationCanSend } from "../../conversation-controls";
 import { groupConversation } from "../../conversation-turns.ts";
 
@@ -43,6 +45,7 @@ export function ConversationPane(props: ConversationPaneProps) {
     conversationContext, loadingConversationContext, conversationContextError, onModelSelection, onToggleFile, onImportFile,
   } = props;
   const composerMode = activeRunId ? "stop" : sendingMessage ? "sending" : "send";
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sendDisabled = composerMode === "stop"
     ? !nodeAvailable
     : composerMode === "sending" || !conversationCanSend({
@@ -58,6 +61,11 @@ export function ConversationPane(props: ConversationPaneProps) {
     else if (!sendDisabled) onSend();
   }
 
+  function selectPreset(preset: string) {
+    onMessageDraft(preset);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
   const selectedFiles = files.filter((file) => selectedFileIds.includes(file.id));
   const items = groupConversation(messages, turns);
 
@@ -66,9 +74,10 @@ export function ConversationPane(props: ConversationPaneProps) {
       <div className="conversation-thread">
         {items.length === 0 ? (
           <div className="conversation-empty">
-            <span aria-hidden="true">↗</span>
+            <span className="conversation-empty-mark" aria-hidden="true">S</span>
             <h2>从这里开始完善节点</h2>
-            <p>描述你希望补充、分析或调整的内容。消息、回复与交付修改都会保存在当前项目中。</p>
+            <p>选择一个建议开始，也可以直接描述你希望补充、分析或调整的内容。</p>
+            <ConversationPresets disabled={!nodeAvailable} onSelect={selectPreset} />
           </div>
         ) : items.map((item) => {
           if (item.kind === "legacy_message") {
@@ -110,6 +119,7 @@ export function ConversationPane(props: ConversationPaneProps) {
           </div>
         ) : null}
         <textarea
+          ref={textareaRef}
           aria-label="发送给当前节点的消息"
           disabled={!nodeAvailable}
           placeholder={nodeAvailable ? "描述你希望在此节点完成的工作…" : "节点尚未加载"}

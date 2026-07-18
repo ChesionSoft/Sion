@@ -18,16 +18,18 @@ export function ConversationTurnCard({
 }: ConversationTurnCardProps) {
   const canRetry = turnCanRetryDelivery(turn, markdownDirty);
   return (
-    <details
+    <article
       className={`conversation-turn is-${turn.status} is-${turn.deliveryOutcome.kind}`}
-      open
     >
-      <summary className="conversation-turn-summary">{turnHeadline(turn)}</summary>
-      <div className="conversation-turn-detail">
-        {userMessage ? (
+      {userMessage ? (
+        <section className="conversation-turn-block is-user">
+          <div className="conversation-turn-speaker">你</div>
           <div className="conversation-turn-message is-user">{userMessage.content}</div>
-        ) : null}
-        {assistantMessage ? (
+        </section>
+      ) : null}
+      {assistantMessage ? (
+        <section className="conversation-turn-block is-assistant">
+          <div className="conversation-turn-speaker">Sion</div>
           <div className="conversation-turn-message is-assistant">
             {assistantMessage.content}
             {assistantMessage.modelExecution ? (
@@ -36,33 +38,37 @@ export function ConversationTurnCard({
               </div>
             ) : null}
           </div>
-        ) : null}
-        {turn.activities.length > 0 ? (
-          <ul className="conversation-turn-activities">
-            {turn.activities.map((activity) => (
-              <li key={activity.id} className={`is-${activity.status}`}>
-                <span className="conversation-turn-activity-dot" aria-hidden="true" />
-                <span className="conversation-turn-activity-label">{activity.label}</span>
-                {activity.publicSummary ? (
-                  <span className="conversation-turn-activity-summary">{activity.publicSummary}</span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {turn.reasoningSummary ? (
-          <p className="conversation-turn-reasoning">{turn.reasoningSummary}</p>
-        ) : null}
-        {canRetry ? (
-          <button
-            type="button"
-            className="conversation-turn-retry"
-            onClick={() => onRetryDelivery(turn.id)}
-          >
-            重新判断交付稿
-          </button>
-        ) : null}
+        </section>
+      ) : null}
+      <div className="conversation-turn-status" role="status">
+        <span className="conversation-turn-activity-dot" aria-hidden="true" />
+        <strong>{turnHeadline(turn)}</strong>
       </div>
-    </details>
+      {turn.activities.length > 0 ? (
+        <ul className="conversation-turn-activities">
+          {turn.activities.map((activity) => (
+            <li key={activity.id} className={`is-${activity.status}`}>
+              <span className="conversation-turn-activity-dot" aria-hidden="true" />
+              <span className="conversation-turn-activity-label">{activity.label}</span>
+              {activity.publicSummary ? (
+                <span className="conversation-turn-activity-summary">{activity.publicSummary}</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {turn.reasoningSummary ? (
+        <p className="conversation-turn-reasoning">{turn.reasoningSummary}</p>
+      ) : null}
+      {canRetry ? (
+        <button
+          type="button"
+          className="conversation-turn-retry"
+          onClick={() => onRetryDelivery(turn.id)}
+        >
+          重新判断交付稿
+        </button>
+      ) : null}
+    </article>
   );
 }

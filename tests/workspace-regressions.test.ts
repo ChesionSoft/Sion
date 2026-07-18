@@ -126,6 +126,18 @@ test("conversation context refresh is session scoped rather than keystroke scope
   assert.match(indicator, /cumulativeUsage/);
 });
 
+test("empty conversation offers four editable presets", async () => {
+  const presets = await readFile("src/components/workspace/ConversationPresets.tsx", "utf8");
+  for (const label of [
+    "梳理本节已有信息",
+    "列出待确认问题",
+    "基于参考资料补充细节",
+    "检查本节遗漏并提出改进建议",
+  ]) assert.match(presets, new RegExp(label));
+  assert.match(presets, /onSelect\(preset\)/);
+  assert.doesNotMatch(presets, /onSend|submit/);
+});
+
 test("conversation drafts and one-message files do not leak across nodes or sessions", async () => {
   const source = await readFile("src/App.tsx", "utf8");
   for (const [startMarker, endMarker] of [
@@ -199,9 +211,8 @@ test("conversation turns own agent status and the app no longer notices run comp
   assert.doesNotMatch(app, /Agent 正在本机流式生成回复/);
   assert.doesNotMatch(app, /已请求取消 Agent Run/);
   assert.match(pane, /ConversationTurnCard/);
-  assert.match(card, /<details/);
-  assert.match(card, /<details[\s\S]*?open(?:\s|>)/);
-  assert.doesNotMatch(card, /const open = turn\.status/);
+  assert.doesNotMatch(card, /<details/);
+  assert.match(card, /conversation-turn-status/);
   assert.match(card, /reasoningSummary/);
   assert.match(card, /重新判断交付稿/);
 });
