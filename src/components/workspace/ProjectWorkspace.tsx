@@ -19,6 +19,7 @@ type ProjectWorkspaceProps = {
   activeRunId: string | null;
   messages: ChatMessage[];
   turns: ConversationTurn[];
+  liveReasoningByRun: Record<string, string>;
   markdownDirty: boolean;
   messageDraft: string;
   sendingMessage: boolean;
@@ -123,6 +124,7 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             nodeAvailable={Boolean(props.node)}
             messages={props.messages}
             turns={props.turns}
+            liveReasoningByRun={props.liveReasoningByRun}
             markdownDirty={props.markdownDirty}
             activeRunId={props.activeRunId}
             sendingMessage={props.sendingMessage}

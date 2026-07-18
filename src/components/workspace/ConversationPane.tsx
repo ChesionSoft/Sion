@@ -13,6 +13,7 @@ export type ConversationPaneProps = {
   nodeAvailable: boolean;
   messages: ChatMessage[];
   turns: ConversationTurn[];
+  liveReasoningByRun: Record<string, string>;
   activeRunId: string | null;
   sendingMessage: boolean;
   messageDraft: string;
@@ -40,7 +41,7 @@ const reasoningLabel: Record<string, string> = { off: "关闭", low: "低", medi
 
 export function ConversationPane(props: ConversationPaneProps) {
   const {
-    nodeAvailable, messages, turns, activeRunId, sendingMessage, messageDraft, markdownDirty,
+    nodeAvailable, messages, turns, liveReasoningByRun, activeRunId, sendingMessage, messageDraft, markdownDirty,
     onMessageDraft, onSend, onCancel, onRetryDelivery, onOpenRunDetail,
     providers, files, selectedFileIds, importing, modelSelection, savingModelSelection,
     conversationContext, loadingConversationContext, conversationContextError, onModelSelection, onToggleFile, onImportFile,
@@ -105,6 +106,7 @@ export function ConversationPane(props: ConversationPaneProps) {
               turn={item.turn}
               userMessage={item.userMessage}
               assistantMessage={item.assistantMessage}
+              liveReasoning={liveReasoningByRun[item.turn.runId]}
               markdownDirty={markdownDirty}
               onRetryDelivery={onRetryDelivery}
               onOpenRunDetail={onOpenRunDetail}

@@ -5,6 +5,7 @@ export type ConversationTurnCardProps = {
   turn: ConversationTurn;
   userMessage?: ChatMessage;
   assistantMessage?: ChatMessage;
+  liveReasoning?: string;
   markdownDirty: boolean;
   onRetryDelivery: (turnId: string) => void;
   onOpenRunDetail: (runId: string) => void;
@@ -14,6 +15,7 @@ export function ConversationTurnCard({
   turn,
   userMessage,
   assistantMessage,
+  liveReasoning: _liveReasoning,
   markdownDirty,
   onRetryDelivery,
   onOpenRunDetail,

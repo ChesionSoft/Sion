@@ -48,11 +48,12 @@ import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
 import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
 import { RunDetailDialog } from "./components/workspace/RunDetailDialog";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentRunDetail, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentReasoningSummaryEvent, type AgentRun, type AgentRunDetail, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
 import { mergeTurnSnapshot } from "./conversation-turns.ts";
 import { isCurrentGenerationEvent, reconcileGeneratedNode, reconcileSavedNode } from "./delivery-generation.ts";
+import { appendLiveReasoning, clearLiveReasoning, removeLiveReasoning, type LiveReasoningByRun } from "./reasoning-stream.ts";
 
 const now = () => new Date().toISOString();
 const contextSectionLabel: Record<string, string> = {
@@ -105,6 +106,7 @@ export function App() {
   const [exportProjectId, setExportProjectId] = useState<string | null>(null);
   const [lastExportResult, setLastExportResult] = useState<ExportResult | null>(null);
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
+  const [liveReasoningByRun, setLiveReasoningByRun] = useState<LiveReasoningByRun>({});
   const [generation, setGeneration] = useState<DeliveryGeneration | null>(null);
   const [generationCandidate, setGenerationCandidate] = useState<string>("");
   const [regenerating, setRegenerating] = useState(false);
@@ -251,6 +253,10 @@ export function App() {
   }, [project?.id, nodeId, sessionId]);
 
   useEffect(() => {
+    setLiveReasoningByRun(clearLiveReasoning());
+  }, [project?.id, nodeId, sessionId]);
+
+  useEffect(() => {
     const subscriptions = Promise.all([
       listen<AgentTokenEvent>("agent-token", (event) => {
         const token = event.payload;
@@ -262,11 +268,20 @@ export function App() {
           return [...current, { id: transientId, role: "assistant", content: token.delta, createdAt: now() }];
         });
       }),
+      listen<AgentReasoningSummaryEvent>("agent-reasoning-summary", (event) => {
+        if (!project || !sessionId) return;
+        setLiveReasoningByRun((current) => appendLiveReasoning(current, event.payload, {
+          projectId: project.id,
+          nodeId,
+          sessionId,
+        }));
+      }),
       listen<AgentFinishedEvent>("agent-run-finished", (event) => {
         const run = event.payload.run;
         if (!project || run.projectId !== project.id || run.nodeId !== nodeId) return;
         setRuns((current) => current.map((item) => item.id === run.id ? run : item));
         setMessages((current) => current.filter((message) => message.id !== `stream-${run.id}`));
+        setLiveReasoningByRun((current) => removeLiveReasoning(current, run.id));
         if (sessionId) void loadMessages(project.id, nodeId, sessionId);
         if (sessionId) void loadTurns(project.id, nodeId, sessionId);
         if (sessionId && modelSelection) {
@@ -1296,6 +1311,7 @@ export function App() {
       onCancelAgent={() => void cancelAgent()}
       messages={messages}
       turns={turns}
+      liveReasoningByRun={liveReasoningByRun}
       markdownDirty={markdownDirty}
       onRetryDelivery={(id) => void retryDelivery(id)}
       onOpenRunDetail={openRunDetail}
