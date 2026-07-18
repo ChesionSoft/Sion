@@ -532,19 +532,6 @@ struct SessionModelUpdateRequest {
     now: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentContextEstimateRequest {
-    #[serde(flatten)]
-    version: VersionedRequest,
-    project_id: String,
-    node_id: WorkflowNodeId,
-    session_id: Option<String>,
-    model_selection: ChatModelSelection,
-    message: String,
-    file_ids: Vec<String>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConversationContextGetRequest {
@@ -1993,37 +1980,6 @@ fn session_model_update(
 }
 
 #[tauri::command]
-fn agent_context_estimate(
-    request: AgentContextEstimateRequest,
-    app: tauri::AppHandle,
-) -> Result<VersionedResponse<ConversationContextSnapshot>, ApiError> {
-    assert_api_version(&request.version)?;
-    let app_data_root = sion_root(&app)?;
-    let resolved = provider_settings::resolve_model(
-        &app_data_root,
-        &request.model_selection.provider_id,
-        &request.model_selection.model,
-    )
-    .map_err(ApiError::CheckFailed)?;
-    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
-    let store = ProjectStore::at(&project_root);
-    let prepared = conversation_runtime::prepare_conversation(
-        &store,
-        request.node_id,
-        request.session_id.as_deref(),
-        &request.message,
-        &request.file_ids,
-        resolved.context_window_tokens,
-        "",
-    )
-    .map_err(ApiError::CheckFailed)?;
-    Ok(VersionedResponse {
-        api_version: API_VERSION,
-        payload: prepared.snapshot,
-    })
-}
-
-#[tauri::command]
 fn conversation_context_get(
     request: ConversationContextGetRequest,
     app: tauri::AppHandle,
@@ -3043,7 +2999,6 @@ pub fn run() {
             session_list,
             session_create,
             session_model_update,
-            agent_context_estimate,
             conversation_context_get,
             message_list,
             message_append,
@@ -3082,22 +3037,6 @@ mod tests {
             .provider_id,
             "default"
         );
-    }
-
-    #[test]
-    fn context_estimate_request_accepts_an_unsaved_session() {
-        let request: AgentContextEstimateRequest = serde_json::from_value(serde_json::json!({
-            "apiVersion": API_VERSION,
-            "projectId": "project-1",
-            "nodeId": "goals",
-            "sessionId": null,
-            "modelSelection": { "providerId": "p", "model": "m", "reasoningEffort": "medium" },
-            "message": "draft",
-            "fileIds": []
-        }))
-        .unwrap();
-        assert_eq!(request.session_id, None);
-        assert_eq!(request.model_selection.model, "m");
     }
 
     #[test]

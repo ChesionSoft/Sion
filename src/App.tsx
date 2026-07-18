@@ -8,7 +8,7 @@ import {
   createProject,
   createSession as createSessionApi,
   deleteProvider,
-  estimateAgentContext,
+  getConversationContext,
   exportDocx as exportDocxApi,
   getAgentRules,
   getFilePreview,
@@ -46,7 +46,7 @@ import { DeliveryWorkspace } from "./components/workspace/DeliveryWorkspace";
 import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
 import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ContextEstimate, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
 import { mergeTurnSnapshot } from "./conversation-turns.ts";
@@ -85,9 +85,9 @@ export function App() {
   const [importingFile, setImportingFile] = useState(false);
   const [modelSelection, setModelSelection] = useState<ChatModelSelection | null>(null);
   const [savingModelSelection, setSavingModelSelection] = useState(false);
-  const [contextEstimate, setContextEstimate] = useState<ContextEstimate | null>(null);
-  const [estimatingContext, setEstimatingContext] = useState(false);
-  const [contextEstimateError, setContextEstimateError] = useState<string | null>(null);
+  const [conversationContext, setConversationContext] = useState<ConversationContextSnapshot | null>(null);
+  const [loadingConversationContext, setLoadingConversationContext] = useState(false);
+  const [conversationContextError, setConversationContextError] = useState<string | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [settings, setSettings] = useState<AppSettings>({ projectsDirectory: null, ui: initialUiSettings() });
   const [ui, setUi] = useState<UiSettings>(initialUiSettings);
@@ -120,7 +120,7 @@ export function App() {
   const messageMutationScopeRef = useRef<string | null>(null);
   const fileImportScopeRef = useRef<string | null>(null);
   const projectsRequestScopeRef = useRef<string | null>(null);
-  const contextEstimateScopeRef = useRef<string | null>(null);
+  const conversationContextScopeRef = useRef<string | null>(null);
   const nodeRef = useRef<WorkflowNode | null>(null);
   const draftRef = useRef("");
   const activeGenerationIdRef = useRef<string | null>(null);
@@ -254,6 +254,9 @@ export function App() {
         setMessages((current) => current.filter((message) => message.id !== `stream-${run.id}`));
         if (sessionId) void loadMessages(project.id, nodeId, sessionId);
         if (sessionId) void loadTurns(project.id, nodeId, sessionId);
+        if (sessionId && modelSelection) {
+          void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
+        }
         void loadRuns(project.id);
       }),
       listen<ConversationTurnEvent>("conversation-turn-updated", (event) => {
@@ -298,10 +301,13 @@ export function App() {
         );
         setNode(reconciled.node);
         setDraft(reconciled.draft);
+        if (sessionId && modelSelection) {
+          void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
+        }
       }),
     ]);
     return () => { void subscriptions.then((unlisten) => unlisten.forEach((stop) => stop())); };
-  }, [project, nodeId, sessionId]);
+  }, [project, nodeId, sessionId, modelSelection, selectedFileIds]);
 
   useEffect(() => {
     function saveWithShortcut(event: KeyboardEvent) {
@@ -571,6 +577,9 @@ export function App() {
       if (!isLatestRequest(scope, workspaceScopeRef.current)) return false;
       setNotice(agentOverrideDraft.trim() ? "节点自定义规则已保存；它会追加到内置规则后" : "已清除节点自定义规则；Agent 将只使用内置规则");
       await loadAgentRules(project.id, nodeId);
+      if (sessionId && modelSelection) {
+        void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
+      }
       return isLatestRequest(scope, workspaceScopeRef.current);
     } catch (error) {
       if (!isLatestRequest(scope, workspaceScopeRef.current)) return false;
@@ -596,6 +605,9 @@ export function App() {
         setDraft(result.saved.markdown);
         setConflictLatest(null);
         setNotice(`已原子保存 revision ${result.saved.revision}`);
+        if (sessionId && modelSelection) {
+          void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
+        }
         return "saved";
       }
       setNotice("保存失败：本机服务没有返回保存结果");
@@ -724,34 +736,54 @@ export function App() {
     else setModelSelection(defaultModelSelection(providers));
   }, [project, sessionId, sessions, providers]);
 
+  async function loadConversationContext(
+    projectId: string,
+    nextNodeId: NodeId,
+    nextSessionId: string,
+    selection: ChatModelSelection,
+    fileIds: string[],
+  ) {
+    const scope = requestScope(
+      projectId,
+      nextNodeId,
+      nextSessionId,
+      selection.providerId,
+      selection.model,
+      selection.reasoningEffort,
+      ...fileIds,
+    );
+    conversationContextScopeRef.current = scope;
+    setLoadingConversationContext(true);
+    setConversationContextError(null);
+    try {
+      const snapshot = await getConversationContext(
+        projectId,
+        nextNodeId,
+        nextSessionId,
+        selection,
+        fileIds,
+        now(),
+      );
+      if (conversationContextScopeRef.current !== scope) return;
+      setConversationContext(snapshot);
+    } catch (error) {
+      if (conversationContextScopeRef.current !== scope) return;
+      setConversationContextError(String(error));
+    } finally {
+      if (conversationContextScopeRef.current === scope) setLoadingConversationContext(false);
+    }
+  }
+
   useEffect(() => {
-    if (!project || !modelSelection || !messageDraft.trim()) {
-      contextEstimateScopeRef.current = null;
-      setContextEstimate(null);
-      setEstimatingContext(false);
-      setContextEstimateError(null);
+    if (!project || !sessionId || !modelSelection) {
+      conversationContextScopeRef.current = null;
+      setConversationContext(null);
+      setLoadingConversationContext(false);
+      setConversationContextError(null);
       return;
     }
-    const scope = requestScope(project.id, nodeId, sessionId ?? "draft", modelSelection.providerId, modelSelection.model, modelSelection.reasoningEffort, messageDraft, ...selectedFileIds);
-    contextEstimateScopeRef.current = scope;
-    setContextEstimate(null);
-    setEstimatingContext(true);
-    setContextEstimateError(null);
-    const timer = window.setTimeout(() => {
-      void estimateAgentContext(project.id, nodeId, sessionId, modelSelection, messageDraft, selectedFileIds).then((estimate) => {
-        if (contextEstimateScopeRef.current !== scope) return;
-        setContextEstimate(estimate);
-        setContextEstimateError(null);
-      }).catch((error) => {
-        if (contextEstimateScopeRef.current !== scope) return;
-        setContextEstimate(null);
-        setContextEstimateError(String(error));
-      }).finally(() => {
-        if (contextEstimateScopeRef.current === scope) setEstimatingContext(false);
-      });
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [project, nodeId, sessionId, modelSelection, messageDraft, selectedFileIds]);
+    void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
+  }, [project, nodeId, sessionId, modelSelection, selectedFileIds]);
 
   async function changeModelSelection(selection: ChatModelSelection) {
     if (!project || !sessionId) { setModelSelection(selection); return; }
@@ -792,7 +824,7 @@ export function App() {
       const outcome = await startAgentRun(project.id, nodeId, active.id, content, selectedFileIds, node?.revision ?? 0, !markdownDirty, now());
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
       if (outcome.kind === "context_blocked") {
-        setContextEstimate(outcome.snapshot);
+        setConversationContext(outcome.snapshot);
         const largest = contextSectionLabel[outcome.largestSection] ?? outcome.largestSection;
         setNotice(`上下文超出模型窗口：超出 ${outcome.excessTokens} tokens，最大占用来自${largest}`);
         return;
@@ -1222,9 +1254,9 @@ export function App() {
       importingFile={importingFile}
       modelSelection={modelSelection}
       savingModelSelection={savingModelSelection}
-      contextEstimate={contextEstimate}
-      estimatingContext={estimatingContext}
-      contextEstimateError={contextEstimateError}
+      conversationContext={conversationContext}
+      loadingConversationContext={loadingConversationContext}
+      conversationContextError={conversationContextError}
       onModelSelection={changeModelSelection}
       onToggleFile={toggleFileContext}
       onImportFile={() => importFile()}

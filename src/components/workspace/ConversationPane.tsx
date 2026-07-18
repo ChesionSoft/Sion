@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatModelSelection, ContextEstimate, ConversationTurn, ProjectFile, Provider } from "../../types";
+import type { ChatMessage, ChatModelSelection, ConversationContextSnapshot, ConversationTurn, ProjectFile, Provider } from "../../types";
 import { Button } from "../ui";
 import { ConversationModelMenu } from "./ConversationModelMenu";
 import { ConversationFileMenu } from "./ConversationFileMenu";
@@ -25,9 +25,9 @@ export type ConversationPaneProps = {
   importing: boolean;
   modelSelection: ChatModelSelection | null;
   savingModelSelection: boolean;
-  contextEstimate: ContextEstimate | null;
-  estimatingContext: boolean;
-  contextEstimateError: string | null;
+  conversationContext: ConversationContextSnapshot | null;
+  loadingConversationContext: boolean;
+  conversationContextError: string | null;
   onModelSelection: (selection: ChatModelSelection) => Promise<void>;
   onToggleFile: (fileId: string) => void;
   onImportFile: () => Promise<ProjectFile | null>;
@@ -40,7 +40,7 @@ export function ConversationPane(props: ConversationPaneProps) {
     nodeAvailable, messages, turns, activeRunId, sendingMessage, messageDraft, markdownDirty,
     onMessageDraft, onSend, onCancel, onRetryDelivery,
     providers, files, selectedFileIds, importing, modelSelection, savingModelSelection,
-    contextEstimate, estimatingContext, contextEstimateError, onModelSelection, onToggleFile, onImportFile,
+    conversationContext, loadingConversationContext, conversationContextError, onModelSelection, onToggleFile, onImportFile,
   } = props;
   const composerMode = activeRunId ? "stop" : sendingMessage ? "sending" : "send";
   const sendDisabled = composerMode === "stop"
@@ -132,7 +132,7 @@ export function ConversationPane(props: ConversationPaneProps) {
             onImport={onImportFile}
           />
           <div className="conversation-composer-actions">
-            <ContextUsageIndicator estimate={contextEstimate} loading={estimatingContext} error={contextEstimateError} />
+            <ContextUsageIndicator snapshot={conversationContext} loading={loadingConversationContext} error={conversationContextError} />
             <ConversationModelMenu
               providers={providers}
               selection={modelSelection}

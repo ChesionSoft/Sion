@@ -16,7 +16,6 @@ import {
   type ChatSession,
   type ConversationTurn,
   type ConversationContextSnapshot,
-  type ContextEstimate,
   type DeliveryGeneration,
   type EffectiveAgentRules,
   type FilePreview,
@@ -130,22 +129,6 @@ export const updateSessionModel = (
     sessionId,
     modelSelection,
     now,
-  });
-export const estimateAgentContext = (
-  projectId: string,
-  nodeId: NodeId,
-  sessionId: string | null,
-  modelSelection: ChatModelSelection,
-  message: string,
-  fileIds: string[],
-) =>
-  invokePayload<ContextEstimate>("agent_context_estimate", {
-    projectId,
-    nodeId,
-    sessionId,
-    modelSelection,
-    message,
-    fileIds,
   });
 export const getConversationContext = (
   projectId: string,

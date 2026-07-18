@@ -75,9 +75,16 @@
 .context-usage-button.is-ready { background: conic-gradient(#16a34a 0 var(--context-ratio, 0deg), var(--border) var(--context-ratio, 0deg) 360deg); }
 .context-usage-button.is-warning { background: conic-gradient(#d97706 0 var(--context-ratio, 0deg), var(--border) var(--context-ratio, 0deg) 360deg); }
 .context-usage-button.is-blocked { background: conic-gradient(#dc2626 0 var(--context-ratio, 0deg), var(--border) var(--context-ratio, 0deg) 360deg); }
-.context-usage-detail { pointer-events: none; position: absolute; bottom: calc(100% + 7px); right: 0; z-index: 20; display: grid; gap: 2px; min-width: 190px; padding: 8px 10px; opacity: 0; transform: translateY(3px); background: var(--bg-main); border: 1px solid var(--border); border-radius: 9px; color: var(--text); font-size: 11px; white-space: nowrap; box-shadow: 0 10px 28px rgb(0 0 0 / 12%); transition: opacity 120ms ease, transform 120ms ease; }
+.context-usage-button.is-loading { opacity: .66; }
+.context-usage-detail { pointer-events: none; position: absolute; bottom: calc(100% + 7px); right: 0; z-index: 20; display: grid; gap: 8px; min-width: 270px; padding: 11px 12px; opacity: 0; transform: translateY(3px); background: var(--bg-main); border: 1px solid var(--border); border-radius: 11px; color: var(--text); font-size: 11px; box-shadow: 0 10px 28px rgb(0 0 0 / 12%); transition: opacity 120ms ease, transform 120ms ease; }
 .context-usage-detail strong { font-size: 11px; font-weight: 600; }
 .context-usage-detail span { color: var(--text-muted); }
+.context-usage-detail > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.context-usage-detail > p { margin: 0; color: var(--text-muted); }
+.context-usage-breakdown, .context-usage-cumulative { display: grid; gap: 4px; margin: 0; padding: 8px 0 0; border-top: 1px solid var(--border); }
+.context-usage-row { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; }
+.context-usage-row dt { color: var(--text-muted); }
+.context-usage-row dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
 .context-usage-indicator:hover .context-usage-detail, .context-usage-indicator:focus-within .context-usage-detail, .context-usage-detail.is-pinned { opacity: 1; transform: translateY(0); }
 @media (max-width: 720px) {
   .conversation-model-popover { right: -44px; max-width: calc(100vw - 28px); }

@@ -109,9 +109,21 @@ test("conversation pane composes controls and app uses combined send", async () 
   assert.match(conversationPane, /ContextUsageIndicator/);
   assert.match(conversationPane, /message\.attachments/);
   assert.match(conversationPane, /message\.modelExecution/);
-  assert.match(appSource, /estimateAgentContext/);
+  assert.match(appSource, /getConversationContext/);
   assert.doesNotMatch(sendMessageSource, /appendMessage\(/);
   assert.match(sendMessageSource, /startAgentRun\([^)]*content[^)]*selectedFileIds/s);
+});
+
+test("conversation context refresh is session scoped rather than keystroke scoped", async () => {
+  const source = await readFile("src/App.tsx", "utf8");
+  const start = source.indexOf("async function loadConversationContext");
+  const end = source.indexOf("async function changeModelSelection", start);
+  const block = source.slice(start, end);
+  assert.match(block, /getConversationContext/);
+  assert.doesNotMatch(block, /messageDraft/);
+  const indicator = await readFile("src/components/workspace/ContextUsageIndicator.tsx", "utf8");
+  assert.match(indicator, /统计暂不可用/);
+  assert.match(indicator, /cumulativeUsage/);
 });
 
 test("conversation drafts and one-message files do not leak across nodes or sessions", async () => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { AgentRun, ChatMessage, ChatModelSelection, ChatSession, ContextEstimate, ConversationTurn, NodeStatus, ProjectFile, Provider, RecentProject, RightSurface, WorkflowNode } from "../../types";
+import type { AgentRun, ChatMessage, ChatModelSelection, ChatSession, ConversationContextSnapshot, ConversationTurn, NodeStatus, ProjectFile, Provider, RecentProject, RightSurface, WorkflowNode } from "../../types";
 import { statusLabel } from "../../types";
 import { Button, IconButton, Popover, StatusDot, Icon } from "../ui";
 import { WORKSPACE_HEADER_ACTIONS } from "../../workspace-config";
@@ -29,9 +29,9 @@ type ProjectWorkspaceProps = {
   importingFile: boolean;
   modelSelection: ChatModelSelection | null;
   savingModelSelection: boolean;
-  contextEstimate: ContextEstimate | null;
-  estimatingContext: boolean;
-  contextEstimateError: string | null;
+  conversationContext: ConversationContextSnapshot | null;
+  loadingConversationContext: boolean;
+  conversationContextError: string | null;
   onBack: () => void;
   onRightSurface: (surface: RightSurface) => void;
   onSelectSession: (sessionId: string) => void;
@@ -155,9 +155,9 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             importing={props.importingFile}
             modelSelection={props.modelSelection}
             savingModelSelection={props.savingModelSelection}
-            contextEstimate={props.contextEstimate}
-            estimatingContext={props.estimatingContext}
-            contextEstimateError={props.contextEstimateError}
+            conversationContext={props.conversationContext}
+            loadingConversationContext={props.loadingConversationContext}
+            conversationContextError={props.conversationContextError}
             onModelSelection={props.onModelSelection}
             onToggleFile={props.onToggleFile}
             onImportFile={props.onImportFile}
