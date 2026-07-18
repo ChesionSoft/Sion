@@ -6,9 +6,9 @@ mod provider_settings;
 
 use serde::{Deserialize, Serialize};
 use sion_core::{
-    AgentDelivery, ChatMessage, ChatModelSelection, ChatRole, ChatSession, ContextEstimate,
-    ConversationTurn, DeliveryOutcome, DeliveryStage, NodeStatus, ProjectFile, ProjectManifest,
-    ReasoningEffort, TurnStatus, WorkflowNode, WorkflowNodeId,
+    AgentDelivery, ChatMessage, ChatModelSelection, ChatRole, ChatSession,
+    ConversationContextSnapshot, ConversationTurn, DeliveryOutcome, DeliveryStage, NodeStatus,
+    ProjectFile, ProjectManifest, ReasoningEffort, TurnStatus, WorkflowNode, WorkflowNodeId,
 };
 use sion_storage::{
     CreateProjectInput, FilePreview, ProjectDiscovery, ProjectRegistry, ProjectStore,
@@ -106,6 +106,20 @@ struct AgentRunStartResult {
     turn: ConversationTurn,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+enum AgentRunStartOutcome {
+    Started {
+        run: sion_agent::AgentRun,
+        turn: ConversationTurn,
+    },
+    ContextBlocked {
+        snapshot: ConversationContextSnapshot,
+        excess_tokens: u64,
+        largest_section: String,
+    },
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ConversationTurnEvent {
@@ -120,7 +134,7 @@ struct ConversationTurnList {
     turns: Vec<ConversationTurn>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionedRequest {
     api_version: u16,
@@ -508,6 +522,19 @@ struct AgentContextEstimateRequest {
     file_ids: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationContextGetRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    model_selection: ChatModelSelection,
+    file_ids: Vec<String>,
+    now: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MessageListRequest {
@@ -701,8 +728,7 @@ struct PreparedSend {
     resolved: provider_settings::ResolvedModel,
     selection: ChatModelSelection,
     prompt: String,
-    #[allow(dead_code)]
-    estimate: ContextEstimate,
+    snapshot: ConversationContextSnapshot,
     user_message: ChatMessage,
     file_ids: Vec<String>,
     turn_id: String,
@@ -835,13 +861,8 @@ fn prepare_agent_send(
         message,
         file_ids,
         resolved.context_window_tokens,
+        now,
     )?;
-    if prepared.estimate.status == sion_core::ContextEstimateStatus::Blocked {
-        return Err(format!(
-            "message exceeds the model context window (estimated {} tokens)",
-            prepared.estimate.estimated_input_tokens
-        ));
-    }
     let turn_id = uuid::Uuid::new_v4().to_string();
     let user_message = ChatMessage {
         id: uuid::Uuid::new_v4().to_string(),
@@ -860,7 +881,7 @@ fn prepare_agent_send(
         resolved,
         selection,
         prompt: prepared.prompt,
-        estimate: prepared.estimate,
+        snapshot: prepared.snapshot,
         user_message,
         file_ids: file_ids.to_vec(),
         turn_id,
@@ -872,7 +893,7 @@ fn agent_run_start(
     request: AgentRunStartRequest,
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AgentState>>,
-) -> Result<VersionedResponse<AgentRunStartResult>, ApiError> {
+) -> Result<VersionedResponse<AgentRunStartOutcome>, ApiError> {
     assert_api_version(&request.version)?;
     let app_data_root = sion_root(&app)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
@@ -887,6 +908,21 @@ fn agent_run_start(
         &request.now,
     )
     .map_err(ApiError::CheckFailed)?;
+    if prepared.snapshot.status == sion_core::ContextEstimateStatus::Blocked {
+        let excess_tokens = prepared
+            .snapshot
+            .estimated_input_tokens
+            .saturating_sub(prepared.snapshot.context_window_tokens);
+        let largest_section = largest_context_section(&prepared.snapshot);
+        return Ok(VersionedResponse {
+            api_version: API_VERSION,
+            payload: AgentRunStartOutcome::ContextBlocked {
+                snapshot: prepared.snapshot,
+                excess_tokens,
+                largest_section,
+            },
+        });
+    }
     if store
         .session(request.node_id, &request.session_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?
@@ -955,8 +991,26 @@ fn agent_run_start(
     }
     Ok(VersionedResponse {
         api_version: API_VERSION,
-        payload: start_result,
+        payload: AgentRunStartOutcome::Started {
+            run: start_result.run,
+            turn: start_result.turn,
+        },
     })
+}
+
+fn largest_context_section(snapshot: &ConversationContextSnapshot) -> String {
+    let breakdown = &snapshot.breakdown;
+    [
+        ("protocol", breakdown.protocol_tokens),
+        ("rules", breakdown.rules_tokens),
+        ("node_markdown", breakdown.node_markdown_tokens),
+        ("conversation", breakdown.conversation_tokens),
+        ("attachment", breakdown.attachment_tokens),
+    ]
+    .into_iter()
+    .max_by_key(|(_, tokens)| *tokens)
+    .map(|(section, _)| section.to_string())
+    .unwrap_or_else(|| "protocol".to_string())
 }
 
 #[tauri::command]
@@ -1862,7 +1916,7 @@ fn session_model_update(
 fn agent_context_estimate(
     request: AgentContextEstimateRequest,
     app: tauri::AppHandle,
-) -> Result<VersionedResponse<ContextEstimate>, ApiError> {
+) -> Result<VersionedResponse<ConversationContextSnapshot>, ApiError> {
     assert_api_version(&request.version)?;
     let app_data_root = sion_root(&app)?;
     let resolved = provider_settings::resolve_model(
@@ -1880,11 +1934,43 @@ fn agent_context_estimate(
         &request.message,
         &request.file_ids,
         resolved.context_window_tokens,
+        "",
     )
     .map_err(ApiError::CheckFailed)?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
-        payload: prepared.estimate,
+        payload: prepared.snapshot,
+    })
+}
+
+#[tauri::command]
+fn conversation_context_get(
+    request: ConversationContextGetRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ConversationContextSnapshot>, ApiError> {
+    assert_api_version(&request.version)?;
+    let app_data_root = sion_root(&app)?;
+    let resolved = provider_settings::resolve_model(
+        &app_data_root,
+        &request.model_selection.provider_id,
+        &request.model_selection.model,
+    )
+    .map_err(ApiError::CheckFailed)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(&project_root);
+    let prepared = conversation_runtime::prepare_conversation(
+        &store,
+        request.node_id,
+        Some(&request.session_id),
+        "",
+        &request.file_ids,
+        resolved.context_window_tokens,
+        &request.now,
+    )
+    .map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: prepared.snapshot,
     })
 }
 
@@ -2790,6 +2876,7 @@ pub fn run() {
             session_create,
             session_model_update,
             agent_context_estimate,
+            conversation_context_get,
             message_list,
             message_append,
             file_list,
@@ -2843,6 +2930,29 @@ mod tests {
         .unwrap();
         assert_eq!(request.session_id, None);
         assert_eq!(request.model_selection.model, "m");
+    }
+
+    #[test]
+    fn conversation_context_request_uses_an_existing_session_without_a_message() {
+        let request: ConversationContextGetRequest =
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": API_VERSION,
+                "projectId": "project-1",
+                "nodeId": "goals",
+                "sessionId": "session-1",
+                "modelSelection": { "providerId": "p", "model": "m", "reasoningEffort": "medium" },
+                "fileIds": [],
+                "now": "2026-07-18T00:00:00Z"
+            }))
+            .unwrap();
+        assert_eq!(request.session_id, "session-1");
+        assert_eq!(request.model_selection.model, "m");
+        assert!(
+            serde_json::to_value(request)
+                .unwrap()
+                .get("message")
+                .is_none()
+        );
     }
 
     fn temp_command_root() -> PathBuf {
@@ -3101,7 +3211,16 @@ mod tests {
     #[test]
     fn blocked_context_does_not_append_a_message_or_run() {
         let fixture = send_fixture(8);
-        let result = prepare_agent_send(
+        let before_messages = fixture
+            .store
+            .messages(WorkflowNodeId::Goals, &fixture.session.id)
+            .unwrap();
+        let before_turns = fixture
+            .store
+            .turns(WorkflowNodeId::Goals, &fixture.session.id)
+            .unwrap();
+        let before_runs = fixture.store.list_runs().unwrap();
+        let prepared = prepare_agent_send(
             &fixture.provider_root,
             &fixture.store,
             WorkflowNodeId::Goals,
@@ -3109,16 +3228,29 @@ mod tests {
             "this input is intentionally too large",
             &[],
             "now",
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.snapshot.status,
+            sion_core::ContextEstimateStatus::Blocked
         );
-        assert!(result.unwrap_err().contains("context window"));
-        assert!(
+        assert!(prepared.snapshot.estimated_input_tokens > 8);
+        assert!(!largest_context_section(&prepared.snapshot).is_empty());
+        assert_eq!(
             fixture
                 .store
                 .messages(WorkflowNodeId::Goals, &fixture.session.id)
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            before_messages
         );
-        assert!(fixture.store.list_runs().unwrap().is_empty());
+        assert_eq!(
+            fixture
+                .store
+                .turns(WorkflowNodeId::Goals, &fixture.session.id)
+                .unwrap(),
+            before_turns
+        );
+        assert_eq!(fixture.store.list_runs().unwrap(), before_runs);
         std::fs::remove_dir_all(fixture.root).unwrap();
     }
 

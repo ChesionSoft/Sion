@@ -3,12 +3,13 @@
 //! is the exact string used both for context estimation and for the real run.
 
 use sion_core::{
-    ChatMessage, ChatRole, ContextEstimate, MessageAttachmentRef, WorkflowNode, WorkflowNodeId,
-    agent_rule, estimate_context,
+    ChatMessage, ChatRole, ContextUsageBreakdown, ConversationContextSnapshot,
+    MessageAttachmentRef, WorkflowNode, WorkflowNodeId, agent_rule, aggregate_message_usage,
+    estimate_context, estimate_input_tokens,
 };
 use sion_storage::ProjectStore;
 
-const TRANSCRIPT_WINDOW: usize = 16;
+const PROTOCOL: &str = "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。不要输出隐藏思维链。\n\n回复正文先给出可见说明，然后在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{\"mode\":\"unchanged\"}\n```\n- 分节补丁：```delivery\n{\"mode\":\"patch\",\"sections\":[{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}]}\n```\n常规对话默认使用 unchanged；只有需要改动交付稿时才用 patch。不要使用整篇 rewrite。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,7 +57,16 @@ pub struct ConversationParts<'a> {
 pub struct PreparedConversation {
     pub prompt: String,
     pub attachments: Vec<MessageAttachmentRef>,
-    pub estimate: ContextEstimate,
+    pub snapshot: ConversationContextSnapshot,
+}
+
+struct PromptSections {
+    protocol: String,
+    rules: String,
+    attachments: String,
+    node_label: String,
+    node_markdown: String,
+    transcript: String,
 }
 
 pub fn load_selected_files(
@@ -95,12 +105,9 @@ fn role_label(role: &ChatRole) -> &'static str {
     }
 }
 
-fn recent_transcript(messages: &[ChatMessage], draft: &str) -> String {
+fn full_transcript(messages: &[ChatMessage], draft: &str) -> String {
     let mut transcript: Vec<String> = messages
         .iter()
-        .rev()
-        .take(TRANSCRIPT_WINDOW)
-        .rev()
         .map(|message| format!("{}: {}", role_label(&message.role), message.content))
         .collect();
     if !draft.is_empty() {
@@ -117,20 +124,36 @@ fn attachment_block(attachments: &[SelectedFileContext]) -> String {
         .join("\n\n")
 }
 
-pub fn build_agent_prompt(parts: ConversationParts<'_>) -> String {
-    let transcript_str = recent_transcript(parts.messages, parts.draft);
+fn prompt_sections(parts: ConversationParts<'_>) -> PromptSections {
     let effective_rules = compose_effective_agent_rules(
         parts.node.id,
         parts.project_override.map(|rule| rule.to_string()),
     );
+    PromptSections {
+        protocol: PROTOCOL.to_string(),
+        rules: effective_rules.effective_markdown,
+        attachments: attachment_block(parts.attachments),
+        node_label: parts.node.id.as_str().to_string(),
+        node_markdown: parts.node.markdown.clone(),
+        transcript: full_transcript(parts.messages, parts.draft),
+    }
+}
+
+fn prompt_from_sections(sections: &PromptSections) -> String {
     format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。不要输出隐藏思维链。\n\n回复正文先给出可见说明，然后在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{{\"mode\":\"unchanged\"}}\n```\n- 分节补丁：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}}]}}\n```\n常规对话默认使用 unchanged；只有需要改动交付稿时才用 patch。不要使用整篇 rewrite。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。\n\n# 本节点规则\n{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
-        effective_rules.effective_markdown,
-        attachment_block(parts.attachments),
-        parts.node.id.as_str(),
-        parts.node.markdown,
-        transcript_str
+        "{}\n\n# 本节点规则\n{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        sections.protocol,
+        sections.rules,
+        sections.attachments,
+        sections.node_label,
+        sections.node_markdown,
+        sections.transcript,
     )
+}
+
+#[allow(dead_code)]
+pub fn build_agent_prompt(parts: ConversationParts<'_>) -> String {
+    prompt_from_sections(&prompt_sections(parts))
 }
 
 #[allow(dead_code)]
@@ -146,7 +169,7 @@ pub fn build_delivery_retry_prompt(
         rules,
         node.id.as_str(),
         node.markdown,
-        recent_transcript(messages, "")
+        full_transcript(messages, "")
     )
 }
 
@@ -163,13 +186,14 @@ pub fn build_delivery_regeneration_prompt(
         attachment_block(attachments),
         node.id.as_str(),
         node.markdown,
-        recent_transcript(messages, "")
+        full_transcript(messages, "")
     )
 }
 
 pub fn prepare_from_parts(
     parts: ConversationParts<'_>,
     context_window_tokens: u64,
+    calculated_at: &str,
 ) -> PreparedConversation {
     let attachments: Vec<MessageAttachmentRef> = parts
         .attachments
@@ -179,12 +203,29 @@ pub fn prepare_from_parts(
             original_name: attachment.original_name.clone(),
         })
         .collect();
-    let prompt = build_agent_prompt(parts);
+    let messages = parts.messages;
+    let sections = prompt_sections(parts);
+    let prompt = prompt_from_sections(&sections);
     let estimate = estimate_context(&prompt, context_window_tokens);
+    let snapshot = ConversationContextSnapshot {
+        estimated_input_tokens: estimate.estimated_input_tokens,
+        context_window_tokens: estimate.context_window_tokens,
+        ratio: estimate.ratio,
+        status: estimate.status,
+        breakdown: ContextUsageBreakdown {
+            protocol_tokens: estimate_input_tokens(&sections.protocol),
+            rules_tokens: estimate_input_tokens(&sections.rules),
+            node_markdown_tokens: estimate_input_tokens(&sections.node_markdown),
+            conversation_tokens: estimate_input_tokens(&sections.transcript),
+            attachment_tokens: estimate_input_tokens(&sections.attachments),
+        },
+        cumulative_usage: aggregate_message_usage(messages),
+        calculated_at: calculated_at.to_string(),
+    };
     PreparedConversation {
         prompt,
         attachments,
-        estimate,
+        snapshot,
     }
 }
 
@@ -195,6 +236,7 @@ pub fn prepare_conversation(
     draft: &str,
     file_ids: &[String],
     context_window_tokens: u64,
+    calculated_at: &str,
 ) -> Result<PreparedConversation, String> {
     let node = store.node(node_id).map_err(|error| error.to_string())?;
     let messages = match session_id {
@@ -216,12 +258,16 @@ pub fn prepare_conversation(
             draft,
         },
         context_window_tokens,
+        calculated_at,
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use sion_core::{NodeStatus, WorkflowNode, WorkflowNodeId, estimate_context};
+    use sion_core::{
+        ChatRole, MessageAttachmentRef, NodeStatus, WorkflowNode, WorkflowNodeId,
+        estimate_input_tokens,
+    };
 
     use super::*;
 
@@ -248,14 +294,72 @@ mod tests {
                 draft: "当前草稿消息",
             },
             100_000,
+            "now",
         );
         assert!(prepared.prompt.contains("当前草稿消息"));
         assert_eq!(prepared.prompt.matches("当前草稿消息").count(), 1);
         assert!(prepared.prompt.contains(&"中".repeat(60_000)));
         assert_eq!(
-            prepared.estimate,
-            estimate_context(&prepared.prompt, 100_000)
+            prepared.snapshot.estimated_input_tokens,
+            estimate_input_tokens(&prepared.prompt)
         );
+    }
+
+    #[test]
+    fn prompt_contains_all_visible_messages_without_reasoning_or_old_file_text() {
+        let node = WorkflowNode {
+            id: WorkflowNodeId::Goals,
+            status: NodeStatus::Draft,
+            markdown: "# 项目目标".into(),
+            revision: 0,
+            updated_at: "now".into(),
+        };
+        let mut messages = (0..20)
+            .map(|index| ChatMessage {
+                id: format!("m-{index}"),
+                role: if index % 2 == 0 {
+                    ChatRole::User
+                } else {
+                    ChatRole::Assistant
+                },
+                content: format!("visible-{index}"),
+                reasoning_content: None,
+                sources: None,
+                created_at: "now".into(),
+                turn_id: None,
+                reasoning_duration_ms: None,
+                usage: None,
+                attachments: vec![],
+                model_execution: None,
+            })
+            .collect::<Vec<_>>();
+        messages[0].reasoning_content = Some("hidden-sentinel".into());
+        messages[0].attachments = vec![MessageAttachmentRef {
+            file_id: "old-file-body-sentinel".into(),
+            original_name: "old.md".into(),
+        }];
+
+        let prepared = prepare_from_parts(
+            ConversationParts {
+                node: &node,
+                messages: &messages,
+                project_override: None,
+                attachments: &[],
+                draft: "new draft",
+            },
+            128_000,
+            "now",
+        );
+        assert!(prepared.prompt.contains("visible-0"));
+        assert!(prepared.prompt.contains("visible-19"));
+        assert!(!prepared.prompt.contains("hidden-sentinel"));
+        assert!(!prepared.prompt.contains("old-file-body-sentinel"));
+        assert_eq!(
+            prepared.snapshot.estimated_input_tokens,
+            estimate_input_tokens(&prepared.prompt)
+        );
+        assert!(prepared.snapshot.breakdown.conversation_tokens > 0);
+        assert!(prepared.snapshot.breakdown.protocol_tokens > 0);
     }
 
     #[test]
