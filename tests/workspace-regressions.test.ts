@@ -151,6 +151,30 @@ test("run history and turn status open one centered detail dialog", async () => 
   assert.match(dialog, /历史记录未保存此信息/);
 });
 
+test("conversation telemetry migration keeps one canonical full-history path", async () => {
+  const sources = await Promise.all([
+    "src/api.ts",
+    "src-tauri/src/lib.rs",
+    "crates/sion-agent/src/lib.rs",
+    "crates/sion-agent/src/model_stream.rs",
+    "crates/sion-core/src/lib.rs",
+    "crates/sion-core/src/conversation.rs",
+    "crates/sion-core/src/conversation_telemetry.rs",
+  ].map((file) => readFile(file, "utf8")));
+  const joined = sources.join("\n");
+  assert.doesNotMatch(joined, /agent_context_estimate|TRANSCRIPT_WINDOW/);
+  assert.match(joined, /conversation_context_get/);
+  assert.match(joined, /agent_run_detail/);
+
+  const presets = await readFile("src/components/workspace/ConversationPresets.tsx", "utf8");
+  for (const label of [
+    "梳理本节已有信息",
+    "列出待确认问题",
+    "基于参考资料补充细节",
+    "检查本节遗漏并提出改进建议",
+  ]) assert.match(presets, new RegExp(label));
+});
+
 test("conversation drafts and one-message files do not leak across nodes or sessions", async () => {
   const source = await readFile("src/App.tsx", "utf8");
   for (const [startMarker, endMarker] of [
