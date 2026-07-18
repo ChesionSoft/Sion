@@ -108,7 +108,7 @@ test("durable settings never persist file or assistant preview surfaces", () => 
     projects: {
       project: {
         ...initialProjectUi(),
-        rightTabIds: ["file:brief", "delivery-preview:message"],
+        rightTabIds: ["file:brief"],
         activeRightTabId: "file:brief",
       },
     },

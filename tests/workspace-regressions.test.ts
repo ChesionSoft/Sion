@@ -199,3 +199,14 @@ test("delivery regenerates locally while DOCX stays in Export Center", async () 
   assert.match(shellCss, /\.notice-viewport\s*\{[^}]*top:\s*16px/s);
   assert.doesNotMatch(shellCss, /\.notice-viewport\s*\{[^}]*bottom:/s);
 });
+
+test("obsolete manual assistant delivery flow is gone", async () => {
+  const [app, api, tauri] = await Promise.all([
+    readFile("src/App.tsx", "utf8"),
+    readFile("src/api.ts", "utf8"),
+    readFile("src-tauri/src/lib.rs", "utf8"),
+  ]);
+  for (const source of [app, api, tauri]) {
+    assert.doesNotMatch(source, /project_preview_assistant_delivery|project_apply_assistant|previewAssistantDelivery|applyAssistant/);
+  }
+});

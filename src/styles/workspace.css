@@ -92,8 +92,8 @@
 .workspace-rule-editor { width: 100%; min-height: 390px; resize: vertical; border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 12px; color: var(--text); background: var(--bg-main); font: 12px/1.65 "SFMono-Regular", Consolas, monospace; }
 .project-files-tab { height: 100%; overflow-y: auto; padding: 18px; }
 .project-files-tab > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
-.project-files-tab h2, .file-preview-tab h2, .delivery-preview-tab h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.02em; }
-.project-files-tab header p, .file-preview-tab header p, .delivery-preview-tab header p { margin: 4px 0 0; color: var(--text-muted); font-size: 10px; }
+.project-files-tab h2, .file-preview-tab h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.02em; }
+.project-files-tab header p, .file-preview-tab header p { margin: 4px 0 0; color: var(--text-muted); font-size: 10px; }
 .project-files-tab > .ui-empty-state { min-height: 340px; padding: 12px 0; }
 .project-file-list { display: grid; border-top: 1px solid var(--border); }
 .project-file-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; min-height: 64px; border-bottom: 1px solid var(--border); }
@@ -110,16 +110,6 @@
 .file-preview-tab > pre { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 18px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); background: var(--bg-subtle); font: 11px/1.7 "SFMono-Regular", Consolas, monospace; }
 .file-preview-loading { display: grid; flex: 1; place-items: center; color: var(--text-muted); font-size: 11px; }
 .workspace-tab-panel > .ui-empty-state { height: 100%; min-height: 0; }
-
-.delivery-preview-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.delivery-preview-tab > header { flex: 0 0 auto; padding: 16px 18px 12px; border-bottom: 1px solid var(--border); }
-.delivery-preview-tab > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.delivery-preview-tab > header > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
-.delivery-preview-tab > header span { border: 1px solid var(--border); border-radius: 999px; padding: 3px 6px; color: var(--text-muted); font-size: 9px; }
-.delivery-preview-tab > header span.is-add { color: var(--success); }
-.delivery-preview-tab > header span.is-delete { color: var(--danger); }
-.delivery-preview-tab > pre { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 18px; white-space: pre-wrap; color: var(--text); background: var(--bg-subtle); font: 11px/1.7 "SFMono-Regular", Consolas, monospace; }
-.delivery-preview-tab > footer { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border); }
 
 .delivery-workspace { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .delivery-workspace-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 16px 18px 12px; border-bottom: 1px solid var(--border); }

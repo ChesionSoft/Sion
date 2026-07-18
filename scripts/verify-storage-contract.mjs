@@ -11,7 +11,9 @@ const files = [
   "src/components/workspace/FilePoolWorkspace.tsx",
   "src-tauri/src/lib.rs",
   "src-tauri/src/conversation_runtime.rs",
+  "src-tauri/src/turn_runtime.rs",
   "src-tauri/src/provider_settings.rs",
+  "src/conversation-turns.ts",
   "crates/sion-storage/src/lib.rs",
 ];
 const forbidden = [

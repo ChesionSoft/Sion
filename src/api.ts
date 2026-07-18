@@ -9,7 +9,6 @@ import {
   type AgentRun,
   type AgentRunStartResult,
   type AppSettings,
-  type AssistantDeliveryPreview,
   type ChatMessage,
   type ChatModelSelection,
   type ChatSession,
@@ -100,34 +99,6 @@ export const saveNode = (
     expectedRevision,
     markdown,
     status,
-    now,
-  });
-export const previewAssistantDelivery = (
-  projectId: string,
-  nodeId: NodeId,
-  sessionId: string,
-  assistantMessageId: string,
-) =>
-  invokePayload<AssistantDeliveryPreview>("project_preview_assistant_delivery", {
-    projectId,
-    nodeId,
-    sessionId,
-    assistantMessageId,
-  });
-export const applyAssistant = (
-  projectId: string,
-  nodeId: NodeId,
-  sessionId: string,
-  assistantMessageId: string,
-  expectedRevision: number,
-  now: string,
-) =>
-  invokePayload<SaveNodeResult>("project_apply_assistant", {
-    projectId,
-    nodeId,
-    sessionId,
-    assistantMessageId,
-    expectedRevision,
     now,
   });
 export const exportDocx = (projectId: string) =>

@@ -195,15 +195,6 @@ export type ProviderDraft = {
   now: string;
 };
 
-export type AssistantDeliveryPreview = {
-  assistantMessageId: string;
-  nodeId: NodeId;
-  currentRevision: number;
-  markdown: string;
-  additions: number;
-  deletions: number;
-  unchanged: number;
-};
 export type SaveNodeResult = { saved?: WorkflowNode; conflict?: { latest: WorkflowNode } };
 
 export type EffectiveAgentRules = {
