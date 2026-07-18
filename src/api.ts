@@ -7,12 +7,15 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   API_VERSION,
   type AgentRun,
+  type AgentRunStartResult,
   type AppSettings,
   type AssistantDeliveryPreview,
   type ChatMessage,
   type ChatModelSelection,
   type ChatSession,
+  type ConversationTurn,
   type ContextEstimate,
+  type DeliveryGeneration,
   type EffectiveAgentRules,
   type FilePreview,
   type NodeId,
@@ -223,9 +226,78 @@ export const startAgentRun = (
   sessionId: string,
   message: string,
   fileIds: string[],
+  expectedRevision: number,
+  deliveryWriteAllowed: boolean,
   now: string,
 ) =>
-  invokePayload<AgentRun>("agent_run_start", { projectId, nodeId, sessionId, message, fileIds, now });
+  invokePayload<AgentRunStartResult>("agent_run_start", {
+    projectId,
+    nodeId,
+    sessionId,
+    message,
+    fileIds,
+    expectedRevision,
+    deliveryWriteAllowed,
+    now,
+  });
+
+export const listConversationTurns = async (
+  projectId: string,
+  nodeId: NodeId,
+  sessionId: string,
+  now: string,
+): Promise<ConversationTurn[]> =>
+  (
+    await invokePayload<{ turns: ConversationTurn[] }>("conversation_turn_list", {
+      projectId,
+      nodeId,
+      sessionId,
+      now,
+    })
+  ).turns;
+
+export const retryConversationTurnDelivery = (
+  projectId: string,
+  nodeId: NodeId,
+  sessionId: string,
+  turnId: string,
+  now: string,
+) =>
+  invokePayload<AgentRun>("conversation_turn_retry_delivery", {
+    projectId,
+    nodeId,
+    sessionId,
+    turnId,
+    now,
+  });
+
+export const startDeliveryRegeneration = (
+  projectId: string,
+  nodeId: NodeId,
+  sessionId: string,
+  fileIds: string[],
+  expectedRevision: number,
+  now: string,
+) =>
+  invokePayload<DeliveryGeneration>("delivery_regeneration_start", {
+    projectId,
+    nodeId,
+    sessionId,
+    fileIds,
+    expectedRevision,
+    now,
+  });
+
+export const cancelDeliveryRegeneration = (
+  projectId: string,
+  generationId: string,
+  now: string,
+) =>
+  invokePayload<DeliveryGeneration>("delivery_regeneration_cancel", {
+    projectId,
+    generationId,
+    now,
+  });
 export const listRuns = async (projectId: string): Promise<AgentRun[]> =>
   (await invokePayload<{ runs: AgentRun[] }>("agent_run_list", { projectId })).runs;
 export const cancelAgentRun = (projectId: string, runId: string, now: string) =>

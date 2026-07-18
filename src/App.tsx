@@ -720,7 +720,7 @@ export function App() {
     try {
       const active = sessionId ? sessions.find((session) => session.id === sessionId) ?? null : await createSession();
       if (!active || !isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
-      const run = await startAgentRun(project.id, nodeId, active.id, content, selectedFileIds, now());
+      const { run } = await startAgentRun(project.id, nodeId, active.id, content, selectedFileIds, node?.revision ?? 0, !markdownDirty, now());
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
       await loadMessages(project.id, nodeId, active.id);
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;

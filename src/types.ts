@@ -43,7 +43,7 @@ export type ContextEstimate = {
   status: "ready" | "warning" | "blocked";
 };
 export type ChatSession = { id: string; nodeId: NodeId; name: string; messageCount: number; createdAt: string; updatedAt: string; modelSelection?: ChatModelSelection | null };
-export type ChatMessage = { id: string; role: "user" | "assistant" | "system"; content: string; createdAt: string; attachments?: MessageAttachmentRef[]; modelExecution?: ModelExecution | null };
+export type ChatMessage = { id: string; role: "user" | "assistant" | "system"; content: string; createdAt: string; turnId?: string; attachments?: MessageAttachmentRef[]; modelExecution?: ModelExecution | null };
 export type FileExtractionStatus = "available" | "failed" | "unsupported";
 export type ProjectFile = {
   id: string;
@@ -115,10 +115,12 @@ export type Provider = {
   hasApiKey: boolean;
 };
 
+export type AgentRunKind = "conversation" | "delivery_retry" | "delivery_regeneration";
 export type AgentRun = {
   id: string;
   projectId: string;
   nodeId: NodeId;
+  kind: AgentRunKind;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   summary?: string;
   providerId?: string;
@@ -126,8 +128,60 @@ export type AgentRun = {
   reasoningEffort?: ReasoningEffort;
   fileIds?: string[];
 };
+export type AgentRunStartResult = { run: AgentRun; turn: ConversationTurn };
 export type AgentTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
 export type AgentFinishedEvent = { run: AgentRun };
+export type TurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type TurnActivityKind = "response" | "delivery_check" | "delivery_validate" | "delivery_save";
+export type TurnActivityStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+export type DeliveryStage = "response" | "decision" | "validation" | "save";
+export type TurnActivity = {
+  id: string;
+  kind: TurnActivityKind;
+  status: TurnActivityStatus;
+  label: string;
+  publicSummary?: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+export type DeliveryOutcome =
+  | { kind: "pending" }
+  | { kind: "unchanged" }
+  | { kind: "patch_applied"; previousRevision: number; revision: number; sectionTitles: string[] }
+  | { kind: "awaiting_manual_draft_resolution"; expectedRevision: number }
+  | { kind: "conflict"; expectedRevision: number; actualRevision: number }
+  | { kind: "failed"; stage: DeliveryStage; publicError: string }
+  | { kind: "cancelled" };
+export type ConversationTurn = {
+  id: string;
+  projectId: string;
+  nodeId: NodeId;
+  sessionId: string;
+  runId: string;
+  userMessageId: string;
+  assistantMessageId?: string;
+  status: TurnStatus;
+  activities: TurnActivity[];
+  reasoningSummary?: string;
+  deliveryOutcome: DeliveryOutcome;
+  startedAt: string;
+  finishedAt?: string;
+};
+export type ConversationTurnEvent = { turn: ConversationTurn };
+export type DeliveryGenerationStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "conflict";
+export type DeliveryGeneration = {
+  id: string;
+  runId: string;
+  projectId: string;
+  nodeId: NodeId;
+  status: DeliveryGenerationStatus;
+  expectedRevision: number;
+  error?: string;
+  startedAt: string;
+  finishedAt?: string;
+};
+export type DeliveryGenerationTokenEvent = { generationId: string; projectId: string; nodeId: NodeId; delta: string };
+export type DeliveryGenerationFinishedEvent = { generation: DeliveryGeneration; savedNode?: WorkflowNode };
 
 // Frontend-only form model for saving a provider. It carries a single default
 // model; `apiKey` is omitted to preserve the stored secret on edit.
