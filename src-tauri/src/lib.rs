@@ -712,6 +712,7 @@ impl PreparedSend {
             model: self.selection.model.clone(),
             reasoning_effort: self.selection.reasoning_effort,
             file_ids: self.file_ids.clone(),
+            kind: sion_agent::AgentRunKind::Conversation,
             created_at,
         }
     }
@@ -1639,17 +1640,20 @@ fn spawn_agent_run(
                 reasoning_effort: job.reasoning_effort,
             },
             job.cancellation.clone(),
-            move |delta| {
-                let _ = event_app.emit(
-                    "agent-token",
-                    AgentTokenEvent {
-                        run_id: event_run.id.clone(),
-                        project_id: event_run.project_id.clone(),
-                        node_id: event_run.node_id,
-                        session_id: event_session.clone(),
-                        delta: delta.to_string(),
-                    },
-                );
+            move |delta| match delta {
+                sion_agent::model_stream::StreamDelta::OutputText(text) => {
+                    let _ = event_app.emit(
+                        "agent-token",
+                        AgentTokenEvent {
+                            run_id: event_run.id.clone(),
+                            project_id: event_run.project_id.clone(),
+                            node_id: event_run.node_id,
+                            session_id: event_session.clone(),
+                            delta: text.to_string(),
+                        },
+                    );
+                }
+                sion_agent::model_stream::StreamDelta::ReasoningSummary(_) => {}
             },
         )
         .await;
@@ -1752,8 +1756,8 @@ fn completion_from_stream(
     outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
 ) -> Result<(bool, Option<String>), String> {
     match outcome {
-        Ok(sion_agent::model_stream::StreamOutcome::Completed(tokens)) => {
-            Ok((false, Some(tokens.join(""))))
+        Ok(sion_agent::model_stream::StreamOutcome::Completed(content)) => {
+            Ok((false, Some(content.output.join(""))))
         }
         Ok(sion_agent::model_stream::StreamOutcome::Cancelled(_)) => Ok((true, None)),
         Err(error) => Err(error),
@@ -1981,7 +1985,12 @@ mod tests {
     #[test]
     fn cancelled_streams_never_produce_a_persistable_assistant_message() {
         let completion = completion_from_stream(Ok(
-            sion_agent::model_stream::StreamOutcome::Cancelled(vec!["partial".to_string()]),
+            sion_agent::model_stream::StreamOutcome::Cancelled(
+                sion_agent::model_stream::StreamContent {
+                    output: vec!["partial".to_string()],
+                    reasoning_summary: Vec::new(),
+                },
+            ),
         ))
         .unwrap();
         assert_eq!(completion, (true, None));
@@ -2002,6 +2011,7 @@ mod tests {
             model: None,
             reasoning_effort: None,
             file_ids: Vec::new(),
+            kind: sion_agent::AgentRunKind::Conversation,
         };
         assert!(validate_run_project(&run, "project-a").is_ok());
         let error = validate_run_project(&run, "project-b").unwrap_err();

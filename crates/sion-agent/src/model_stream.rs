@@ -26,10 +26,22 @@ pub struct StreamRequest {
     pub reasoning_effort: ReasoningEffort,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamDelta {
+    OutputText(String),
+    ReasoningSummary(String),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamContent {
+    pub output: Vec<String>,
+    pub reasoning_summary: Vec<String>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum StreamOutcome {
-    Completed(Vec<String>),
-    Cancelled(Vec<String>),
+    Completed(StreamContent),
+    Cancelled(StreamContent),
 }
 
 pub async fn stream_text(
@@ -44,10 +56,10 @@ pub async fn stream_text_with<F>(
     client: &Client,
     request: &StreamRequest,
     cancellation: CancellationToken,
-    mut on_token: F,
+    mut on_delta: F,
 ) -> Result<StreamOutcome, String>
 where
-    F: FnMut(&str),
+    F: FnMut(&StreamDelta),
 {
     let body = request_body(request);
     let response = client
@@ -68,10 +80,16 @@ where
 
     let mut bytes = response.bytes_stream();
     let mut buffer = String::new();
-    let mut tokens = Vec::new();
+    let mut output = Vec::new();
+    let mut reasoning_summary = Vec::new();
     loop {
         let next = tokio::select! {
-            _ = cancellation.cancelled() => return Ok(StreamOutcome::Cancelled(tokens)),
+            _ = cancellation.cancelled() => {
+                return Ok(StreamOutcome::Cancelled(StreamContent {
+                    output,
+                    reasoning_summary,
+                }))
+            }
             next = bytes.next() => next,
         };
         let Some(chunk) = next else { break };
@@ -82,11 +100,17 @@ where
                 return Err(error);
             }
             if frame_completes_stream(request.protocol, &frame) {
-                return Ok(StreamOutcome::Completed(tokens));
+                return Ok(StreamOutcome::Completed(StreamContent {
+                    output,
+                    reasoning_summary,
+                }));
             }
-            if let Some(token) = token_from_frame(request.protocol, &frame)? {
-                on_token(&token);
-                tokens.push(token);
+            if let Some(delta) = frame_delta(request.protocol, &frame)? {
+                match &delta {
+                    StreamDelta::OutputText(text) => output.push(text.clone()),
+                    StreamDelta::ReasoningSummary(text) => reasoning_summary.push(text.clone()),
+                }
+                on_delta(&delta);
             }
         }
     }
@@ -215,26 +239,42 @@ fn take_frames(buffer: &mut String) -> Vec<SseFrame> {
     frames
 }
 
-fn token_from_frame(
+fn frame_delta(
     protocol: ProviderProtocol,
     frame: &SseFrame,
-) -> Result<Option<String>, String> {
+) -> Result<Option<StreamDelta>, String> {
     let body: serde_json::Value = serde_json::from_str(&frame.data)
         .map_err(|error| format!("invalid model SSE JSON: {error}"))?;
     match protocol {
-        ProviderProtocol::ChatCompletions => Ok(body
-            .pointer("/choices/0/delta/content")
-            .and_then(|value| value.as_str())
-            .map(ToString::to_string)),
-        ProviderProtocol::OpenaiResponses => {
-            if frame.event.as_deref() != Some("response.output_text.delta") {
+        ProviderProtocol::ChatCompletions => {
+            let Some(delta) = body.pointer("/choices/0/delta") else {
                 return Ok(None);
+            };
+            if let Some(content) = delta.get("content").and_then(|value| value.as_str())
+                && !content.is_empty()
+            {
+                return Ok(Some(StreamDelta::OutputText(content.to_string())));
             }
-            Ok(body
+            if let Some(summary) = delta.get("reasoning_summary").and_then(|value| value.as_str())
+                && !summary.is_empty()
+            {
+                return Ok(Some(StreamDelta::ReasoningSummary(summary.to_string())));
+            }
+            Ok(None)
+        }
+        ProviderProtocol::OpenaiResponses => match frame.event.as_deref() {
+            Some("response.output_text.delta") => Ok(body
                 .get("delta")
                 .and_then(|value| value.as_str())
-                .map(ToString::to_string))
-        }
+                .filter(|text| !text.is_empty())
+                .map(|text| StreamDelta::OutputText(text.to_string()))),
+            Some("response.reasoning_summary_text.delta") => Ok(body
+                .get("delta")
+                .and_then(|value| value.as_str())
+                .filter(|text| !text.is_empty())
+                .map(|text| StreamDelta::ReasoningSummary(text.to_string()))),
+            _ => Ok(None),
+        },
     }
 }
 
@@ -318,8 +358,32 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(outcome, StreamOutcome::Completed(vec!["Sion".to_string()]));
+            assert_eq!(
+                outcome,
+                StreamOutcome::Completed(StreamContent {
+                    output: vec!["Sion".to_string()],
+                    reasoning_summary: Vec::new()
+                })
+            );
         }
+    }
+
+    #[test]
+    fn parser_emits_summary_but_ignores_hidden_reasoning_content() {
+        let summary = frame_delta(
+            ProviderProtocol::ChatCompletions,
+            &SseFrame {
+                event: None,
+                data: r#"{"choices":[{"delta":{"reasoning_summary":"公开摘要","reasoning_content":"秘密思维链"}}]}"#
+                    .to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            summary,
+            Some(StreamDelta::ReasoningSummary("公开摘要".to_string()))
+        );
+        assert!(!format!("{summary:?}").contains("秘密思维链"));
     }
 
     #[tokio::test]
@@ -342,7 +406,10 @@ mod tests {
         cancellation.cancel();
         assert_eq!(
             task.await.unwrap().unwrap(),
-            StreamOutcome::Cancelled(vec!["Sion".to_string()])
+            StreamOutcome::Cancelled(StreamContent {
+                output: vec!["Sion".to_string()],
+                reasoning_summary: Vec::new()
+            })
         );
     }
 
@@ -415,7 +482,13 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(outcome, StreamOutcome::Completed(vec!["Sion".to_string()]));
+            assert_eq!(
+                outcome,
+                StreamOutcome::Completed(StreamContent {
+                    output: vec!["Sion".to_string()],
+                    reasoning_summary: Vec::new()
+                })
+            );
         }
 
         for (protocol, failed) in [

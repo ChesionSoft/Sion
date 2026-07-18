@@ -24,6 +24,15 @@ pub enum AgentRunStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunKind {
+    #[default]
+    Conversation,
+    DeliveryRetry,
+    DeliveryRegeneration,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRun {
@@ -43,6 +52,8 @@ pub struct AgentRun {
     pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub file_ids: Vec<String>,
+    #[serde(default)]
+    pub kind: AgentRunKind,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +64,7 @@ pub struct RunRequest {
     pub model: String,
     pub reasoning_effort: ReasoningEffort,
     pub file_ids: Vec<String>,
+    pub kind: AgentRunKind,
     pub created_at: String,
 }
 
@@ -114,6 +126,7 @@ impl RunScheduler {
             model: Some(request.model),
             reasoning_effort: Some(request.reasoning_effort),
             file_ids: request.file_ids,
+            kind: request.kind,
         };
         self.reserved_nodes.insert(key);
         self.queue.push_back(run.id.clone());
@@ -262,6 +275,7 @@ mod tests {
                 model: "model-a".to_string(),
                 reasoning_effort: ReasoningEffort::Medium,
                 file_ids: Vec::new(),
+                kind: AgentRunKind::Conversation,
                 created_at: "2026-07-15T00:00:00.000Z".to_string(),
             })
             .unwrap()
@@ -296,6 +310,7 @@ mod tests {
                 model: "model-a".to_string(),
                 reasoning_effort: ReasoningEffort::Medium,
                 file_ids: Vec::new(),
+                kind: AgentRunKind::Conversation,
                 created_at: "now".to_string()
             }),
             Err(SchedulerError::NodeBusy { .. })
@@ -312,6 +327,7 @@ mod tests {
                     model: "model-a".to_string(),
                     reasoning_effort: ReasoningEffort::Medium,
                     file_ids: Vec::new(),
+                    kind: AgentRunKind::Conversation,
                     created_at: "later".to_string()
                 })
                 .is_ok()
@@ -347,6 +363,7 @@ mod tests {
                 model: "model-a".into(),
                 reasoning_effort: ReasoningEffort::High,
                 file_ids: vec!["file-a".into()],
+                kind: AgentRunKind::Conversation,
                 created_at: "now".into(),
             })
             .unwrap();
@@ -367,6 +384,7 @@ mod tests {
                 model: "m".into(),
                 reasoning_effort: ReasoningEffort::Medium,
                 file_ids: vec![],
+                kind: AgentRunKind::Conversation,
                 created_at: "now".into(),
             })
             .unwrap();
@@ -375,5 +393,21 @@ mod tests {
             Err(SchedulerError::NodeBusy { .. })
         ));
         assert_eq!(scheduler.active_count(), 1);
+    }
+
+    #[test]
+    fn legacy_run_defaults_to_conversation_kind() {
+        let run: AgentRun = serde_json::from_value(serde_json::json!({
+            "id": "run-1",
+            "projectId": "project-1",
+            "nodeId": "goals",
+            "status": "completed",
+            "createdAt": "now",
+            "startedAt": "now",
+            "finishedAt": "now",
+            "summary": null
+        }))
+        .unwrap();
+        assert_eq!(run.kind, AgentRunKind::Conversation);
     }
 }
