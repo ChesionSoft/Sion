@@ -34,6 +34,7 @@ const API_VERSION: u16 = 1;
 struct AgentState {
     scheduler: Mutex<sion_agent::RunScheduler>,
     jobs: Mutex<HashMap<String, AgentJob>>,
+    regenerations: Mutex<HashMap<String, RegenerationJob>>,
     client: reqwest::Client,
 }
 
@@ -47,6 +48,7 @@ impl Default for AgentState {
         Self {
             scheduler: Mutex::new(sion_agent::RunScheduler::default()),
             jobs: Mutex::new(HashMap::new()),
+            regenerations: Mutex::new(HashMap::new()),
             client: reqwest::Client::new(),
         }
     }
@@ -66,6 +68,19 @@ struct AgentJob {
     turn_id: String,
     expected_revision: u64,
     delivery_write_allowed: bool,
+}
+
+#[derive(Clone)]
+struct RegenerationJob {
+    generation: DeliveryGeneration,
+    project_root: PathBuf,
+    node_id: WorkflowNodeId,
+    expected_revision: u64,
+    prompt: String,
+    model: provider_settings::ResolvedModel,
+    reasoning_effort: ReasoningEffort,
+    cancellation: CancellationToken,
+    candidate: Arc<Mutex<String>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -1141,6 +1156,156 @@ fn conversation_turn_retry_delivery(
     })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeliveryRegenerationStartRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    file_ids: Vec<String>,
+    expected_revision: u64,
+    now: String,
+}
+
+#[tauri::command]
+fn delivery_regeneration_start(
+    request: DeliveryRegenerationStartRequest,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AgentState>>,
+) -> Result<VersionedResponse<DeliveryGeneration>, ApiError> {
+    assert_api_version(&request.version)?;
+    let app_data_root = sion_root(&app)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(&project_root);
+    let session = store
+        .session(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let selection = match session.model_selection {
+        Some(selection) => selection,
+        None => provider_settings::default_selection(&app_data_root).map_err(ApiError::CheckFailed)?,
+    };
+    let resolved = provider_settings::resolve_model(
+        &app_data_root,
+        &selection.provider_id,
+        &selection.model,
+    )
+    .map_err(ApiError::CheckFailed)?;
+    let node = store
+        .node(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let messages = store
+        .messages(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let attachments = conversation_runtime::load_selected_files(&store, &request.file_ids)
+        .map_err(ApiError::CheckFailed)?;
+    let override_markdown = store
+        .agent_override(request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let rules = compose_effective_agent_rules(request.node_id, override_markdown);
+    let prompt = conversation_runtime::build_delivery_regeneration_prompt(
+        &node,
+        &messages,
+        &attachments,
+        &rules.effective_markdown,
+    );
+    let generation_id = uuid::Uuid::new_v4().to_string();
+    let run_request = sion_agent::RunRequest {
+        project_id: request.project_id.clone(),
+        node_id: request.node_id,
+        provider_id: selection.provider_id.clone(),
+        model: selection.model.clone(),
+        reasoning_effort: selection.reasoning_effort,
+        file_ids: request.file_ids.clone(),
+        kind: sion_agent::AgentRunKind::DeliveryRegeneration,
+        created_at: request.now.clone(),
+    };
+    let mut scheduler = state
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?;
+    scheduler
+        .ensure_available(&run_request.project_id, request.node_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let run = scheduler
+        .enqueue(run_request)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    store
+        .save_run(&run)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let generation = DeliveryGeneration {
+        id: generation_id.clone(),
+        run_id: run.id.clone(),
+        project_id: request.project_id.clone(),
+        node_id: request.node_id,
+        status: DeliveryGenerationStatus::Running,
+        expected_revision: request.expected_revision,
+        error: None,
+        started_at: request.now.clone(),
+        finished_at: None,
+    };
+    let regen_job = RegenerationJob {
+        generation: generation.clone(),
+        project_root,
+        node_id: request.node_id,
+        expected_revision: request.expected_revision,
+        prompt,
+        model: resolved,
+        reasoning_effort: selection.reasoning_effort,
+        cancellation: CancellationToken::new(),
+        candidate: Arc::new(Mutex::new(String::new())),
+    };
+    state
+        .regenerations
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("regeneration lock is poisoned".to_string()))?
+        .insert(generation_id, regen_job.clone());
+    let should_spawn = run.status == sion_agent::AgentRunStatus::Running;
+    drop(scheduler);
+    if should_spawn {
+        spawn_regeneration_run(app, state.inner().clone(), run, regen_job);
+    }
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: generation,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeliveryRegenerationCancelRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    generation_id: String,
+    #[allow(dead_code)]
+    now: String,
+}
+
+#[tauri::command]
+fn delivery_regeneration_cancel(
+    request: DeliveryRegenerationCancelRequest,
+    state: tauri::State<'_, Arc<AgentState>>,
+) -> Result<VersionedResponse<DeliveryGeneration>, ApiError> {
+    assert_api_version(&request.version)?;
+    let job = state
+        .regenerations
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("regeneration lock is poisoned".to_string()))?
+        .get(&request.generation_id)
+        .cloned()
+        .ok_or_else(|| ApiError::CheckFailed("重新生成任务未找到".to_string()))?;
+    if job.generation.project_id != request.project_id {
+        return Err(ApiError::CheckFailed("重新生成任务不属于该项目".to_string()));
+    }
+    job.cancellation.cancel();
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: job.generation.clone(),
+    })
+}
+
 fn validate_run_project(run: &sion_agent::AgentRun, project_id: &str) -> Result<(), ApiError> {
     if run.project_id == project_id {
         Ok(())
@@ -1887,6 +2052,80 @@ fn spawn_agent_run(
     });
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DeliveryGenerationStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeliveryGeneration {
+    id: String,
+    run_id: String,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    status: DeliveryGenerationStatus,
+    expected_revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    started_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finished_at: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DeliveryGenerationTokenEvent {
+    generation_id: String,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    delta: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DeliveryGenerationFinishedEvent {
+    generation: DeliveryGeneration,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    saved_node: Option<WorkflowNode>,
+}
+
+enum RegenerationCommitResult {
+    Saved(WorkflowNode),
+    Conflict { latest: WorkflowNode },
+    ValidationFailed { public_error: String },
+}
+
+fn commit_regenerated_markdown(
+    store: &ProjectStore,
+    node_id: WorkflowNodeId,
+    expected_revision: u64,
+    candidate: String,
+    now: String,
+) -> Result<RegenerationCommitResult, ApiError> {
+    match sion_core::validate_delivery_markdown(candidate, node_id) {
+        Err(_) => Ok(RegenerationCommitResult::ValidationFailed {
+            public_error: "交付稿结构校验失败".to_string(),
+        }),
+        Ok(markdown) => match store.save_node_if_revision(
+            node_id,
+            expected_revision,
+            markdown,
+            NodeStatus::Generated,
+            now,
+        ) {
+            Ok(SaveNodeResult::Saved(saved)) => Ok(RegenerationCommitResult::Saved(saved)),
+            Ok(SaveNodeResult::Conflict { latest }) => Ok(RegenerationCommitResult::Conflict { latest }),
+            Err(error) => Err(ApiError::CheckFailed(error.to_string())),
+        },
+    }
+}
+
 fn apply_delivery_outcome(
     store: &ProjectStore,
     delivery: AgentDelivery,
@@ -1935,6 +2174,145 @@ fn apply_delivery_outcome(
         }
         Err(_) => turn_runtime::safe_delivery_error(DeliveryStage::Validation, ""),
     }
+}
+
+fn spawn_regeneration_run(
+    app: tauri::AppHandle,
+    state: Arc<AgentState>,
+    run: sion_agent::AgentRun,
+    job: RegenerationJob,
+) {
+    tauri::async_runtime::spawn(async move {
+        let protocol = match job.model.protocol.as_str() {
+            "chat_completions" => sion_agent::model_stream::ProviderProtocol::ChatCompletions,
+            "openai_responses" => sion_agent::model_stream::ProviderProtocol::OpenaiResponses,
+            _ => {
+                complete_regeneration_run(
+                    &app,
+                    &state,
+                    &run,
+                    &job,
+                    Err("unsupported provider protocol".to_string()),
+                );
+                return;
+            }
+        };
+        let event_app = app.clone();
+        let event_generation_id = job.generation.id.clone();
+        let event_project_id = job.generation.project_id.clone();
+        let event_node_id = job.generation.node_id;
+        let candidate = job.candidate.clone();
+        let stream = sion_agent::model_stream::stream_text_with(
+            &state.client,
+            &sion_agent::model_stream::StreamRequest {
+                endpoint: job.model.endpoint.clone(),
+                api_key: job.model.api_key.clone(),
+                protocol,
+                model: job.model.model.clone(),
+                prompt: job.prompt.clone(),
+                reasoning_effort: job.reasoning_effort,
+            },
+            job.cancellation.clone(),
+            move |delta| match delta {
+                sion_agent::model_stream::StreamDelta::OutputText(text) => {
+                    candidate.lock().unwrap().push_str(text);
+                    let _ = event_app.emit(
+                        "delivery-generation-token",
+                        DeliveryGenerationTokenEvent {
+                            generation_id: event_generation_id.clone(),
+                            project_id: event_project_id.clone(),
+                            node_id: event_node_id,
+                            delta: text.to_string(),
+                        },
+                    );
+                }
+                sion_agent::model_stream::StreamDelta::ReasoningSummary(_) => {}
+            },
+        )
+        .await;
+        complete_regeneration_run(&app, &state, &run, &job, stream);
+    });
+}
+
+fn complete_regeneration_run(
+    app: &tauri::AppHandle,
+    state: &Arc<AgentState>,
+    run: &sion_agent::AgentRun,
+    job: &RegenerationJob,
+    outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
+) {
+    let finished_at = run.created_at.clone();
+    let store = ProjectStore::at(&job.project_root);
+    let candidate = job.candidate.lock().unwrap().clone();
+    let (status, saved_node, error) = match outcome {
+        Ok(sion_agent::model_stream::StreamOutcome::Completed(_)) => {
+            match commit_regenerated_markdown(
+                &store,
+                job.node_id,
+                job.expected_revision,
+                candidate,
+                finished_at.clone(),
+            ) {
+                Ok(RegenerationCommitResult::Saved(saved)) => {
+                    (DeliveryGenerationStatus::Completed, Some(saved), None)
+                }
+                Ok(RegenerationCommitResult::Conflict { latest }) => {
+                    (DeliveryGenerationStatus::Conflict, Some(latest), None)
+                }
+                Ok(RegenerationCommitResult::ValidationFailed { public_error }) => {
+                    (DeliveryGenerationStatus::Failed, None, Some(public_error))
+                }
+                Err(error) => (
+                    DeliveryGenerationStatus::Failed,
+                    None,
+                    Some(error.to_string()),
+                ),
+            }
+        }
+        Ok(sion_agent::model_stream::StreamOutcome::Cancelled(_)) => {
+            (DeliveryGenerationStatus::Cancelled, None, None)
+        }
+        Err(_) => (
+            DeliveryGenerationStatus::Failed,
+            None,
+            Some("模型回复失败".to_string()),
+        ),
+    };
+    {
+        let Ok(mut scheduler) = state.scheduler.lock() else {
+            return;
+        };
+        match status {
+            DeliveryGenerationStatus::Completed => {
+                let _ = scheduler.complete(&run.id, finished_at.clone(), None);
+            }
+            DeliveryGenerationStatus::Cancelled => {
+                let _ = scheduler.cancel(&run.id, finished_at.clone(), Some("已取消".into()));
+            }
+            _ => {
+                let _ = scheduler.fail(&run.id, finished_at.clone(), "重新生成失败".into());
+            }
+        }
+        if let Some(final_run) = scheduler.get(&run.id).cloned() {
+            let _ = store.save_run(&final_run);
+        }
+    }
+    if let Ok(mut regenerations) = state.regenerations.lock() {
+        regenerations.remove(&job.generation.id);
+    }
+    let generation = DeliveryGeneration {
+        status,
+        error,
+        finished_at: Some(finished_at),
+        ..job.generation.clone()
+    };
+    let _ = app.emit(
+        "delivery-generation-finished",
+        DeliveryGenerationFinishedEvent {
+            generation,
+            saved_node,
+        },
+    );
 }
 
 fn complete_agent_run(
@@ -2185,6 +2563,8 @@ pub fn run() {
             agent_run_cancel,
             conversation_turn_list,
             conversation_turn_retry_delivery,
+            delivery_regeneration_start,
+            delivery_regeneration_cancel,
             project_create,
             project_list,
             project_reveal,
@@ -2785,6 +3165,57 @@ mod tests {
         assert_eq!(
             fixture.store.node(WorkflowNodeId::Goals).unwrap().revision,
             latest_revision
+        );
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn invalid_or_stale_regeneration_never_replaces_the_node() {
+        let fixture = send_fixture(128_000);
+        let valid_markdown =
+            "# 需求背景与建设目标\n\n## 需求背景\n已有\n\n## 建设目标\n已有\n\n## 范围边界\n已有";
+        let before = fixture.store.node(WorkflowNodeId::Goals).unwrap();
+        let saved = fixture
+            .store
+            .save_node_if_revision(
+                WorkflowNodeId::Goals,
+                before.revision,
+                valid_markdown.to_string(),
+                NodeStatus::Draft,
+                "initial".into(),
+            )
+            .unwrap();
+        let SaveNodeResult::Saved(initial) = saved else {
+            unreachable!()
+        };
+        let newer = fixture
+            .store
+            .save_node_if_revision(
+                WorkflowNodeId::Goals,
+                initial.revision,
+                initial.markdown.clone(),
+                NodeStatus::Draft,
+                "newer".into(),
+            )
+            .unwrap();
+        let SaveNodeResult::Saved(newer_node) = newer else {
+            unreachable!()
+        };
+        let result = commit_regenerated_markdown(
+            &fixture.store,
+            WorkflowNodeId::Goals,
+            initial.revision,
+            initial.markdown.clone(),
+            "finished".into(),
+        )
+        .unwrap();
+        assert!(matches!(
+            result,
+            RegenerationCommitResult::Conflict { ref latest } if latest.revision == newer_node.revision
+        ));
+        assert_eq!(
+            fixture.store.node(WorkflowNodeId::Goals).unwrap().revision,
+            newer_node.revision
         );
         std::fs::remove_dir_all(fixture.root).unwrap();
     }
