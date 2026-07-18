@@ -46,6 +46,12 @@ test("workspace mutations are scoped and session loading clears stale rows first
   const loadProjectsEnd = source.indexOf("async function loadProviders", loadProjectsStart);
   const loadProjectsSource = source.slice(loadProjectsStart, loadProjectsEnd);
   assert.match(loadProjectsSource, /catch[\s\S]*setProjects\(\[\]\)/);
+
+  const loadTurnsStart = source.indexOf("async function loadTurns");
+  const loadTurnsEnd = source.indexOf("async function retryDelivery", loadTurnsStart);
+  const loadTurnsSource = source.slice(loadTurnsStart, loadTurnsEnd);
+  assert.match(loadTurnsSource, /const scope = requestScope\(projectId, nextNodeId, nextSessionId\)/);
+  assert.match(loadTurnsSource, /messageScopeRef\.current !== scope/);
 });
 
 test("leaving the file-pool context invalidates pending import presentation", async () => {
@@ -179,8 +185,11 @@ test("conversation turns own agent status and the app no longer notices run comp
   assert.match(app, /conversation-turn-updated/);
   assert.doesNotMatch(app, /Agent 回复已保存到本地会话/);
   assert.doesNotMatch(app, /Agent 正在本机流式生成回复/);
+  assert.doesNotMatch(app, /已请求取消 Agent Run/);
   assert.match(pane, /ConversationTurnCard/);
   assert.match(card, /<details/);
+  assert.match(card, /<details[\s\S]*?open(?:\s|>)/);
+  assert.doesNotMatch(card, /const open = turn\.status/);
   assert.match(card, /reasoningSummary/);
   assert.match(card, /重新判断交付稿/);
 });
@@ -198,6 +207,17 @@ test("delivery regenerates locally while DOCX stays in Export Center", async () 
   assert.match(app, /delivery-generation-token/);
   assert.match(shellCss, /\.notice-viewport\s*\{[^}]*top:\s*16px/s);
   assert.doesNotMatch(shellCss, /\.notice-viewport\s*\{[^}]*bottom:/s);
+  assert.match(delivery, /locked: boolean/);
+  assert.match(delivery, /disabled=\{!node \|\| locked\}/);
+  assert.match(delivery, /disabled=\{!dirty \|\| !node \|\| locked\}/);
+  assert.match(app, /const deliveryLocked = Boolean\(activeRunId\) \|\| regenerating/);
+  assert.match(app, /locked=\{deliveryLocked\}/);
+  assert.match(app, /if \(!project \|\| !node \|\| deliveryLocked\) return "cancelled"/);
+  assert.match(app, /isCurrentGenerationEvent\(activeGenerationIdRef\.current, payload\.generation\.id\)/);
+  assert.match(app, /sessionId, activeGenerationId, selectedFileIds/);
+  const generationStatus = await readFile("src/components/workspace/DeliveryGenerationStatus.tsx", "utf8");
+  assert.match(generationStatus, /generation\.status === "queued"/);
+  assert.match(generationStatus, /等待重新生成交付稿/);
 });
 
 test("obsolete manual assistant delivery flow is gone", async () => {

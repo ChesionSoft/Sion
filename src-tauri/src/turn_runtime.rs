@@ -9,7 +9,8 @@
 #![allow(dead_code)]
 
 use sion_core::{
-    AgentDelivery, DeliveryOutcome, DeliveryResolution, DeliveryStage, WorkflowNodeId,
+    AgentDelivery, DeliveryOutcome, DeliveryResolution, DeliveryStage, TurnActivity,
+    TurnActivityKind, TurnActivityStatus, WorkflowNodeId,
 };
 
 const DELIVERY_FENCE_START: &str = "```delivery";
@@ -25,7 +26,7 @@ pub struct DeliveryStreamProjector {
 #[derive(Debug, Clone)]
 pub struct ProjectedDelivery {
     pub visible_content: String,
-    pub delivery: AgentDelivery,
+    pub delivery: Result<AgentDelivery, String>,
     pub raw_response: String,
 }
 
@@ -54,19 +55,20 @@ impl DeliveryStreamProjector {
         &self.raw
     }
 
-    pub fn finish(self) -> Result<ProjectedDelivery, String> {
-        let parsed = sion_core::parse_agent_response(&self.raw)
-            .map_err(|error| error.to_string())?;
-        if self.emitted.trim_end() != parsed.visible_content {
-            return Err(
-                "projected visible content did not match the parsed delivery block".to_string(),
-            );
-        }
-        Ok(ProjectedDelivery {
-            visible_content: parsed.visible_content,
-            delivery: parsed.delivery,
+    pub fn finish(self) -> ProjectedDelivery {
+        let visible_content = self
+            .raw
+            .find(DELIVERY_FENCE_START)
+            .map(|position| self.raw[..position].trim_end().to_string())
+            .unwrap_or_else(|| self.raw.trim_end().to_string());
+        let delivery = sion_core::parse_agent_response(&self.raw)
+            .map(|parsed| parsed.delivery)
+            .map_err(|error| error.to_string());
+        ProjectedDelivery {
+            visible_content,
+            delivery,
             raw_response: self.raw,
-        })
+        }
     }
 
     /// Returns how many leading bytes of `buffer` are safe to emit now, holding
@@ -91,6 +93,234 @@ impl DeliveryStreamProjector {
         }
         bytes.len() - hold
     }
+}
+
+fn activity(
+    kind: TurnActivityKind,
+    status: TurnActivityStatus,
+    label: &str,
+    summary: Option<&str>,
+    now: &str,
+) -> TurnActivity {
+    TurnActivity {
+        id: kind.as_str().to_string(),
+        kind,
+        status,
+        label: label.to_string(),
+        public_summary: summary.map(ToString::to_string),
+        started_at: Some(now.to_string()),
+        finished_at: (!matches!(
+            status,
+            TurnActivityStatus::Pending | TurnActivityStatus::Running
+        ))
+        .then(|| now.to_string()),
+    }
+}
+
+pub fn running_activities(now: &str) -> Vec<TurnActivity> {
+    vec![
+        activity(
+            TurnActivityKind::Response,
+            TurnActivityStatus::Running,
+            "Agent 正在回复",
+            None,
+            now,
+        ),
+        activity(
+            TurnActivityKind::DeliveryCheck,
+            TurnActivityStatus::Pending,
+            "判断是否更新交付稿",
+            None,
+            now,
+        ),
+        activity(
+            TurnActivityKind::DeliveryValidate,
+            TurnActivityStatus::Pending,
+            "校验交付内容",
+            None,
+            now,
+        ),
+        activity(
+            TurnActivityKind::DeliverySave,
+            TurnActivityStatus::Pending,
+            "保存交付稿",
+            None,
+            now,
+        ),
+    ]
+}
+
+pub fn completed_activities(outcome: &DeliveryOutcome, now: &str) -> Vec<TurnActivity> {
+    let (check_status, validate_status, save_status, save_summary) = match outcome {
+        DeliveryOutcome::Unchanged => (
+            TurnActivityStatus::Completed,
+            TurnActivityStatus::Completed,
+            TurnActivityStatus::Skipped,
+            Some("无需更新交付稿"),
+        ),
+        DeliveryOutcome::PatchApplied { .. } => (
+            TurnActivityStatus::Completed,
+            TurnActivityStatus::Completed,
+            TurnActivityStatus::Completed,
+            Some("交付稿已保存"),
+        ),
+        DeliveryOutcome::AwaitingManualDraftResolution { .. } => (
+            TurnActivityStatus::Completed,
+            TurnActivityStatus::Completed,
+            TurnActivityStatus::Skipped,
+            Some("等待处理未保存草稿"),
+        ),
+        DeliveryOutcome::Conflict { .. } => (
+            TurnActivityStatus::Completed,
+            TurnActivityStatus::Completed,
+            TurnActivityStatus::Failed,
+            Some("交付稿版本已变化"),
+        ),
+        DeliveryOutcome::Failed {
+            stage,
+            public_error,
+        } => {
+            let check = if matches!(stage, DeliveryStage::Response) {
+                TurnActivityStatus::Skipped
+            } else {
+                TurnActivityStatus::Failed
+            };
+            let validate = if matches!(stage, DeliveryStage::Validation) {
+                TurnActivityStatus::Failed
+            } else {
+                TurnActivityStatus::Skipped
+            };
+            let save = if matches!(stage, DeliveryStage::Save) {
+                TurnActivityStatus::Failed
+            } else {
+                TurnActivityStatus::Skipped
+            };
+            return vec![
+                activity(
+                    TurnActivityKind::Response,
+                    if matches!(stage, DeliveryStage::Response) {
+                        TurnActivityStatus::Failed
+                    } else {
+                        TurnActivityStatus::Completed
+                    },
+                    "Agent 回复",
+                    None,
+                    now,
+                ),
+                activity(
+                    TurnActivityKind::DeliveryCheck,
+                    check,
+                    "判断是否更新交付稿",
+                    Some(public_error),
+                    now,
+                ),
+                activity(
+                    TurnActivityKind::DeliveryValidate,
+                    validate,
+                    "校验交付内容",
+                    None,
+                    now,
+                ),
+                activity(
+                    TurnActivityKind::DeliverySave,
+                    save,
+                    "保存交付稿",
+                    None,
+                    now,
+                ),
+            ];
+        }
+        DeliveryOutcome::Cancelled | DeliveryOutcome::Pending => (
+            TurnActivityStatus::Skipped,
+            TurnActivityStatus::Skipped,
+            TurnActivityStatus::Skipped,
+            Some("未保存未完成内容"),
+        ),
+    };
+    vec![
+        activity(
+            TurnActivityKind::Response,
+            TurnActivityStatus::Completed,
+            "Agent 回复完成",
+            None,
+            now,
+        ),
+        activity(
+            TurnActivityKind::DeliveryCheck,
+            check_status,
+            "判断是否更新交付稿",
+            None,
+            now,
+        ),
+        activity(
+            TurnActivityKind::DeliveryValidate,
+            validate_status,
+            "校验交付内容",
+            None,
+            now,
+        ),
+        activity(
+            TurnActivityKind::DeliverySave,
+            save_status,
+            "保存交付稿",
+            save_summary,
+            now,
+        ),
+    ]
+}
+
+pub fn public_reasoning_summary(chunks: &[String]) -> Option<String> {
+    let joined = chunks
+        .iter()
+        .map(|chunk| chunk.trim())
+        .filter(|chunk| !chunk.is_empty())
+        .collect::<Vec<_>>()
+        .join("");
+    if joined.is_empty() {
+        return None;
+    }
+    Some(joined.chars().take(2_000).collect())
+}
+
+pub fn prepare_retry_turn(
+    turn: &mut sion_core::ConversationTurn,
+    run_id: &str,
+    status: sion_core::TurnStatus,
+    now: &str,
+) {
+    turn.run_id = run_id.to_string();
+    turn.status = status;
+    turn.activities = if status == sion_core::TurnStatus::Running {
+        running_activities(now)
+    } else {
+        Vec::new()
+    };
+    turn.delivery_outcome = DeliveryOutcome::Pending;
+    turn.finished_at = None;
+}
+
+pub fn mark_turn_running(turn: &mut sion_core::ConversationTurn, now: &str) {
+    turn.status = sion_core::TurnStatus::Running;
+    turn.activities = running_activities(now);
+    turn.finished_at = None;
+}
+
+pub fn mark_turn_cancelled(turn: &mut sion_core::ConversationTurn, now: &str) {
+    turn.status = sion_core::TurnStatus::Cancelled;
+    turn.activities = completed_activities(&DeliveryOutcome::Cancelled, now);
+    turn.delivery_outcome = DeliveryOutcome::Cancelled;
+    turn.finished_at = Some(now.to_string());
+}
+
+pub fn mark_turn_start_failed(turn: &mut sion_core::ConversationTurn, now: &str) {
+    let outcome = DeliveryOutcome::Failed {
+        stage: DeliveryStage::Response,
+        public_error: "启动 Agent 任务失败".to_string(),
+    };
+    turn.status = sion_core::TurnStatus::Failed;
+    turn.activities = completed_activities(&outcome, now);
+    turn.delivery_outcome = outcome;
+    turn.finished_at = Some(now.to_string());
 }
 
 /// Maps an internal delivery failure to a fixed safe public summary. Provider
@@ -133,9 +363,10 @@ pub fn plan_delivery_completion(
     delivery_write_allowed: bool,
 ) -> Result<DeliveryCompletionPlan, sion_core::DeliveryError> {
     let section_titles: Vec<String> = match &delivery {
-        AgentDelivery::Patch { sections } => {
-            sections.iter().map(|section| section.title.clone()).collect()
-        }
+        AgentDelivery::Patch { sections } => sections
+            .iter()
+            .map(|section| section.title.clone())
+            .collect(),
         _ => Vec::new(),
     };
     let resolution = sion_core::resolve_agent_delivery(delivery, node_id, current_markdown)?;
@@ -164,9 +395,114 @@ mod tests {
         let mut projector = DeliveryStreamProjector::default();
         assert_eq!(projector.push("回答正文\n\n```del"), "回答正文\n\n");
         assert_eq!(projector.push("ivery\n{\"mode\":\"unchanged\"}\n```"), "");
-        let completed = projector.finish().unwrap();
+        let completed = projector.finish();
         assert_eq!(completed.visible_content, "回答正文");
+        assert_eq!(completed.delivery.unwrap(), AgentDelivery::Unchanged);
         assert!(completed.raw_response.contains(r#"{"mode":"unchanged"}"#));
+    }
+
+    #[test]
+    fn projector_preserves_visible_reply_when_delivery_decision_is_invalid() {
+        let mut projector = DeliveryStreamProjector::default();
+        projector.push("正文已经完成\n\n```delivery\n{invalid}\n```");
+        let completed = projector.finish();
+        assert_eq!(completed.visible_content, "正文已经完成");
+        assert!(completed.delivery.is_err());
+    }
+
+    #[test]
+    fn running_and_terminal_activities_expose_public_progress() {
+        let running = running_activities("started");
+        assert_eq!(running.len(), 4);
+        assert_eq!(running[0].status, sion_core::TurnActivityStatus::Running);
+        assert_eq!(running[1].status, sion_core::TurnActivityStatus::Pending);
+
+        let completed = completed_activities(&DeliveryOutcome::Unchanged, "finished");
+        assert_eq!(completed.len(), 4);
+        assert!(completed.iter().all(|activity| matches!(
+            activity.status,
+            sion_core::TurnActivityStatus::Completed | sion_core::TurnActivityStatus::Skipped
+        )));
+    }
+
+    #[test]
+    fn public_reasoning_summary_is_trimmed_and_bounded() {
+        let chunks = vec!["  公开摘要  ".to_string(), "x".repeat(3_000)];
+        let summary = public_reasoning_summary(&chunks).unwrap();
+        assert!(summary.starts_with("公开摘要"));
+        assert!(summary.chars().count() <= 2_000);
+        assert!(!summary.contains("  公开摘要  "));
+    }
+
+    #[test]
+    fn retry_turn_switches_to_the_new_run_and_pending_delivery() {
+        let mut original = sion_core::ConversationTurn {
+            id: "turn-1".into(),
+            project_id: "project-1".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: "session-1".into(),
+            run_id: "run-old".into(),
+            user_message_id: "user-1".into(),
+            assistant_message_id: Some("assistant-1".into()),
+            status: sion_core::TurnStatus::Completed,
+            activities: Vec::new(),
+            reasoning_summary: None,
+            delivery_outcome: DeliveryOutcome::AwaitingManualDraftResolution {
+                expected_revision: 7,
+            },
+            started_at: "started".into(),
+            finished_at: Some("finished".into()),
+        };
+        prepare_retry_turn(
+            &mut original,
+            "run-new",
+            sion_core::TurnStatus::Running,
+            "retry-started",
+        );
+        assert_eq!(original.run_id, "run-new");
+        assert_eq!(original.status, sion_core::TurnStatus::Running);
+        assert_eq!(original.delivery_outcome, DeliveryOutcome::Pending);
+        assert_eq!(
+            original.activities[0].status,
+            sion_core::TurnActivityStatus::Running
+        );
+        assert_eq!(
+            original.assistant_message_id.as_deref(),
+            Some("assistant-1")
+        );
+    }
+
+    #[test]
+    fn queued_turn_transitions_are_explicit_and_preserve_message_identity() {
+        let mut turn = sion_core::ConversationTurn {
+            id: "turn-1".into(),
+            project_id: "project-1".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            user_message_id: "user-1".into(),
+            assistant_message_id: Some("assistant-1".into()),
+            status: sion_core::TurnStatus::Queued,
+            activities: Vec::new(),
+            reasoning_summary: None,
+            delivery_outcome: DeliveryOutcome::Pending,
+            started_at: "started".into(),
+            finished_at: None,
+        };
+        mark_turn_running(&mut turn, "running");
+        assert_eq!(turn.status, sion_core::TurnStatus::Running);
+        assert_eq!(
+            turn.activities[0].status,
+            sion_core::TurnActivityStatus::Running
+        );
+        mark_turn_cancelled(&mut turn, "cancelled");
+        assert_eq!(turn.status, sion_core::TurnStatus::Cancelled);
+        assert_eq!(turn.delivery_outcome, DeliveryOutcome::Cancelled);
+        assert_eq!(turn.assistant_message_id.as_deref(), Some("assistant-1"));
+        assert_eq!(turn.finished_at.as_deref(), Some("cancelled"));
+        mark_turn_start_failed(&mut turn, "failed");
+        assert_eq!(turn.status, sion_core::TurnStatus::Failed);
+        assert_eq!(turn.finished_at.as_deref(), Some("failed"));
     }
 
     #[test]
@@ -220,7 +556,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             plan,
-            DeliveryCompletionPlan::AwaitingManualDraftResolution { expected_revision: 7 }
+            DeliveryCompletionPlan::AwaitingManualDraftResolution {
+                expected_revision: 7
+            }
         );
     }
 }

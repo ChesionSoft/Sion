@@ -50,6 +50,7 @@ import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, ty
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
 import { mergeTurnSnapshot } from "./conversation-turns.ts";
+import { isCurrentGenerationEvent, reconcileGeneratedNode, reconcileSavedNode } from "./delivery-generation.ts";
 
 const now = () => new Date().toISOString();
 
@@ -113,6 +114,9 @@ export function App() {
   const fileImportScopeRef = useRef<string | null>(null);
   const projectsRequestScopeRef = useRef<string | null>(null);
   const contextEstimateScopeRef = useRef<string | null>(null);
+  const nodeRef = useRef<WorkflowNode | null>(null);
+  const draftRef = useRef("");
+  const activeGenerationIdRef = useRef<string | null>(null);
 
   const projectUi = project ? ui.projects[project.id] : undefined;
   const activeNodeId = projectUi?.activeNodeId ?? null;
@@ -123,11 +127,14 @@ export function App() {
   const agentRulesDirty = agentRules !== null && isAgentRulesDirty(agentOverrideDraft, agentRules.customMarkdown);
   const dirty = markdownDirty || agentRulesDirty;
   const activeRunId = activeRunIdForContext(runs, project?.id ?? null, activeNodeId);
+  const deliveryLocked = Boolean(activeRunId) || regenerating;
   const dismissNotice = useCallback(() => setNoticeState(null), []);
   workspaceScopeRef.current = requestScope(project?.id, activeNodeId);
   messageScopeRef.current = requestScope(project?.id, activeNodeId, sessionId);
   projectScopeRef.current = project?.id ?? null;
   uiRef.current = ui;
+  nodeRef.current = node;
+  draftRef.current = draft;
 
   function setNotice(message: string) {
     const kind = /失败|错误|不可用/.test(message) ? "error" : /正在|请先|未|取消|检测|暂/.test(message) ? "warning" : "success";
@@ -218,6 +225,10 @@ export function App() {
   }, [project, activeNodeId, sessionId]);
 
   useEffect(() => {
+    activeGenerationIdRef.current = null;
+  }, [project?.id, nodeId, sessionId]);
+
+  useEffect(() => {
     const subscriptions = Promise.all([
       listen<AgentTokenEvent>("agent-token", (event) => {
         const token = event.payload;
@@ -239,27 +250,47 @@ export function App() {
         void loadRuns(project.id);
       }),
       listen<ConversationTurnEvent>("conversation-turn-updated", (event) => {
-        const turn = event.payload.turn;
+        const { turn, savedNode } = event.payload;
         if (!project || turn.projectId !== project.id || turn.nodeId !== nodeId) return;
+        if (savedNode) {
+          const reconciled = reconcileSavedNode(nodeRef.current, draftRef.current, savedNode);
+          setNode(reconciled.node);
+          setDraft(reconciled.draft);
+        }
         if (sessionId && turn.sessionId !== sessionId) return;
         setTurns((current) => mergeTurnSnapshot(current, turn));
       }),
       listen<DeliveryGenerationTokenEvent>("delivery-generation-token", (event) => {
         const payload = event.payload;
         if (!project || payload.projectId !== project.id || payload.nodeId !== nodeId) return;
-        setGeneration((current) => current && current.id === payload.generationId ? { ...current, status: "running" } : current);
-        setGenerationCandidate((current) => current + payload.delta);
+        if (activeGenerationIdRef.current !== payload.generationId) return;
+        setGenerationCandidate((candidate) => candidate + payload.delta);
+        setGeneration((current) => current?.id === payload.generationId
+          ? { ...current, status: "running" }
+          : current);
+      }),
+      listen<DeliveryGeneration>("delivery-generation-running", (event) => {
+        const next = event.payload;
+        if (!project || next.projectId !== project.id || next.nodeId !== nodeId) return;
+        if (activeGenerationIdRef.current !== next.id) return;
+        setGeneration(next);
       }),
       listen<DeliveryGenerationFinishedEvent>("delivery-generation-finished", (event) => {
         const payload = event.payload;
         if (!project || payload.generation.projectId !== project.id || payload.generation.nodeId !== nodeId) return;
+        if (!isCurrentGenerationEvent(activeGenerationIdRef.current, payload.generation.id)) return;
+        activeGenerationIdRef.current = null;
         setGeneration(payload.generation);
         setRegenerating(false);
         setGenerationCandidate("");
-        if (payload.savedNode) {
-          setNode(payload.savedNode);
-          setDraft(payload.savedNode.markdown);
-        }
+        const reconciled = reconcileGeneratedNode(
+          nodeRef.current,
+          draftRef.current,
+          payload.generation,
+          payload.savedNode,
+        );
+        setNode(reconciled.node);
+        setDraft(reconciled.draft);
       }),
     ]);
     return () => { void subscriptions.then((unlisten) => unlisten.forEach((stop) => stop())); };
@@ -269,11 +300,11 @@ export function App() {
     function saveWithShortcut(event: KeyboardEvent) {
       if (event.key.toLowerCase() !== "s" || (!event.metaKey && !event.ctrlKey)) return;
       event.preventDefault();
-      if (!event.repeat && project && node && markdownDirty && !saving) void saveNodeDraft();
+      if (!event.repeat && project && node && markdownDirty && !saving && !deliveryLocked) void saveNodeDraft();
     }
     window.addEventListener("keydown", saveWithShortcut);
     return () => window.removeEventListener("keydown", saveWithShortcut);
-  }, [project, node, draft, markdownDirty, saving]);
+  }, [project, node, draft, markdownDirty, saving, deliveryLocked]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -544,7 +575,8 @@ export function App() {
   }
 
   async function saveNodeDraft(): Promise<SaveResult> {
-    if (!project || !node || node.id !== nodeId) return "failed";
+    if (!project || !node || deliveryLocked) return "cancelled";
+    if (node.id !== nodeId) return "failed";
     setSaving(true);
     try {
       const result = await saveNode(project.id, nodeId, node.revision, draft, node.status, now());
@@ -627,10 +659,13 @@ export function App() {
   }
 
   async function loadTurns(projectId: string, nextNodeId: NodeId, nextSessionId: string) {
+    const scope = requestScope(projectId, nextNodeId, nextSessionId);
     try {
       const next = await listConversationTurns(projectId, nextNodeId, nextSessionId, now());
+      if (messageScopeRef.current !== scope) return;
       setTurns(next);
     } catch (error) {
+      if (messageScopeRef.current !== scope) return;
       setNotice(`加载会话轮次失败：${String(error)}`);
     }
   }
@@ -639,8 +674,9 @@ export function App() {
     if (!project || !sessionId) return;
     setSavingModelSelection(true);
     try {
-      await retryConversationTurnDelivery(project.id, nodeId, sessionId, turnId, now());
-      await loadTurns(project.id, nodeId, sessionId);
+      const result = await retryConversationTurnDelivery(project.id, nodeId, sessionId, turnId, now());
+      setRuns((current) => [result.run, ...current.filter((run) => run.id !== result.run.id)]);
+      setTurns((current) => mergeTurnSnapshot(current, result.turn));
     } catch (error) {
       setNotice(`重新判断交付稿失败：${String(error)}`);
     } finally {
@@ -650,12 +686,16 @@ export function App() {
 
   async function startRegeneration() {
     if (!project || !node || !sessionId) return;
+    const activeGenerationId = crypto.randomUUID();
+    activeGenerationIdRef.current = activeGenerationId;
     setRegenerating(true);
     setGenerationCandidate("");
     try {
-      const result = await startDeliveryRegeneration(project.id, nodeId, sessionId, selectedFileIds, node.revision, now());
-      setGeneration(result);
+      const result = await startDeliveryRegeneration(project.id, nodeId, sessionId, activeGenerationId, selectedFileIds, node.revision, now());
+      if (activeGenerationIdRef.current === activeGenerationId) setGeneration(result);
     } catch (error) {
+      if (activeGenerationIdRef.current !== activeGenerationId) return;
+      activeGenerationIdRef.current = null;
       setNotice(`重新生成交付稿失败：${String(error)}`);
       setRegenerating(false);
     }
@@ -765,7 +805,6 @@ export function App() {
     try {
       await cancelAgentRun(project.id, activeRunId, now());
       await loadRuns(project.id);
-      setNotice("已请求取消 Agent Run；未完成的流式片段不会写入本地会话");
     } catch (error) {
       setNotice(`取消 Agent Run 失败：${String(error)}`);
     }
@@ -1064,6 +1103,7 @@ export function App() {
       candidateLength={generationCandidate.length}
       canRegenerate={Boolean(node) && !markdownDirty && !Boolean(activeRunId) && Boolean(modelSelection) && Boolean(sessionId) && !regenerating}
       regenerating={regenerating}
+      locked={deliveryLocked}
       onView={(deliveryView) => setWorkspaceView((current) => ({ ...current, deliveryView }))}
       onMarkdown={setDraft}
       onSave={() => void saveNodeDraft()}

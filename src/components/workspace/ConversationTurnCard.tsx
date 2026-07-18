@@ -16,12 +16,11 @@ export function ConversationTurnCard({
   markdownDirty,
   onRetryDelivery,
 }: ConversationTurnCardProps) {
-  const open = turn.status === "running" || turn.status === "queued";
   const canRetry = turnCanRetryDelivery(turn, markdownDirty);
   return (
     <details
       className={`conversation-turn is-${turn.status} is-${turn.deliveryOutcome.kind}`}
-      open={open}
+      open
     >
       <summary className="conversation-turn-summary">{turnHeadline(turn)}</summary>
       <div className="conversation-turn-detail">

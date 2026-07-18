@@ -15,6 +15,7 @@ type DeliveryWorkspaceProps = {
   candidateLength: number;
   canRegenerate: boolean;
   regenerating: boolean;
+  locked: boolean;
   onView: (view: DeliveryView) => void;
   onMarkdown: (value: string) => void;
   onSave: () => void;
@@ -33,6 +34,7 @@ export function DeliveryWorkspace({
   candidateLength,
   canRegenerate,
   regenerating,
+  locked,
   onView,
   onMarkdown,
   onSave,
@@ -58,7 +60,7 @@ export function DeliveryWorkspace({
         ) : (
           <textarea
             aria-label={nodeTitle + " Markdown 源文件编辑器"}
-            disabled={!node}
+            disabled={!node || locked}
             spellCheck={false}
             value={markdown}
             onChange={(event) => onMarkdown(event.target.value)}
@@ -69,7 +71,7 @@ export function DeliveryWorkspace({
       <footer className="delivery-workspace-footer">
         <span>Markdown · {markdown.length.toLocaleString()} 字符{dirty ? " · 有未保存修改" : " · 已保存"}</span>
         <div>
-          <Button variant={dirty ? "primary" : "secondary"} disabled={!dirty || !node} loading={saving} onClick={onSave}>保存</Button>
+          <Button variant={dirty ? "primary" : "secondary"} disabled={!dirty || !node || locked} loading={saving} onClick={onSave}>保存</Button>
           <Button variant="secondary" disabled={!canRegenerate || regenerating} loading={regenerating} onClick={onRegenerate}>重新生成交付稿</Button>
         </div>
       </footer>

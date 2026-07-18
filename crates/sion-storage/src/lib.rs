@@ -506,7 +506,11 @@ impl ProjectStore {
         }
         let path = self.messages_path(node_id, session_id)?;
         let mut document = read_conversation_document(&path)?;
-        if !document.messages.iter().any(|item| item.id == user_message.id) {
+        if !document
+            .messages
+            .iter()
+            .any(|item| item.id == user_message.id)
+        {
             document.messages.push(user_message);
         }
         if !document.turns.iter().any(|item| item.id == turn.id) {
@@ -545,6 +549,45 @@ impl ProjectStore {
         Ok(())
     }
 
+    /// Atomically appends the completed assistant message and replaces the
+    /// corresponding turn snapshot in one conversation-document write.
+    pub fn complete_turn(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        assistant_message: ChatMessage,
+        turn: ConversationTurn,
+    ) -> Result<()> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        self.require_session(node_id, session_id)?;
+        if turn.node_id != node_id || turn.session_id != session_id {
+            return Err(StorageError::TurnPathMismatch {
+                turn_id: turn.id,
+                session_id: session_id.to_string(),
+            });
+        }
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        if !document
+            .messages
+            .iter()
+            .any(|item| item.id == assistant_message.id)
+        {
+            document.messages.push(assistant_message);
+        }
+        match document.turns.iter_mut().find(|item| item.id == turn.id) {
+            Some(existing) => *existing = turn.clone(),
+            None => document.turns.push(turn.clone()),
+        }
+        let updated_at = turn
+            .finished_at
+            .clone()
+            .unwrap_or_else(|| turn.started_at.clone());
+        self.persist_conversation(node_id, session_id, &document, updated_at)?;
+        Ok(())
+    }
+
     fn persist_conversation(
         &self,
         node_id: WorkflowNodeId,
@@ -559,12 +602,8 @@ impl ProjectStore {
         };
         atomic_write_json(&self.append_journal_path(node_id), &journal)?;
         write_conversation_document(&self.messages_path(node_id, session_id)?, document)?;
-        let session = self.update_session_metadata(
-            node_id,
-            session_id,
-            document.messages.len(),
-            updated_at,
-        )?;
+        let session =
+            self.update_session_metadata(node_id, session_id, document.messages.len(), updated_at)?;
         fs::remove_file(self.append_journal_path(node_id)).map_err(|source| StorageError::Io {
             path: self.append_journal_path(node_id),
             source,
@@ -819,6 +858,21 @@ impl ProjectStore {
         session_id: &str,
         now: String,
     ) -> Result<Vec<ConversationTurn>> {
+        self.recover_interrupted_turns_except(
+            node_id,
+            session_id,
+            now,
+            &std::collections::HashSet::new(),
+        )
+    }
+
+    pub fn recover_interrupted_turns_except(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        now: String,
+        live_run_ids: &std::collections::HashSet<String>,
+    ) -> Result<Vec<ConversationTurn>> {
         self.manifest()?;
         self.recover_pending_append(node_id)?;
         self.require_session(node_id, session_id)?;
@@ -826,7 +880,9 @@ impl ProjectStore {
         let mut document = read_conversation_document(&path)?;
         let mut changed = false;
         for turn in &mut document.turns {
-            if matches!(turn.status, TurnStatus::Queued | TurnStatus::Running) {
+            if matches!(turn.status, TurnStatus::Queued | TurnStatus::Running)
+                && !live_run_ids.contains(&turn.run_id)
+            {
                 for activity in &mut turn.activities {
                     if matches!(activity.status, TurnActivityStatus::Running) {
                         activity.status = TurnActivityStatus::Failed;
@@ -1583,7 +1639,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            store.messages(WorkflowNodeId::Goals, &session.id).unwrap().len(),
+            store
+                .messages(WorkflowNodeId::Goals, &session.id)
+                .unwrap()
+                .len(),
             1
         );
         assert!(
@@ -1613,6 +1672,7 @@ mod tests {
     fn recovery_marks_only_running_turns_interrupted() {
         let (_, store, session) = conversation_fixture();
         let running = turn_with_status(&session.id, "running", TurnStatus::Running);
+        let live = turn_with_status(&session.id, "live", TurnStatus::Running);
         let mut completed = turn_with_status(&session.id, "completed", TurnStatus::Completed);
         completed.finished_at = Some("2026-07-18T00:00:01Z".into());
         store
@@ -1621,11 +1681,15 @@ mod tests {
         store
             .save_turn(WorkflowNodeId::Goals, &session.id, completed)
             .unwrap();
+        store
+            .save_turn(WorkflowNodeId::Goals, &session.id, live)
+            .unwrap();
         let recovered = store
-            .recover_interrupted_turns(
+            .recover_interrupted_turns_except(
                 WorkflowNodeId::Goals,
                 &session.id,
                 "recovered-at".into(),
+                &std::collections::HashSet::from(["run-live".to_string()]),
             )
             .unwrap();
         assert_eq!(
@@ -1644,6 +1708,58 @@ mod tests {
                 .status,
             TurnStatus::Completed
         );
+        assert_eq!(
+            recovered
+                .iter()
+                .find(|turn| turn.id == "live")
+                .unwrap()
+                .status,
+            TurnStatus::Running
+        );
+    }
+
+    #[test]
+    fn completing_a_turn_persists_the_assistant_and_terminal_snapshot_together() {
+        let (root, store, session) = conversation_fixture();
+        let queued = turn_with_status(&session.id, "turn-1", TurnStatus::Queued);
+        store
+            .begin_turn(
+                WorkflowNodeId::Goals,
+                &session.id,
+                chat_message("user-turn-1", sion_core::ChatRole::User, "请补充目标"),
+                queued.clone(),
+                "started".into(),
+            )
+            .unwrap();
+        let mut completed = queued;
+        completed.status = TurnStatus::Completed;
+        completed.assistant_message_id = Some("assistant-turn-1".into());
+        completed.delivery_outcome = sion_core::DeliveryOutcome::Unchanged;
+        completed.finished_at = Some("finished".into());
+        store
+            .complete_turn(
+                WorkflowNodeId::Goals,
+                &session.id,
+                chat_message(
+                    "assistant-turn-1",
+                    sion_core::ChatRole::Assistant,
+                    "已补充目标",
+                ),
+                completed.clone(),
+            )
+            .unwrap();
+
+        let messages = store.messages(WorkflowNodeId::Goals, &session.id).unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.id == "assistant-turn-1")
+        );
+        assert_eq!(
+            store.turns(WorkflowNodeId::Goals, &session.id).unwrap(),
+            vec![completed]
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

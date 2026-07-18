@@ -14,7 +14,7 @@ export type NavigationIntent =
   | { kind: "close-node"; nodeId: NodeId }
   | { kind: "close-window" };
 
-export type SaveResult = "saved" | "conflict" | "failed";
+export type SaveResult = "saved" | "conflict" | "failed" | "cancelled";
 
 export function requestScope(...parts: Array<string | null | undefined>): string | null {
   return parts.every((part): part is string => typeof part === "string") ? JSON.stringify(parts) : null;

@@ -6,8 +6,8 @@ mod provider_settings;
 
 use serde::{Deserialize, Serialize};
 use sion_core::{
-    AgentDelivery, ChatMessage, ChatModelSelection, ChatRole, ChatSession, ConversationTurn,
-    ContextEstimate, DeliveryOutcome, DeliveryStage, NodeStatus, ProjectFile, ProjectManifest,
+    AgentDelivery, ChatMessage, ChatModelSelection, ChatRole, ChatSession, ContextEstimate,
+    ConversationTurn, DeliveryOutcome, DeliveryStage, NodeStatus, ProjectFile, ProjectManifest,
     ReasoningEffort, TurnStatus, WorkflowNode, WorkflowNodeId,
 };
 use sion_storage::{
@@ -110,6 +110,8 @@ struct AgentRunStartResult {
 #[serde(rename_all = "camelCase")]
 struct ConversationTurnEvent {
     turn: ConversationTurn,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    saved_node: Option<WorkflowNode>,
 }
 
 #[derive(Serialize)]
@@ -767,6 +769,7 @@ fn persist_prepared_send(
             promoted,
         });
     }
+    let running = run.status == sion_agent::AgentRunStatus::Running;
     let turn = ConversationTurn {
         id: turn_id,
         project_id: run.project_id.clone(),
@@ -775,8 +778,16 @@ fn persist_prepared_send(
         run_id: run.id.clone(),
         user_message_id: user_message.id.clone(),
         assistant_message_id: None,
-        status: TurnStatus::Queued,
-        activities: Vec::new(),
+        status: if running {
+            TurnStatus::Running
+        } else {
+            TurnStatus::Queued
+        },
+        activities: if running {
+            turn_runtime::running_activities(&now)
+        } else {
+            Vec::new()
+        },
         reasoning_summary: None,
         delivery_outcome: DeliveryOutcome::Pending,
         started_at: now.clone(),
@@ -975,17 +986,50 @@ struct ConversationTurnListRequest {
     now: String,
 }
 
+fn list_conversation_turns(
+    store: &ProjectStore,
+    scheduler: &sion_agent::RunScheduler,
+    node_id: WorkflowNodeId,
+    session_id: &str,
+    now: &str,
+) -> sion_storage::Result<Vec<ConversationTurn>> {
+    let turns = store.turns(node_id, session_id)?;
+    let live_run_ids = turns
+        .iter()
+        .filter_map(|turn| {
+            scheduler.get(&turn.run_id).and_then(|run| {
+                matches!(
+                    run.status,
+                    sion_agent::AgentRunStatus::Queued | sion_agent::AgentRunStatus::Running
+                )
+                .then(|| run.id.clone())
+            })
+        })
+        .collect();
+    store.recover_interrupted_turns_except(node_id, session_id, now.to_string(), &live_run_ids)
+}
+
 #[tauri::command]
 fn conversation_turn_list(
     request: ConversationTurnListRequest,
     app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AgentState>>,
 ) -> Result<VersionedResponse<ConversationTurnList>, ApiError> {
     assert_api_version(&request.version)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let store = ProjectStore::at(project_root);
-    let turns = store
-        .recover_interrupted_turns(request.node_id, &request.session_id, request.now)
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let scheduler = state
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?;
+    let turns = list_conversation_turns(
+        &store,
+        &scheduler,
+        request.node_id,
+        &request.session_id,
+        &request.now,
+    )
+    .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: ConversationTurnList { turns },
@@ -1009,7 +1053,7 @@ fn conversation_turn_retry_delivery(
     request: ConversationTurnRetryRequest,
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AgentState>>,
-) -> Result<VersionedResponse<sion_agent::AgentRun>, ApiError> {
+) -> Result<VersionedResponse<AgentRunStartResult>, ApiError> {
     assert_api_version(&request.version)?;
     let app_data_root = sion_root(&app)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
@@ -1017,8 +1061,8 @@ fn conversation_turn_retry_delivery(
     let turns = store
         .turns(request.node_id, &request.session_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let turn = turns
-        .iter()
+    let mut turn = turns
+        .into_iter()
         .find(|turn| turn.id == request.turn_id)
         .ok_or_else(|| ApiError::CheckFailed("会话轮次未找到".to_string()))?;
     if !matches!(
@@ -1046,15 +1090,13 @@ fn conversation_turn_retry_delivery(
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     let selection = match session.model_selection {
         Some(selection) => selection,
-        None => provider_settings::default_selection(&app_data_root)
-            .map_err(ApiError::CheckFailed)?,
+        None => {
+            provider_settings::default_selection(&app_data_root).map_err(ApiError::CheckFailed)?
+        }
     };
-    let resolved = provider_settings::resolve_model(
-        &app_data_root,
-        &selection.provider_id,
-        &selection.model,
-    )
-    .map_err(ApiError::CheckFailed)?;
+    let resolved =
+        provider_settings::resolve_model(&app_data_root, &selection.provider_id, &selection.model)
+            .map_err(ApiError::CheckFailed)?;
     let node = store
         .node(request.node_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
@@ -1091,6 +1133,27 @@ fn conversation_turn_retry_delivery(
     store
         .save_run(&run)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    let retry_status = if run.status == sion_agent::AgentRunStatus::Running {
+        TurnStatus::Running
+    } else {
+        TurnStatus::Queued
+    };
+    turn_runtime::prepare_retry_turn(&mut turn, &run.id, retry_status, &request.now);
+    if let Err(error) = store.save_turn(request.node_id, &request.session_id, turn.clone()) {
+        let promoted = scheduler
+            .cancel(
+                &run.id,
+                request.now.clone(),
+                Some("轮次状态保存失败".into()),
+            )
+            .unwrap_or_default();
+        if let Some(cancelled) = scheduler.get(&run.id) {
+            let _ = store.save_run(cancelled);
+        }
+        drop(scheduler);
+        spawn_promoted_runs(app, state.inner().clone(), promoted);
+        return Err(ApiError::CheckFailed(error.to_string()));
+    }
     let job = AgentJob {
         project_root,
         project_id: request.project_id.clone(),
@@ -1111,12 +1174,19 @@ fn conversation_turn_retry_delivery(
         .insert(run.id.clone(), job.clone());
     let should_spawn = run.status == sion_agent::AgentRunStatus::Running;
     drop(scheduler);
+    let _ = app.emit(
+        "conversation-turn-updated",
+        ConversationTurnEvent {
+            turn: turn.clone(),
+            saved_node: None,
+        },
+    );
     if should_spawn {
         spawn_agent_run(app, state.inner().clone(), run.clone(), job);
     }
     Ok(VersionedResponse {
         api_version: API_VERSION,
-        payload: run,
+        payload: AgentRunStartResult { run, turn },
     })
 }
 
@@ -1128,6 +1198,7 @@ struct DeliveryRegenerationStartRequest {
     project_id: String,
     node_id: WorkflowNodeId,
     session_id: String,
+    generation_id: String,
     file_ids: Vec<String>,
     expected_revision: u64,
     now: String,
@@ -1148,14 +1219,13 @@ fn delivery_regeneration_start(
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     let selection = match session.model_selection {
         Some(selection) => selection,
-        None => provider_settings::default_selection(&app_data_root).map_err(ApiError::CheckFailed)?,
+        None => {
+            provider_settings::default_selection(&app_data_root).map_err(ApiError::CheckFailed)?
+        }
     };
-    let resolved = provider_settings::resolve_model(
-        &app_data_root,
-        &selection.provider_id,
-        &selection.model,
-    )
-    .map_err(ApiError::CheckFailed)?;
+    let resolved =
+        provider_settings::resolve_model(&app_data_root, &selection.provider_id, &selection.model)
+            .map_err(ApiError::CheckFailed)?;
     let node = store
         .node(request.node_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
@@ -1174,7 +1244,7 @@ fn delivery_regeneration_start(
         &attachments,
         &rules.effective_markdown,
     );
-    let generation_id = uuid::Uuid::new_v4().to_string();
+    let generation_id = request.generation_id.clone();
     let run_request = sion_agent::RunRequest {
         project_id: request.project_id.clone(),
         node_id: request.node_id,
@@ -1203,7 +1273,7 @@ fn delivery_regeneration_start(
         run_id: run.id.clone(),
         project_id: request.project_id.clone(),
         node_id: request.node_id,
-        status: DeliveryGenerationStatus::Running,
+        status: generation_status_for_run(run.status.clone()),
         expected_revision: request.expected_revision,
         error: None,
         started_at: request.now.clone(),
@@ -1243,13 +1313,13 @@ struct DeliveryRegenerationCancelRequest {
     version: VersionedRequest,
     project_id: String,
     generation_id: String,
-    #[allow(dead_code)]
     now: String,
 }
 
 #[tauri::command]
 fn delivery_regeneration_cancel(
     request: DeliveryRegenerationCancelRequest,
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AgentState>>,
 ) -> Result<VersionedResponse<DeliveryGeneration>, ApiError> {
     assert_api_version(&request.version)?;
@@ -1261,7 +1331,54 @@ fn delivery_regeneration_cancel(
         .cloned()
         .ok_or_else(|| ApiError::CheckFailed("重新生成任务未找到".to_string()))?;
     if job.generation.project_id != request.project_id {
-        return Err(ApiError::CheckFailed("重新生成任务不属于该项目".to_string()));
+        return Err(ApiError::CheckFailed(
+            "重新生成任务不属于该项目".to_string(),
+        ));
+    }
+    let run = state
+        .scheduler
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
+        .get(&job.generation.run_id)
+        .cloned()
+        .ok_or_else(|| ApiError::CheckFailed("重新生成运行记录未找到".to_string()))?;
+    if run.status == sion_agent::AgentRunStatus::Queued {
+        let (cancelled, promoted) = {
+            let mut scheduler = state.scheduler.lock().map_err(|_| {
+                ApiError::CheckFailed("agent scheduler lock is poisoned".to_string())
+            })?;
+            let promoted = scheduler
+                .cancel(&run.id, request.now.clone(), Some("用户取消".into()))
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+            (scheduler.get(&run.id).cloned(), promoted)
+        };
+        if let Some(cancelled) = cancelled {
+            ProjectStore::at(&job.project_root)
+                .save_run(&cancelled)
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+        }
+        state
+            .regenerations
+            .lock()
+            .map_err(|_| ApiError::CheckFailed("regeneration lock is poisoned".to_string()))?
+            .remove(&request.generation_id);
+        let generation = DeliveryGeneration {
+            status: DeliveryGenerationStatus::Cancelled,
+            finished_at: Some(request.now),
+            ..job.generation
+        };
+        let _ = app.emit(
+            "delivery-generation-finished",
+            DeliveryGenerationFinishedEvent {
+                generation: generation.clone(),
+                saved_node: None,
+            },
+        );
+        spawn_promoted_runs(app, state.inner().clone(), promoted);
+        return Ok(VersionedResponse {
+            api_version: API_VERSION,
+            payload: generation,
+        });
     }
     job.cancellation.cancel();
     Ok(VersionedResponse {
@@ -1304,29 +1421,70 @@ fn agent_run_cancel(
         .get(&request.run_id)
         .cloned()
         .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
-    let status = run.status;
-    if status == sion_agent::AgentRunStatus::Queued {
-        let promoted = state
+    let cancelled_at = request.now.clone();
+    let store = ProjectStore::at(&project_root);
+    let queued_cancellation = {
+        let mut scheduler = state
             .scheduler
             .lock()
-            .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
-            .cancel(&request.run_id, request.now, Some("用户取消".to_string()))
-            .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-        let cancelled = state
-            .scheduler
-            .lock()
-            .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
+            .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?;
+        let current = scheduler
             .get(&request.run_id)
             .cloned()
             .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
-        ProjectStore::at(&project_root)
-            .save_run(&cancelled)
-            .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+        if current.status == sion_agent::AgentRunStatus::Queued {
+            let original_turn = store
+                .turns(job.node_id, &job.session_id)
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?
+                .into_iter()
+                .find(|turn| turn.id == job.turn_id)
+                .ok_or_else(|| ApiError::CheckFailed("会话轮次未找到".to_string()))?;
+            let mut cancelled_turn = original_turn.clone();
+            turn_runtime::mark_turn_cancelled(&mut cancelled_turn, &cancelled_at);
+            store
+                .save_turn(job.node_id, &job.session_id, cancelled_turn.clone())
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+            let durable_cancelled = sion_agent::AgentRun {
+                status: sion_agent::AgentRunStatus::Cancelled,
+                finished_at: Some(cancelled_at.clone()),
+                summary: Some("用户取消".to_string()),
+                ..current
+            };
+            if let Err(error) = store.save_run(&durable_cancelled) {
+                let _ = store.save_turn(job.node_id, &job.session_id, original_turn);
+                return Err(ApiError::CheckFailed(error.to_string()));
+            }
+            let promoted = scheduler
+                .cancel(&request.run_id, cancelled_at, Some("用户取消".to_string()))
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+            let cancelled = scheduler
+                .get(&request.run_id)
+                .cloned()
+                .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
+            Some((cancelled, promoted, cancelled_turn))
+        } else {
+            None
+        }
+    };
+    if let Some((cancelled, promoted, cancelled_turn)) = queued_cancellation {
+        let _ = app.emit(
+            "conversation-turn-updated",
+            ConversationTurnEvent {
+                turn: cancelled_turn,
+                saved_node: None,
+            },
+        );
         state
             .jobs
             .lock()
             .map_err(|_| ApiError::CheckFailed("agent job lock is poisoned".to_string()))?
             .remove(&request.run_id);
+        let _ = app.emit(
+            "agent-run-finished",
+            AgentFinishedEvent {
+                run: cancelled.clone(),
+            },
+        );
         spawn_promoted_runs(app, state.inner().clone(), promoted);
         return Ok(VersionedResponse {
             api_version: API_VERSION,
@@ -1898,11 +2056,39 @@ fn spawn_agent_run(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum DeliveryGenerationStatus {
+    Queued,
     Running,
     Completed,
     Failed,
     Cancelled,
     Conflict,
+}
+
+fn generation_status_for_run(status: sion_agent::AgentRunStatus) -> DeliveryGenerationStatus {
+    match status {
+        sion_agent::AgentRunStatus::Queued => DeliveryGenerationStatus::Queued,
+        sion_agent::AgentRunStatus::Running => DeliveryGenerationStatus::Running,
+        sion_agent::AgentRunStatus::Completed => DeliveryGenerationStatus::Completed,
+        sion_agent::AgentRunStatus::Failed => DeliveryGenerationStatus::Failed,
+        sion_agent::AgentRunStatus::Cancelled => DeliveryGenerationStatus::Cancelled,
+    }
+}
+
+fn finish_regeneration_scheduler(
+    scheduler: &mut sion_agent::RunScheduler,
+    run_id: &str,
+    finished_at: &str,
+    status: &DeliveryGenerationStatus,
+) -> (Option<sion_agent::AgentRun>, Vec<sion_agent::AgentRun>) {
+    let promoted = match status {
+        DeliveryGenerationStatus::Completed => scheduler.complete(run_id, finished_at.into(), None),
+        DeliveryGenerationStatus::Cancelled => {
+            scheduler.cancel(run_id, finished_at.into(), Some("已取消".into()))
+        }
+        _ => scheduler.fail(run_id, finished_at.into(), "重新生成失败".into()),
+    }
+    .unwrap_or_default();
+    (scheduler.get(run_id).cloned(), promoted)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1963,10 +2149,17 @@ fn commit_regenerated_markdown(
             now,
         ) {
             Ok(SaveNodeResult::Saved(saved)) => Ok(RegenerationCommitResult::Saved(saved)),
-            Ok(SaveNodeResult::Conflict { latest }) => Ok(RegenerationCommitResult::Conflict { latest }),
+            Ok(SaveNodeResult::Conflict { latest }) => {
+                Ok(RegenerationCommitResult::Conflict { latest })
+            }
             Err(error) => Err(ApiError::CheckFailed(error.to_string())),
         },
     }
+}
+
+struct DeliveryApplication {
+    outcome: DeliveryOutcome,
+    saved_node: Option<WorkflowNode>,
 }
 
 fn apply_delivery_outcome(
@@ -1975,9 +2168,12 @@ fn apply_delivery_outcome(
     node: Option<WorkflowNode>,
     job: &AgentJob,
     finished_at: &str,
-) -> DeliveryOutcome {
+) -> DeliveryApplication {
     let Some(node) = node else {
-        return turn_runtime::safe_delivery_error(DeliveryStage::Validation, "");
+        return DeliveryApplication {
+            outcome: turn_runtime::safe_delivery_error(DeliveryStage::Validation, ""),
+            saved_node: None,
+        };
     };
     match turn_runtime::plan_delivery_completion(
         delivery,
@@ -1986,7 +2182,10 @@ fn apply_delivery_outcome(
         job.expected_revision,
         job.delivery_write_allowed,
     ) {
-        Ok(turn_runtime::DeliveryCompletionPlan::Unchanged) => DeliveryOutcome::Unchanged,
+        Ok(turn_runtime::DeliveryCompletionPlan::Unchanged) => DeliveryApplication {
+            outcome: DeliveryOutcome::Unchanged,
+            saved_node: None,
+        },
         Ok(turn_runtime::DeliveryCompletionPlan::Apply {
             markdown,
             expected_revision,
@@ -2000,22 +2199,37 @@ fn apply_delivery_outcome(
                 NodeStatus::Generated,
                 finished_at.to_string(),
             ) {
-                Ok(SaveNodeResult::Saved(saved)) => DeliveryOutcome::PatchApplied {
-                    previous_revision,
-                    revision: saved.revision,
-                    section_titles,
+                Ok(SaveNodeResult::Saved(saved)) => DeliveryApplication {
+                    outcome: DeliveryOutcome::PatchApplied {
+                        previous_revision,
+                        revision: saved.revision,
+                        section_titles,
+                    },
+                    saved_node: Some(saved),
                 },
-                Ok(SaveNodeResult::Conflict { latest }) => DeliveryOutcome::Conflict {
-                    expected_revision,
-                    actual_revision: latest.revision,
+                Ok(SaveNodeResult::Conflict { latest }) => DeliveryApplication {
+                    outcome: DeliveryOutcome::Conflict {
+                        expected_revision,
+                        actual_revision: latest.revision,
+                    },
+                    saved_node: None,
                 },
-                Err(_) => turn_runtime::safe_delivery_error(DeliveryStage::Save, ""),
+                Err(_) => DeliveryApplication {
+                    outcome: turn_runtime::safe_delivery_error(DeliveryStage::Save, ""),
+                    saved_node: None,
+                },
             }
         }
-        Ok(turn_runtime::DeliveryCompletionPlan::AwaitingManualDraftResolution { expected_revision }) => {
-            DeliveryOutcome::AwaitingManualDraftResolution { expected_revision }
-        }
-        Err(_) => turn_runtime::safe_delivery_error(DeliveryStage::Validation, ""),
+        Ok(turn_runtime::DeliveryCompletionPlan::AwaitingManualDraftResolution {
+            expected_revision,
+        }) => DeliveryApplication {
+            outcome: DeliveryOutcome::AwaitingManualDraftResolution { expected_revision },
+            saved_node: None,
+        },
+        Err(_) => DeliveryApplication {
+            outcome: turn_runtime::safe_delivery_error(DeliveryStage::Validation, ""),
+            saved_node: None,
+        },
     }
 }
 
@@ -2100,15 +2314,16 @@ fn complete_regeneration_run(
                     (DeliveryGenerationStatus::Completed, Some(saved), None)
                 }
                 Ok(RegenerationCommitResult::Conflict { latest }) => {
-                    (DeliveryGenerationStatus::Conflict, Some(latest), None)
+                    let _actual_revision = latest.revision;
+                    (DeliveryGenerationStatus::Conflict, None, None)
                 }
                 Ok(RegenerationCommitResult::ValidationFailed { public_error }) => {
                     (DeliveryGenerationStatus::Failed, None, Some(public_error))
                 }
-                Err(error) => (
+                Err(_) => (
                     DeliveryGenerationStatus::Failed,
                     None,
-                    Some(error.to_string()),
+                    Some("保存重新生成的交付稿失败".to_string()),
                 ),
             }
         }
@@ -2121,25 +2336,17 @@ fn complete_regeneration_run(
             Some("模型回复失败".to_string()),
         ),
     };
-    {
+    let promoted = {
         let Ok(mut scheduler) = state.scheduler.lock() else {
             return;
         };
-        match status {
-            DeliveryGenerationStatus::Completed => {
-                let _ = scheduler.complete(&run.id, finished_at.clone(), None);
-            }
-            DeliveryGenerationStatus::Cancelled => {
-                let _ = scheduler.cancel(&run.id, finished_at.clone(), Some("已取消".into()));
-            }
-            _ => {
-                let _ = scheduler.fail(&run.id, finished_at.clone(), "重新生成失败".into());
-            }
-        }
-        if let Some(final_run) = scheduler.get(&run.id).cloned() {
+        let (final_run, promoted) =
+            finish_regeneration_scheduler(&mut scheduler, &run.id, &finished_at, &status);
+        if let Some(final_run) = final_run {
             let _ = store.save_run(&final_run);
         }
-    }
+        promoted
+    };
     if let Ok(mut regenerations) = state.regenerations.lock() {
         regenerations.remove(&job.generation.id);
     }
@@ -2156,6 +2363,7 @@ fn complete_regeneration_run(
             saved_node,
         },
     );
+    spawn_promoted_runs(app.clone(), state.clone(), promoted);
 }
 
 fn complete_agent_run(
@@ -2192,57 +2400,80 @@ fn complete_agent_run(
             return;
         };
         match outcome {
-            Ok(sion_agent::model_stream::StreamOutcome::Completed(_)) => {
-                match projector.finish() {
-                    Ok(projected) => {
-                        let assistant_message_id = match run.kind {
-                            sion_agent::AgentRunKind::DeliveryRetry => {
-                                base_turn.assistant_message_id.clone()
-                            }
-                            _ => {
-                                let assistant_id = uuid::Uuid::new_v4().to_string();
-                                let _ = store.append_message(
-                                    job.node_id,
-                                    &job.session_id,
-                                    ChatMessage {
-                                        id: assistant_id.clone(),
-                                        role: ChatRole::Assistant,
-                                        content: projected.visible_content,
-                                        reasoning_content: None,
-                                        sources: None,
-                                        created_at: finished_at.clone(),
-                                        turn_id: Some(job.turn_id.clone()),
-                                        reasoning_duration_ms: None,
-                                        usage: None,
-                                        attachments: Vec::new(),
-                                        model_execution: Some(sion_core::ModelExecution {
-                                            provider_id: run.provider_id.clone().expect("new runs freeze provider"),
-                                            model: run.model.clone().expect("new runs freeze model"),
-                                            reasoning_effort: run.reasoning_effort.expect("new runs freeze effort"),
-                                        }),
-                                    },
-                                    finished_at.clone(),
-                                );
-                                Some(assistant_id)
-                            }
-                        };
-                        let node = store.node(job.node_id).ok();
-                        let delivery_outcome = apply_delivery_outcome(
-                            &store,
-                            projected.delivery,
-                            node,
-                            job,
-                            &finished_at,
-                        );
-                        let turn = ConversationTurn {
-                            status: TurnStatus::Completed,
-                            delivery_outcome,
-                            assistant_message_id,
-                            finished_at: Some(finished_at.clone()),
-                            ..base_turn.clone()
-                        };
-                        let _ = store.save_turn(job.node_id, &job.session_id, turn.clone());
-                        let promoted = scheduler
+            Ok(sion_agent::model_stream::StreamOutcome::Completed(content)) => {
+                let projected = projector.finish();
+                let application = match projected.delivery {
+                    Ok(delivery) => apply_delivery_outcome(
+                        &store,
+                        delivery,
+                        store.node(job.node_id).ok(),
+                        job,
+                        &finished_at,
+                    ),
+                    Err(_) => DeliveryApplication {
+                        outcome: turn_runtime::safe_delivery_error(DeliveryStage::Decision, ""),
+                        saved_node: None,
+                    },
+                };
+                let delivery_outcome = application.outcome;
+                let assistant_message_id = match run.kind {
+                    sion_agent::AgentRunKind::DeliveryRetry => {
+                        base_turn.assistant_message_id.clone()
+                    }
+                    _ => Some(uuid::Uuid::new_v4().to_string()),
+                };
+                let turn = ConversationTurn {
+                    run_id: run.id.clone(),
+                    status: TurnStatus::Completed,
+                    activities: turn_runtime::completed_activities(&delivery_outcome, &finished_at),
+                    reasoning_summary: turn_runtime::public_reasoning_summary(
+                        &content.reasoning_summary,
+                    )
+                    .or(base_turn.reasoning_summary.clone()),
+                    delivery_outcome,
+                    assistant_message_id: assistant_message_id.clone(),
+                    finished_at: Some(finished_at.clone()),
+                    ..base_turn.clone()
+                };
+                let persisted = match run.kind {
+                    sion_agent::AgentRunKind::DeliveryRetry => {
+                        store.save_turn(job.node_id, &job.session_id, turn.clone())
+                    }
+                    _ => {
+                        let assistant_id = assistant_message_id
+                            .expect("conversation completion creates an assistant id");
+                        store.complete_turn(
+                            job.node_id,
+                            &job.session_id,
+                            ChatMessage {
+                                id: assistant_id,
+                                role: ChatRole::Assistant,
+                                content: projected.visible_content,
+                                reasoning_content: None,
+                                sources: None,
+                                created_at: finished_at.clone(),
+                                turn_id: Some(job.turn_id.clone()),
+                                reasoning_duration_ms: None,
+                                usage: None,
+                                attachments: Vec::new(),
+                                model_execution: Some(sion_core::ModelExecution {
+                                    provider_id: run
+                                        .provider_id
+                                        .clone()
+                                        .expect("new runs freeze provider"),
+                                    model: run.model.clone().expect("new runs freeze model"),
+                                    reasoning_effort: run
+                                        .reasoning_effort
+                                        .expect("new runs freeze effort"),
+                                }),
+                            },
+                            turn.clone(),
+                        )
+                    }
+                };
+                let (promoted, terminal_turn) = if persisted.is_ok() {
+                    (
+                        scheduler
                             .complete(
                                 &run.id,
                                 finished_at.clone(),
@@ -2251,75 +2482,79 @@ fn complete_agent_run(
                                     job.model.provider_id
                                 )),
                             )
-                            .unwrap_or_default();
-                        let final_run = scheduler.get(&run.id).cloned();
-                        (final_run, promoted, turn)
-                    }
-                    Err(_) => {
-                        let turn = ConversationTurn {
-                            status: TurnStatus::Failed,
-                            delivery_outcome: turn_runtime::safe_delivery_error(
-                                DeliveryStage::Decision,
-                                "",
-                            ),
-                            assistant_message_id: None,
-                            finished_at: Some(finished_at.clone()),
-                            ..base_turn.clone()
-                        };
-                        let _ = store.save_turn(job.node_id, &job.session_id, turn.clone());
-                        let promoted = scheduler
-                            .fail(
-                                &run.id,
-                                finished_at.clone(),
-                                "模型回复未包含有效交付决策".to_string(),
-                            )
-                            .unwrap_or_default();
-                        let final_run = scheduler.get(&run.id).cloned();
-                        (final_run, promoted, turn)
-                    }
-                }
+                            .unwrap_or_default(),
+                        Some((turn, application.saved_node)),
+                    )
+                } else {
+                    (
+                        scheduler
+                            .fail(&run.id, finished_at.clone(), "本地会话保存失败".to_string())
+                            .unwrap_or_default(),
+                        None,
+                    )
+                };
+                let final_run = scheduler.get(&run.id).cloned();
+                (final_run, promoted, terminal_turn)
             }
             Ok(sion_agent::model_stream::StreamOutcome::Cancelled(_)) => {
                 let turn = ConversationTurn {
                     status: TurnStatus::Cancelled,
+                    activities: turn_runtime::completed_activities(
+                        &DeliveryOutcome::Cancelled,
+                        &finished_at,
+                    ),
                     delivery_outcome: DeliveryOutcome::Cancelled,
                     assistant_message_id: None,
                     finished_at: Some(finished_at.clone()),
                     ..base_turn.clone()
                 };
-                let _ = store.save_turn(job.node_id, &job.session_id, turn.clone());
-                let promoted = scheduler
-                    .cancel(
-                        &run.id,
-                        finished_at.clone(),
-                        Some("已取消；部分输出不会自动写入节点".to_string()),
-                    )
-                    .unwrap_or_default();
+                let persisted = store
+                    .save_turn(job.node_id, &job.session_id, turn.clone())
+                    .is_ok();
+                let promoted = if persisted {
+                    scheduler
+                        .cancel(
+                            &run.id,
+                            finished_at.clone(),
+                            Some("已取消；部分输出不会自动写入节点".to_string()),
+                        )
+                        .unwrap_or_default()
+                } else {
+                    scheduler
+                        .fail(&run.id, finished_at.clone(), "本地会话保存失败".into())
+                        .unwrap_or_default()
+                };
                 let final_run = scheduler.get(&run.id).cloned();
-                (final_run, promoted, turn)
+                (final_run, promoted, persisted.then_some((turn, None)))
             }
             Err(error) => {
+                let delivery_outcome =
+                    turn_runtime::safe_delivery_error(DeliveryStage::Response, &error);
                 let turn = ConversationTurn {
                     status: TurnStatus::Failed,
-                    delivery_outcome: turn_runtime::safe_delivery_error(
-                        DeliveryStage::Response,
-                        &error,
-                    ),
+                    activities: turn_runtime::completed_activities(&delivery_outcome, &finished_at),
+                    delivery_outcome,
                     assistant_message_id: None,
                     finished_at: Some(finished_at.clone()),
                     ..base_turn
                 };
-                let _ = store.save_turn(job.node_id, &job.session_id, turn.clone());
+                let persisted = store
+                    .save_turn(job.node_id, &job.session_id, turn.clone())
+                    .is_ok();
                 let error = if error.contains("reasoning") {
                     format!("{error}请将推理强度改为“关闭”后重试。")
                 } else {
                     error
                 };
                 let promoted = scheduler
-                    .fail(&run.id, finished_at.clone(), format!("模型调用失败：{error}"))
+                    .fail(
+                        &run.id,
+                        finished_at.clone(),
+                        format!("模型调用失败：{error}"),
+                    )
                     .unwrap_or_default();
                 let final_run = scheduler.get(&run.id).cloned();
-                (final_run, promoted, turn)
+                (final_run, promoted, persisted.then_some((turn, None)))
             }
         }
     };
@@ -2330,12 +2565,12 @@ fn complete_agent_run(
     if let Ok(mut jobs) = state.jobs.lock() {
         jobs.remove(&run.id);
     }
-    let _ = app.emit(
-        "conversation-turn-updated",
-        ConversationTurnEvent {
-            turn: terminal_turn,
-        },
-    );
+    if let Some((turn, saved_node)) = terminal_turn {
+        let _ = app.emit(
+            "conversation-turn-updated",
+            ConversationTurnEvent { turn, saved_node },
+        );
+    }
     let _ = app.emit("agent-run-finished", AgentFinishedEvent { run: final_run });
     spawn_promoted_runs(app.clone(), state.clone(), promoted);
 }
@@ -2362,15 +2597,149 @@ fn spawn_promoted_runs(
     promoted: Vec<sion_agent::AgentRun>,
 ) {
     for run in promoted {
+        if run.kind == sion_agent::AgentRunKind::DeliveryRegeneration {
+            let job = state.regenerations.lock().ok().and_then(|mut jobs| {
+                let job = jobs
+                    .values_mut()
+                    .find(|job| job.generation.run_id == run.id)?;
+                job.generation.status = DeliveryGenerationStatus::Running;
+                Some(job.clone())
+            });
+            if let Some(job) = job {
+                if ProjectStore::at(&job.project_root).save_run(&run).is_ok() {
+                    let _ = app.emit("delivery-generation-running", job.generation.clone());
+                    spawn_regeneration_run(app.clone(), state.clone(), run, job);
+                } else {
+                    fail_promoted_run(&app, &state, &run, "保存晋升后的运行状态失败");
+                }
+            } else {
+                fail_promoted_run(&app, &state, &run, "晋升后的重新生成任务不存在");
+            }
+        } else {
+            let job = state
+                .jobs
+                .lock()
+                .ok()
+                .and_then(|jobs| jobs.get(&run.id).cloned());
+            if let Some(job) = job {
+                let store = ProjectStore::at(&job.project_root);
+                let promoted_turn = store
+                    .turns(job.node_id, &job.session_id)
+                    .ok()
+                    .and_then(|turns| turns.into_iter().find(|turn| turn.id == job.turn_id))
+                    .map(|mut turn| {
+                        turn_runtime::mark_turn_running(&mut turn, &run.created_at);
+                        turn
+                    });
+                let persisted = store.save_run(&run).is_ok()
+                    && promoted_turn.as_ref().is_some_and(|turn| {
+                        store
+                            .save_turn(job.node_id, &job.session_id, turn.clone())
+                            .is_ok()
+                    });
+                if !persisted {
+                    fail_promoted_run(&app, &state, &run, "保存晋升后的会话状态失败");
+                    continue;
+                }
+                if let Some(turn) = promoted_turn {
+                    let _ = app.emit(
+                        "conversation-turn-updated",
+                        ConversationTurnEvent {
+                            turn,
+                            saved_node: None,
+                        },
+                    );
+                }
+                spawn_agent_run(app.clone(), state.clone(), run, job);
+            } else {
+                fail_promoted_run(&app, &state, &run, "晋升后的会话任务不存在");
+            }
+        }
+    }
+}
+
+fn fail_promoted_run(
+    app: &tauri::AppHandle,
+    state: &Arc<AgentState>,
+    run: &sion_agent::AgentRun,
+    error: &str,
+) {
+    let (failed, promoted) = {
+        let Ok(mut scheduler) = state.scheduler.lock() else {
+            return;
+        };
+        let promoted = scheduler
+            .fail(&run.id, run.created_at.clone(), error.to_string())
+            .unwrap_or_default();
+        (scheduler.get(&run.id).cloned(), promoted)
+    };
+    let project_root = if run.kind == sion_agent::AgentRunKind::DeliveryRegeneration {
+        let job = state.regenerations.lock().ok().and_then(|mut jobs| {
+            let generation_id = jobs
+                .iter()
+                .find_map(|(id, job)| (job.generation.run_id == run.id).then(|| id.clone()))?;
+            jobs.remove(&generation_id)
+        });
+        if let Some(job) = job {
+            let project_root = job.project_root.clone();
+            let generation = DeliveryGeneration {
+                status: DeliveryGenerationStatus::Failed,
+                error: Some("启动重新生成任务失败".to_string()),
+                finished_at: Some(run.created_at.clone()),
+                ..job.generation
+            };
+            let _ = app.emit(
+                "delivery-generation-finished",
+                DeliveryGenerationFinishedEvent {
+                    generation,
+                    saved_node: None,
+                },
+            );
+            Some(project_root)
+        } else {
+            None
+        }
+    } else {
         let job = state
             .jobs
             .lock()
             .ok()
-            .and_then(|jobs| jobs.get(&run.id).cloned());
+            .and_then(|mut jobs| jobs.remove(&run.id));
         if let Some(job) = job {
-            spawn_agent_run(app.clone(), state.clone(), run, job);
+            let store = ProjectStore::at(&job.project_root);
+            let failed_turn = store
+                .turns(job.node_id, &job.session_id)
+                .ok()
+                .and_then(|turns| turns.into_iter().find(|turn| turn.id == job.turn_id))
+                .map(|mut turn| {
+                    turn_runtime::mark_turn_start_failed(&mut turn, &run.created_at);
+                    turn
+                });
+            if let Some(turn) = failed_turn
+                && store
+                    .save_turn(job.node_id, &job.session_id, turn.clone())
+                    .is_ok()
+            {
+                let _ = app.emit(
+                    "conversation-turn-updated",
+                    ConversationTurnEvent {
+                        turn,
+                        saved_node: None,
+                    },
+                );
+            }
+            Some(job.project_root)
+        } else {
+            None
         }
+    };
+    if let Some(failed) = failed {
+        if let Some(project_root) = project_root {
+            let _ = ProjectStore::at(project_root).save_run(&failed);
+        }
+        let _ = app.emit("agent-run-finished", AgentFinishedEvent { run: failed });
     }
+    spawn_promoted_runs(app.clone(), state.clone(), promoted);
 }
 
 fn resolve_registered_project_root(
@@ -2578,15 +2947,14 @@ mod tests {
 
     #[test]
     fn cancelled_streams_never_produce_a_persistable_assistant_message() {
-        let completion = completion_from_stream(Ok(
-            sion_agent::model_stream::StreamOutcome::Cancelled(
+        let completion =
+            completion_from_stream(Ok(sion_agent::model_stream::StreamOutcome::Cancelled(
                 sion_agent::model_stream::StreamContent {
                     output: vec!["partial".to_string()],
                     reasoning_summary: Vec::new(),
                 },
-            ),
-        ))
-        .unwrap();
+            )))
+            .unwrap();
         assert_eq!(completion, (true, None));
     }
 
@@ -2797,11 +3165,8 @@ mod tests {
         std::fs::remove_dir_all(&runs_path).unwrap();
         std::fs::write(&runs_path, "not a directory").unwrap();
         let mut scheduler = sion_agent::RunScheduler::default();
-        let run_request = prepared.run_request(
-            "project-1".into(),
-            WorkflowNodeId::Goals,
-            "now".into(),
-        );
+        let run_request =
+            prepared.run_request("project-1".into(), WorkflowNodeId::Goals, "now".into());
         let result = persist_prepared_send(
             &fixture.store,
             &mut scheduler,
@@ -2841,9 +3206,10 @@ mod tests {
         .unwrap();
         let run_request =
             prepared.run_request("project-1".into(), WorkflowNodeId::Goals, "now".into());
+        let mut scheduler = sion_agent::RunScheduler::default();
         let result = persist_prepared_send(
             &fixture.store,
-            &mut sion_agent::RunScheduler::default(),
+            &mut scheduler,
             run_request,
             WorkflowNodeId::Goals,
             &fixture.session.id,
@@ -2859,9 +3225,68 @@ mod tests {
             .turns(WorkflowNodeId::Goals, &fixture.session.id)
             .unwrap();
         assert_eq!(turns, vec![result.turn.clone()]);
+        assert_eq!(result.turn.status, TurnStatus::Running);
+        assert_eq!(result.turn.activities.len(), 4);
         assert_eq!(
-            fixture.store.messages(WorkflowNodeId::Goals, &fixture.session.id).unwrap()[0].turn_id,
+            result.turn.activities[0].status,
+            sion_core::TurnActivityStatus::Running
+        );
+        assert_eq!(
+            fixture
+                .store
+                .messages(WorkflowNodeId::Goals, &fixture.session.id)
+                .unwrap()[0]
+                .turn_id,
             Some(result.turn.id),
+        );
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn listing_turns_does_not_recover_a_live_turn() {
+        let fixture = send_fixture(128_000);
+        let prepared = prepare_agent_send(
+            &fixture.provider_root,
+            &fixture.store,
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            "补充目标",
+            &[],
+            "now",
+        )
+        .unwrap();
+        let mut scheduler = sion_agent::RunScheduler::default();
+        let result = persist_prepared_send(
+            &fixture.store,
+            &mut scheduler,
+            prepared.run_request("project-1".into(), WorkflowNodeId::Goals, "now".into()),
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            prepared.user_message,
+            prepared.turn_id,
+            0,
+            true,
+            "now".into(),
+        )
+        .unwrap();
+
+        let turns = list_conversation_turns(
+            &fixture.store,
+            &scheduler,
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            "listed",
+        )
+        .unwrap();
+        assert_eq!(turns[0].id, result.turn.id);
+        assert_eq!(turns[0].status, TurnStatus::Running);
+        assert_eq!(
+            fixture
+                .store
+                .turns(WorkflowNodeId::Goals, &fixture.session.id)
+                .unwrap()[0]
+                .status,
+            TurnStatus::Running
         );
         std::fs::remove_dir_all(fixture.root).unwrap();
     }
@@ -2882,17 +3307,19 @@ mod tests {
         .unwrap();
         assert_eq!(request.expected_revision, 7);
         assert!(request.delivery_write_allowed);
-        assert!(serde_json::from_value::<AgentRunStartRequest>(serde_json::json!({
-            "apiVersion": 1,
-            "projectId": "p",
-            "nodeId": "goals",
-            "sessionId": "s",
-            "message": "m",
-            "fileIds": [],
-            "deliveryWriteAllowed": true,
-            "now": "now"
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<AgentRunStartRequest>(serde_json::json!({
+                "apiVersion": 1,
+                "projectId": "p",
+                "nodeId": "goals",
+                "sessionId": "s",
+                "message": "m",
+                "fileIds": [],
+                "deliveryWriteAllowed": true,
+                "now": "now"
+            }))
+            .is_err()
+        );
     }
 
     fn test_delivery_job(
@@ -2939,14 +3366,15 @@ mod tests {
         let base_revision = saved.revision;
 
         let job = test_delivery_job(&fixture, base_revision, true);
-        let outcome = apply_delivery_outcome(
+        let application = apply_delivery_outcome(
             &fixture.store,
             AgentDelivery::Unchanged,
             fixture.store.node(WorkflowNodeId::Goals).ok(),
             &job,
             "now",
         );
-        assert_eq!(outcome, DeliveryOutcome::Unchanged);
+        assert_eq!(application.outcome, DeliveryOutcome::Unchanged);
+        assert!(application.saved_node.is_none());
         assert_eq!(
             fixture.store.node(WorkflowNodeId::Goals).unwrap().revision,
             base_revision
@@ -2958,7 +3386,7 @@ mod tests {
                 content: "补充后的目标".into(),
             }],
         };
-        let outcome = apply_delivery_outcome(
+        let application = apply_delivery_outcome(
             &fixture.store,
             patch,
             fixture.store.node(WorkflowNodeId::Goals).ok(),
@@ -2966,9 +3394,13 @@ mod tests {
             "now",
         );
         assert!(matches!(
-            outcome,
+            application.outcome,
             DeliveryOutcome::PatchApplied { revision, .. } if revision == base_revision + 1
         ));
+        assert_eq!(
+            application.saved_node.as_ref().map(|node| node.revision),
+            Some(base_revision + 1)
+        );
 
         let latest_revision = fixture.store.node(WorkflowNodeId::Goals).unwrap().revision;
         let stale_job = test_delivery_job(&fixture, base_revision, true);
@@ -2978,7 +3410,7 @@ mod tests {
                 content: "再次补充".into(),
             }],
         };
-        let outcome = apply_delivery_outcome(
+        let application = apply_delivery_outcome(
             &fixture.store,
             patch2,
             fixture.store.node(WorkflowNodeId::Goals).ok(),
@@ -2986,10 +3418,11 @@ mod tests {
             "now",
         );
         assert!(matches!(
-            outcome,
+            application.outcome,
             DeliveryOutcome::Conflict { expected_revision, actual_revision }
                 if expected_revision == base_revision && actual_revision == latest_revision
         ));
+        assert!(application.saved_node.is_none());
         assert_eq!(
             fixture.store.node(WorkflowNodeId::Goals).unwrap().revision,
             latest_revision
@@ -3046,5 +3479,57 @@ mod tests {
             newer_node.revision
         );
         std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn regeneration_status_tracks_the_scheduler_run_status() {
+        assert!(matches!(
+            generation_status_for_run(sion_agent::AgentRunStatus::Queued),
+            DeliveryGenerationStatus::Queued
+        ));
+        assert!(matches!(
+            generation_status_for_run(sion_agent::AgentRunStatus::Running),
+            DeliveryGenerationStatus::Running
+        ));
+    }
+
+    #[test]
+    fn finishing_regeneration_returns_the_run_promoted_by_the_scheduler() {
+        let mut scheduler = sion_agent::RunScheduler::new(1);
+        let regeneration = scheduler
+            .enqueue(sion_agent::RunRequest {
+                project_id: "project-1".into(),
+                node_id: WorkflowNodeId::Goals,
+                provider_id: "provider".into(),
+                model: "model".into(),
+                reasoning_effort: ReasoningEffort::Medium,
+                file_ids: Vec::new(),
+                kind: sion_agent::AgentRunKind::DeliveryRegeneration,
+                created_at: "started".into(),
+            })
+            .unwrap();
+        let queued = scheduler
+            .enqueue(sion_agent::RunRequest {
+                project_id: "project-1".into(),
+                node_id: WorkflowNodeId::BasicInfo,
+                provider_id: "provider".into(),
+                model: "model".into(),
+                reasoning_effort: ReasoningEffort::Medium,
+                file_ids: Vec::new(),
+                kind: sion_agent::AgentRunKind::Conversation,
+                created_at: "queued".into(),
+            })
+            .unwrap();
+        assert_eq!(queued.status, sion_agent::AgentRunStatus::Queued);
+
+        let (_, promoted) = finish_regeneration_scheduler(
+            &mut scheduler,
+            &regeneration.id,
+            "finished",
+            &DeliveryGenerationStatus::Completed,
+        );
+        assert_eq!(promoted.len(), 1);
+        assert_eq!(promoted[0].id, queued.id);
+        assert_eq!(promoted[0].status, sion_agent::AgentRunStatus::Running);
     }
 }

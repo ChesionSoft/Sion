@@ -255,7 +255,9 @@ fn frame_delta(
             {
                 return Ok(Some(StreamDelta::OutputText(content.to_string())));
             }
-            if let Some(summary) = delta.get("reasoning_summary").and_then(|value| value.as_str())
+            if let Some(summary) = delta
+                .get("reasoning_summary")
+                .and_then(|value| value.as_str())
                 && !summary.is_empty()
             {
                 return Ok(Some(StreamDelta::ReasoningSummary(summary.to_string())));

@@ -165,7 +165,7 @@ export type ConversationTurn = {
   startedAt: string;
   finishedAt?: string;
 };
-export type ConversationTurnEvent = { turn: ConversationTurn };
+export type ConversationTurnEvent = { turn: ConversationTurn; savedNode?: WorkflowNode };
 export type DeliveryGenerationStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "conflict";
 export type DeliveryGeneration = {
   id: string;

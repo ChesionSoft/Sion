@@ -234,7 +234,7 @@ export const retryConversationTurnDelivery = (
   turnId: string,
   now: string,
 ) =>
-  invokePayload<AgentRun>("conversation_turn_retry_delivery", {
+  invokePayload<AgentRunStartResult>("conversation_turn_retry_delivery", {
     projectId,
     nodeId,
     sessionId,
@@ -246,6 +246,7 @@ export const startDeliveryRegeneration = (
   projectId: string,
   nodeId: NodeId,
   sessionId: string,
+  generationId: string,
   fileIds: string[],
   expectedRevision: number,
   now: string,
@@ -254,6 +255,7 @@ export const startDeliveryRegeneration = (
     projectId,
     nodeId,
     sessionId,
+    generationId,
     fileIds,
     expectedRevision,
     now,

@@ -624,8 +624,10 @@ pub fn resolve_agent_delivery(
         AgentDelivery::Rewrite { markdown } => {
             validate_delivery_markdown(markdown, node).map(DeliveryResolution::Markdown)
         }
-        AgentDelivery::Patch { sections } => apply_delivery_patch(current_markdown, node, &sections)
-            .map(DeliveryResolution::Markdown),
+        AgentDelivery::Patch { sections } => {
+            apply_delivery_patch(current_markdown, node, &sections)
+                .map(DeliveryResolution::Markdown)
+        }
     }
 }
 
@@ -638,7 +640,9 @@ pub fn apply_agent_delivery(
     match delivery {
         AgentDelivery::Unchanged => Ok(current_markdown.to_string()),
         AgentDelivery::Rewrite { markdown } => validate_delivery_markdown(markdown, node),
-        AgentDelivery::Patch { sections } => apply_delivery_patch(current_markdown, node, &sections),
+        AgentDelivery::Patch { sections } => {
+            apply_delivery_patch(current_markdown, node, &sections)
+        }
     }
 }
 
