@@ -184,3 +184,18 @@ test("conversation turns own agent status and the app no longer notices run comp
   assert.match(card, /reasoningSummary/);
   assert.match(card, /重新判断交付稿/);
 });
+
+test("delivery regenerates locally while DOCX stays in Export Center", async () => {
+  const [delivery, exportCenter, app, shellCss] = await Promise.all([
+    readFile("src/components/workspace/DeliveryWorkspace.tsx", "utf8"),
+    readFile("src/components/app/ExportCenter.tsx", "utf8"),
+    readFile("src/App.tsx", "utf8"),
+    readFile("src/styles/shell.css", "utf8"),
+  ]);
+  assert.match(delivery, /重新生成交付稿/);
+  assert.doesNotMatch(delivery, /导出 DOCX/);
+  assert.match(exportCenter, /导出 DOCX/);
+  assert.match(app, /delivery-generation-token/);
+  assert.match(shellCss, /\.notice-viewport\s*\{[^}]*top:\s*16px/s);
+  assert.doesNotMatch(shellCss, /\.notice-viewport\s*\{[^}]*bottom:/s);
+});

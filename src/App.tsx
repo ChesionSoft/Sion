@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelAgentRun,
+  cancelDeliveryRegeneration,
   clearProjectsDirectory,
   createProject,
   createSession as createSessionApi,
@@ -30,6 +31,7 @@ import {
   saveUiSettings,
   setDefaultProvider,
   startAgentRun,
+  startDeliveryRegeneration,
   updateSessionModel,
 } from "./api";
 import { AppShell } from "./components/app/AppShell";
@@ -44,7 +46,7 @@ import { DeliveryWorkspace } from "./components/workspace/DeliveryWorkspace";
 import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
 import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
-import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ContextEstimate, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentRun, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ContextEstimate, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
 import { mergeTurnSnapshot } from "./conversation-turns.ts";
@@ -89,6 +91,9 @@ export function App() {
   const [exportProjectId, setExportProjectId] = useState<string | null>(null);
   const [lastExportResult, setLastExportResult] = useState<ExportResult | null>(null);
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
+  const [generation, setGeneration] = useState<DeliveryGeneration | null>(null);
+  const [generationCandidate, setGenerationCandidate] = useState<string>("");
+  const [regenerating, setRegenerating] = useState(false);
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<NavigationIntent | null>(null);
   const [conflictLatest, setConflictLatest] = useState<WorkflowNode | null>(null);
@@ -187,6 +192,9 @@ export function App() {
       setSessionId(null);
       setMessages([]);
       setTurns([]);
+      setGeneration(null);
+      setGenerationCandidate("");
+      setRegenerating(false);
     }
   }, [project, activeNodeId]);
 
@@ -235,6 +243,23 @@ export function App() {
         if (!project || turn.projectId !== project.id || turn.nodeId !== nodeId) return;
         if (sessionId && turn.sessionId !== sessionId) return;
         setTurns((current) => mergeTurnSnapshot(current, turn));
+      }),
+      listen<DeliveryGenerationTokenEvent>("delivery-generation-token", (event) => {
+        const payload = event.payload;
+        if (!project || payload.projectId !== project.id || payload.nodeId !== nodeId) return;
+        setGeneration((current) => current && current.id === payload.generationId ? { ...current, status: "running" } : current);
+        setGenerationCandidate((current) => current + payload.delta);
+      }),
+      listen<DeliveryGenerationFinishedEvent>("delivery-generation-finished", (event) => {
+        const payload = event.payload;
+        if (!project || payload.generation.projectId !== project.id || payload.generation.nodeId !== nodeId) return;
+        setGeneration(payload.generation);
+        setRegenerating(false);
+        setGenerationCandidate("");
+        if (payload.savedNode) {
+          setNode(payload.savedNode);
+          setDraft(payload.savedNode.markdown);
+        }
       }),
     ]);
     return () => { void subscriptions.then((unlisten) => unlisten.forEach((stop) => stop())); };
@@ -448,6 +473,9 @@ export function App() {
       setSessionsError(null);
     }
     setTurns([]);
+    setGeneration(null);
+    setGenerationCandidate("");
+    setRegenerating(false);
     setWorkspaceView(initialWorkspaceView());
     const existing = ui.projects[item.id];
     const nextProjectUi = existing?.initialized ? existing : initialProjectUi();
@@ -548,6 +576,9 @@ export function App() {
     setSessionId(null);
     setMessages([]);
     setTurns([]);
+    setGeneration(null);
+    setGenerationCandidate("");
+    setRegenerating(false);
     try {
       const loaded = await listSessions(projectId, nextNodeId);
       if (workspaceScopeRef.current !== scope) return;
@@ -614,6 +645,28 @@ export function App() {
       setNotice(`重新判断交付稿失败：${String(error)}`);
     } finally {
       setSavingModelSelection(false);
+    }
+  }
+
+  async function startRegeneration() {
+    if (!project || !node || !sessionId) return;
+    setRegenerating(true);
+    setGenerationCandidate("");
+    try {
+      const result = await startDeliveryRegeneration(project.id, nodeId, sessionId, selectedFileIds, node.revision, now());
+      setGeneration(result);
+    } catch (error) {
+      setNotice(`重新生成交付稿失败：${String(error)}`);
+      setRegenerating(false);
+    }
+  }
+
+  async function cancelRegeneration() {
+    if (!project || !generation) return;
+    try {
+      await cancelDeliveryRegeneration(project.id, generation.id, now());
+    } catch (error) {
+      setNotice(`取消重新生成失败：${String(error)}`);
     }
   }
 
@@ -808,6 +861,9 @@ export function App() {
     filePreviewScopeRef.current = null;
     setFilePreview(null);
     setTurns([]);
+    setGeneration(null);
+    setGenerationCandidate("");
+    setRegenerating(false);
     selectDestinationImmediate("projects");
   }
 
@@ -827,6 +883,9 @@ export function App() {
     setDraft("");
     setFilePreview(null);
     setTurns([]);
+    setGeneration(null);
+    setGenerationCandidate("");
+    setRegenerating(false);
     setWorkspaceView(initialWorkspaceView());
     const current = ui.projects[project.id] ?? initialProjectUi();
     workspaceScopeRef.current = requestScope(project.id, id);
@@ -985,6 +1044,9 @@ export function App() {
     setSavingModelSelection(false);
     setSendingMessage(false);
     setTurns([]);
+    setGeneration(null);
+    setGenerationCandidate("");
+    setRegenerating(false);
     messageScopeRef.current = requestScope(project?.id, activeNodeId, nextSessionId);
     setSessionId(nextSessionId);
   }
@@ -998,11 +1060,15 @@ export function App() {
       view={workspaceView.deliveryView}
       dirty={markdownDirty}
       saving={saving}
-      exporting={exporting}
+      generation={generation}
+      candidateLength={generationCandidate.length}
+      canRegenerate={Boolean(node) && !markdownDirty && !Boolean(activeRunId) && Boolean(modelSelection) && Boolean(sessionId) && !regenerating}
+      regenerating={regenerating}
       onView={(deliveryView) => setWorkspaceView((current) => ({ ...current, deliveryView }))}
       onMarkdown={setDraft}
       onSave={() => void saveNodeDraft()}
-      onExport={() => { if (project) void exportDocx(project.id); }}
+      onRegenerate={() => void startRegeneration()}
+      onCancelRegeneration={() => void cancelRegeneration()}
     />
   ) : surface?.kind === "agent-rules" ? (
     <AgentRulesWorkspace

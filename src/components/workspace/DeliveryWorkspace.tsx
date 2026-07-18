@@ -1,7 +1,8 @@
-import type { DeliveryView, WorkflowNode } from "../../types";
+import type { DeliveryGeneration, DeliveryView, WorkflowNode } from "../../types";
 import { statusLabel } from "../../types";
 import { Button, StatusDot } from "../ui";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { DeliveryGenerationStatus } from "./DeliveryGenerationStatus";
 
 type DeliveryWorkspaceProps = {
   node: WorkflowNode | null;
@@ -10,11 +11,15 @@ type DeliveryWorkspaceProps = {
   view: DeliveryView;
   dirty: boolean;
   saving: boolean;
-  exporting: boolean;
+  generation: DeliveryGeneration | null;
+  candidateLength: number;
+  canRegenerate: boolean;
+  regenerating: boolean;
   onView: (view: DeliveryView) => void;
   onMarkdown: (value: string) => void;
   onSave: () => void;
-  onExport: () => void;
+  onRegenerate: () => void;
+  onCancelRegeneration: () => void;
 };
 
 export function DeliveryWorkspace({
@@ -24,11 +29,15 @@ export function DeliveryWorkspace({
   view,
   dirty,
   saving,
-  exporting,
+  generation,
+  candidateLength,
+  canRegenerate,
+  regenerating,
   onView,
   onMarkdown,
   onSave,
-  onExport,
+  onRegenerate,
+  onCancelRegeneration,
 }: DeliveryWorkspaceProps) {
   const statusKind = node?.status === "confirmed" ? "success" : node?.status === "needs_confirmation" ? "warning" : "neutral";
   return (
@@ -56,11 +65,12 @@ export function DeliveryWorkspace({
           />
         )}
       </div>
+      <DeliveryGenerationStatus generation={generation} candidateLength={candidateLength} onCancel={onCancelRegeneration} />
       <footer className="delivery-workspace-footer">
         <span>Markdown · {markdown.length.toLocaleString()} 字符{dirty ? " · 有未保存修改" : " · 已保存"}</span>
         <div>
           <Button variant={dirty ? "primary" : "secondary"} disabled={!dirty || !node} loading={saving} onClick={onSave}>保存</Button>
-          <Button variant="secondary" disabled={!node} loading={exporting} onClick={onExport}>导出 DOCX</Button>
+          <Button variant="secondary" disabled={!canRegenerate || regenerating} loading={regenerating} onClick={onRegenerate}>重新生成交付稿</Button>
         </div>
       </footer>
     </section>
