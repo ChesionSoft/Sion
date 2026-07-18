@@ -10,9 +10,10 @@ use calamine::{Reader, open_workbook_auto};
 use serde::Serialize;
 use sion_agent::AgentRun;
 use sion_core::{
-    ChatMessage, ChatModelSelection, ChatSession, ConversationTurn, FileExtractionStatus,
-    NodeStatus, PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind, ProjectManifest,
-    TurnActivityStatus, TurnStatus, WorkflowNode, WorkflowNodeId, default_nodes,
+    ChatMessage, ChatModelSelection, ChatSession, ConversationTurn, CumulativeTokenUsage,
+    FileExtractionStatus, NodeStatus, PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind,
+    ProjectManifest, TurnActivityStatus, TurnStatus, WorkflowNode, WorkflowNodeId,
+    aggregate_message_usage, aggregate_usages, default_nodes,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -465,6 +466,25 @@ impl ProjectStore {
         Ok(read_conversation_document(&self.messages_path(node_id, session_id)?)?.turns)
     }
 
+    pub fn session_usage(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+    ) -> Result<CumulativeTokenUsage> {
+        self.require_session(node_id, session_id)?;
+        let runs = self.list_runs()?;
+        let linked_usage = runs
+            .iter()
+            .filter(|run| run.node_id == node_id && run.session_id.as_deref() == Some(session_id))
+            .filter_map(|run| run.usage.as_ref())
+            .collect::<Vec<_>>();
+        if !linked_usage.is_empty() {
+            return Ok(aggregate_usages(linked_usage));
+        }
+        let messages = self.messages(node_id, session_id)?;
+        Ok(aggregate_message_usage(&messages))
+    }
+
     /// Appends a fully formed message with a small write-ahead journal so an
     /// interruption cannot silently lose a message or leave the session count stale.
     pub fn append_message(
@@ -781,9 +801,9 @@ impl ProjectStore {
         Ok(Some(markdown))
     }
 
-    /// Persists diagnostic-only run state. Model output tokens are intentionally
-    /// not represented here; a cancelled run cannot leave a partial assistant
-    /// message on disk by way of this record.
+    /// Persists diagnostic-only run state. Token counts and public summaries may
+    /// be retained, but prompt text, raw provider frames, and partial assistant
+    /// content never enter this record.
     pub fn save_run(&self, run: &AgentRun) -> Result<()> {
         self.manifest()?;
         atomic_write_json(&self.run_path(&run.id)?, run)
@@ -1945,11 +1965,90 @@ mod tests {
             reasoning_effort: None,
             file_ids: Vec::new(),
             kind: sion_agent::AgentRunKind::Conversation,
+            session_id: None,
+            turn_id: None,
+            context_snapshot: None,
+            usage: None,
+            duration_ms: None,
         };
         store.save_run(&run).unwrap();
 
         assert_eq!(store.run("run-1").unwrap(), run);
         assert_eq!(store.list_runs().unwrap(), vec![run]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn session_usage_prefers_linked_runs_without_double_counting_messages() {
+        let root = temp_project();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
+        let session = store
+            .create_session(WorkflowNodeId::Goals, "需求讨论".into(), None, "now".into())
+            .unwrap();
+        let legacy_usage = sion_core::build_turn_usage(
+            "turn-legacy",
+            "call-legacy",
+            "provider",
+            "model",
+            sion_core::ModelCallCategory::Answer,
+            sion_core::ModelCallStatus::Completed,
+            None,
+            "legacy input",
+            "legacy output",
+        );
+        let mut assistant = chat_message("assistant-1", sion_core::ChatRole::Assistant, "answer");
+        assistant.usage = Some(legacy_usage.clone());
+        store
+            .append_message(WorkflowNodeId::Goals, &session.id, assistant, "now".into())
+            .unwrap();
+        assert_eq!(
+            store
+                .session_usage(WorkflowNodeId::Goals, &session.id)
+                .unwrap()
+                .total_tokens,
+            legacy_usage.total_tokens
+        );
+
+        let run_usage = sion_core::build_turn_usage(
+            "turn-new",
+            "call-new",
+            "provider",
+            "model",
+            sion_core::ModelCallCategory::Answer,
+            sion_core::ModelCallStatus::Completed,
+            None,
+            "new input",
+            "new output",
+        );
+        store
+            .save_run(&AgentRun {
+                id: "run-new".into(),
+                project_id: "project-1".into(),
+                node_id: WorkflowNodeId::Goals,
+                status: sion_agent::AgentRunStatus::Completed,
+                created_at: "now".into(),
+                started_at: Some("now".into()),
+                finished_at: Some("later".into()),
+                summary: None,
+                provider_id: Some("provider".into()),
+                model: Some("model".into()),
+                reasoning_effort: None,
+                file_ids: vec![],
+                kind: sion_agent::AgentRunKind::Conversation,
+                session_id: Some(session.id.clone()),
+                turn_id: Some("turn-new".into()),
+                context_snapshot: None,
+                usage: Some(run_usage.clone()),
+                duration_ms: Some(10),
+            })
+            .unwrap();
+        let aggregate = store
+            .session_usage(WorkflowNodeId::Goals, &session.id)
+            .unwrap();
+        assert_eq!(aggregate.total_tokens, run_usage.total_tokens);
+        assert_eq!(aggregate.call_count, run_usage.call_count);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -3923,6 +3923,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "thiserror 2.0.18",
+ "time",
  "tokio-util",
  "uuid",
  "zip 0.6.6",

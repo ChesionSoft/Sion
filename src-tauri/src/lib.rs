@@ -3,6 +3,7 @@ mod app_settings;
 mod docx_check;
 mod project_export;
 mod provider_settings;
+mod run_detail;
 
 use serde::{Deserialize, Serialize};
 use sion_core::{
@@ -20,6 +21,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -30,6 +32,16 @@ mod turn_runtime;
 use conversation_runtime::{EffectiveAgentRules, compose_effective_agent_rules};
 
 const API_VERSION: u16 = 1;
+
+fn utc_now() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
 
 struct AgentState {
     scheduler: Mutex<sion_agent::RunScheduler>,
@@ -68,6 +80,7 @@ struct AgentJob {
     turn_id: String,
     expected_revision: u64,
     delivery_write_allowed: bool,
+    started_instant: Instant,
 }
 
 #[derive(Clone)]
@@ -81,6 +94,7 @@ struct RegenerationJob {
     reasoning_effort: ReasoningEffort,
     cancellation: CancellationToken,
     candidate: Arc<Mutex<String>>,
+    started_instant: Instant,
 }
 
 #[derive(Serialize, Clone)]
@@ -110,8 +124,8 @@ struct AgentRunStartResult {
 #[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
 enum AgentRunStartOutcome {
     Started {
-        run: sion_agent::AgentRun,
-        turn: ConversationTurn,
+        run: Box<sion_agent::AgentRun>,
+        turn: Box<ConversationTurn>,
     },
     ContextBlocked {
         snapshot: ConversationContextSnapshot,
@@ -350,6 +364,15 @@ struct AgentRunListRequest {
     #[serde(flatten)]
     version: VersionedRequest,
     project_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRunDetailRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    run_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -732,6 +755,7 @@ struct PreparedSend {
     user_message: ChatMessage,
     file_ids: Vec<String>,
     turn_id: String,
+    session_id: String,
 }
 
 impl PreparedSend {
@@ -750,6 +774,9 @@ impl PreparedSend {
             file_ids: self.file_ids.clone(),
             kind: sion_agent::AgentRunKind::Conversation,
             created_at,
+            session_id: Some(self.session_id.clone()),
+            turn_id: Some(self.turn_id.clone()),
+            context_snapshot: Some(self.snapshot.clone()),
         }
     }
 }
@@ -885,6 +912,7 @@ fn prepare_agent_send(
         user_message,
         file_ids: file_ids.to_vec(),
         turn_id,
+        session_id: session_id.to_string(),
     })
 }
 
@@ -978,6 +1006,7 @@ fn agent_run_start(
         turn_id: start_result.turn.id.clone(),
         expected_revision: request.expected_revision,
         delivery_write_allowed: request.delivery_write_allowed,
+        started_instant: Instant::now(),
     };
     state
         .jobs
@@ -992,8 +1021,8 @@ fn agent_run_start(
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: AgentRunStartOutcome::Started {
-            run: start_result.run,
-            turn: start_result.turn,
+            run: Box::new(start_result.run),
+            turn: Box::new(start_result.turn),
         },
     })
 }
@@ -1026,6 +1055,35 @@ fn agent_run_list(
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: AgentRunList { runs },
+    })
+}
+
+fn load_run_detail(
+    store: &ProjectStore,
+    project_id: &str,
+    run_id: &str,
+) -> Result<run_detail::AgentRunDetail, String> {
+    let run = store.run(run_id).map_err(|error| error.to_string())?;
+    validate_run_project(&run, project_id).map_err(|error| error.to_string())?;
+    run_detail::build_run_detail(store, run)
+}
+
+#[tauri::command]
+fn agent_run_detail(
+    request: AgentRunDetailRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<run_detail::AgentRunDetail>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let detail = load_run_detail(
+        &ProjectStore::at(project_root),
+        &request.project_id,
+        &request.run_id,
+    )
+    .map_err(ApiError::CheckFailed)?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: detail,
     })
 }
 
@@ -1173,6 +1231,16 @@ fn conversation_turn_retry_delivery(
         file_ids: Vec::new(),
         kind: sion_agent::AgentRunKind::DeliveryRetry,
         created_at: request.now.clone(),
+        session_id: Some(request.session_id.clone()),
+        turn_id: Some(request.turn_id.clone()),
+        context_snapshot: Some(conversation_runtime::snapshot_for_prompt(
+            &prompt,
+            resolved.context_window_tokens,
+            store
+                .session_usage(request.node_id, &request.session_id)
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
+            &request.now,
+        )),
     };
     let mut scheduler = state
         .scheduler
@@ -1220,6 +1288,7 @@ fn conversation_turn_retry_delivery(
         turn_id: request.turn_id.clone(),
         expected_revision: node.revision,
         delivery_write_allowed: true,
+        started_instant: Instant::now(),
     };
     state
         .jobs
@@ -1308,6 +1377,16 @@ fn delivery_regeneration_start(
         file_ids: request.file_ids.clone(),
         kind: sion_agent::AgentRunKind::DeliveryRegeneration,
         created_at: request.now.clone(),
+        session_id: Some(request.session_id.clone()),
+        turn_id: None,
+        context_snapshot: Some(conversation_runtime::snapshot_for_prompt(
+            &prompt,
+            resolved.context_window_tokens,
+            store
+                .session_usage(request.node_id, &request.session_id)
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
+            &request.now,
+        )),
     };
     let mut scheduler = state
         .scheduler
@@ -1343,6 +1422,7 @@ fn delivery_regeneration_start(
         reasoning_effort: selection.reasoning_effort,
         cancellation: CancellationToken::new(),
         candidate: Arc::new(Mutex::new(String::new())),
+        started_instant: Instant::now(),
     };
     state
         .regenerations
@@ -2384,9 +2464,22 @@ fn complete_regeneration_run(
     job: &RegenerationJob,
     outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
 ) {
-    let finished_at = run.created_at.clone();
+    let finished_at = utc_now();
+    let duration_ms = elapsed_ms(job.started_instant);
     let store = ProjectStore::at(&job.project_root);
     let candidate = job.candidate.lock().unwrap().clone();
+    let usage = match &outcome {
+        Ok(sion_agent::model_stream::StreamOutcome::Completed(content)) => {
+            regeneration_usage(run, job, sion_core::ModelCallStatus::Completed, Some(content))
+        }
+        Ok(sion_agent::model_stream::StreamOutcome::Cancelled(content)) => regeneration_usage(
+            run,
+            job,
+            sion_core::ModelCallStatus::Interrupted,
+            Some(content),
+        ),
+        Err(_) => regeneration_usage(run, job, sion_core::ModelCallStatus::Failed, None),
+    };
     let (status, saved_node, error) = match outcome {
         Ok(sion_agent::model_stream::StreamOutcome::Completed(_)) => {
             match commit_regenerated_markdown(
@@ -2426,6 +2519,7 @@ fn complete_regeneration_run(
         let Ok(mut scheduler) = state.scheduler.lock() else {
             return;
         };
+        let _ = scheduler.attach_usage(&run.id, usage, duration_ms);
         let (final_run, promoted) =
             finish_regeneration_scheduler(&mut scheduler, &run.id, &finished_at, &status);
         if let Some(final_run) = final_run {
@@ -2452,10 +2546,45 @@ fn complete_regeneration_run(
     spawn_promoted_runs(app.clone(), state.clone(), promoted);
 }
 
+fn regeneration_usage(
+    run: &sion_agent::AgentRun,
+    job: &RegenerationJob,
+    status: sion_core::ModelCallStatus,
+    content: Option<&sion_agent::model_stream::StreamContent>,
+) -> sion_core::TurnTokenUsage {
+    sion_core::build_turn_usage(
+        &job.generation.id,
+        &format!("{}:document-update", run.id),
+        &job.model.provider_id,
+        &job.model.model,
+        sion_core::ModelCallCategory::DocumentUpdate,
+        status,
+        content.and_then(|content| content.usage),
+        &job.prompt,
+        &content
+            .map(|content| content.output.join(""))
+            .unwrap_or_default(),
+    )
+}
+
 fn completed_turn_usage(
     run: &sion_agent::AgentRun,
     job: &AgentJob,
     content: &sion_agent::model_stream::StreamContent,
+) -> sion_core::TurnTokenUsage {
+    agent_turn_usage(
+        run,
+        job,
+        sion_core::ModelCallStatus::Completed,
+        Some(content),
+    )
+}
+
+fn agent_turn_usage(
+    run: &sion_agent::AgentRun,
+    job: &AgentJob,
+    status: sion_core::ModelCallStatus,
+    content: Option<&sion_agent::model_stream::StreamContent>,
 ) -> sion_core::TurnTokenUsage {
     sion_core::build_turn_usage(
         &job.turn_id,
@@ -2463,10 +2592,12 @@ fn completed_turn_usage(
         &job.model.provider_id,
         &job.model.model,
         sion_core::ModelCallCategory::Answer,
-        sion_core::ModelCallStatus::Completed,
-        content.usage,
+        status,
+        content.and_then(|content| content.usage),
         &job.prompt,
-        &content.output.join(""),
+        &content
+            .map(|content| content.output.join(""))
+            .unwrap_or_default(),
     )
 }
 
@@ -2478,7 +2609,8 @@ fn complete_agent_run(
     outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
     projector: turn_runtime::DeliveryStreamProjector,
 ) {
-    let finished_at = run.created_at.clone();
+    let finished_at = utc_now();
+    let duration_ms = elapsed_ms(job.started_instant);
     let store = ProjectStore::at(&job.project_root);
     let base_turn = store
         .turns(job.node_id, &job.session_id)
@@ -2506,6 +2638,7 @@ fn complete_agent_run(
         match outcome {
             Ok(sion_agent::model_stream::StreamOutcome::Completed(content)) => {
                 let usage = completed_turn_usage(run, job, &content);
+                let _ = scheduler.attach_usage(&run.id, usage.clone(), duration_ms);
                 let projected = projector.finish();
                 let application = match projected.delivery {
                     Ok(delivery) => apply_delivery_outcome(
@@ -2601,7 +2734,14 @@ fn complete_agent_run(
                 let final_run = scheduler.get(&run.id).cloned();
                 (final_run, promoted, terminal_turn)
             }
-            Ok(sion_agent::model_stream::StreamOutcome::Cancelled(_)) => {
+            Ok(sion_agent::model_stream::StreamOutcome::Cancelled(content)) => {
+                let usage = agent_turn_usage(
+                    run,
+                    job,
+                    sion_core::ModelCallStatus::Interrupted,
+                    Some(&content),
+                );
+                let _ = scheduler.attach_usage(&run.id, usage, duration_ms);
                 let turn = ConversationTurn {
                     status: TurnStatus::Cancelled,
                     activities: turn_runtime::completed_activities(
@@ -2633,6 +2773,13 @@ fn complete_agent_run(
                 (final_run, promoted, persisted.then_some((turn, None)))
             }
             Err(error) => {
+                let usage = agent_turn_usage(
+                    run,
+                    job,
+                    sion_core::ModelCallStatus::Failed,
+                    None,
+                );
+                let _ = scheduler.attach_usage(&run.id, usage, duration_ms);
                 let delivery_outcome =
                     turn_runtime::safe_delivery_error(DeliveryStage::Response, &error);
                 let turn = ConversationTurn {
@@ -2769,12 +2916,13 @@ fn fail_promoted_run(
     run: &sion_agent::AgentRun,
     error: &str,
 ) {
+    let failed_at = utc_now();
     let (failed, promoted) = {
         let Ok(mut scheduler) = state.scheduler.lock() else {
             return;
         };
         let promoted = scheduler
-            .fail(&run.id, run.created_at.clone(), error.to_string())
+            .fail(&run.id, failed_at.clone(), error.to_string())
             .unwrap_or_default();
         (scheduler.get(&run.id).cloned(), promoted)
     };
@@ -2790,7 +2938,7 @@ fn fail_promoted_run(
             let generation = DeliveryGeneration {
                 status: DeliveryGenerationStatus::Failed,
                 error: Some("启动重新生成任务失败".to_string()),
-                finished_at: Some(run.created_at.clone()),
+                finished_at: Some(failed_at.clone()),
                 ..job.generation
             };
             let _ = app.emit(
@@ -2817,7 +2965,7 @@ fn fail_promoted_run(
                 .ok()
                 .and_then(|turns| turns.into_iter().find(|turn| turn.id == job.turn_id))
                 .map(|mut turn| {
-                    turn_runtime::mark_turn_start_failed(&mut turn, &run.created_at);
+                    turn_runtime::mark_turn_start_failed(&mut turn, &failed_at);
                     turn
                 });
             if let Some(turn) = failed_turn
@@ -2877,6 +3025,7 @@ pub fn run() {
             provider_delete,
             agent_run_start,
             agent_run_list,
+            agent_run_detail,
             agent_run_cancel,
             conversation_turn_list,
             conversation_turn_retry_delivery,
@@ -3103,6 +3252,9 @@ mod tests {
                 file_ids: vec![],
                 kind: sion_agent::AgentRunKind::Conversation,
                 created_at: "now".into(),
+                session_id: None,
+                turn_id: None,
+                context_snapshot: None,
             })
             .unwrap();
         let exact = completed_turn_usage(
@@ -3151,6 +3303,11 @@ mod tests {
             reasoning_effort: None,
             file_ids: Vec::new(),
             kind: sion_agent::AgentRunKind::Conversation,
+            session_id: None,
+            turn_id: None,
+            context_snapshot: None,
+            usage: None,
+            duration_ms: None,
         };
         assert!(validate_run_project(&run, "project-a").is_ok());
         let error = validate_run_project(&run, "project-b").unwrap_err();
@@ -3442,6 +3599,68 @@ mod tests {
     }
 
     #[test]
+    fn run_detail_loads_linked_turn_and_assistant_without_prompt_data() {
+        let fixture = send_fixture(128_000);
+        let prepared = prepare_agent_send(
+            &fixture.provider_root,
+            &fixture.store,
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            "补充目标",
+            &[],
+            "now",
+        )
+        .unwrap();
+        let mut scheduler = sion_agent::RunScheduler::default();
+        let started = persist_prepared_send(
+            &fixture.store,
+            &mut scheduler,
+            prepared.run_request("project-1".into(), WorkflowNodeId::Goals, "now".into()),
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            prepared.user_message,
+            prepared.turn_id,
+            0,
+            true,
+            "now".into(),
+        )
+        .unwrap();
+        let mut turn = started.turn.clone();
+        turn.assistant_message_id = Some("assistant-detail".into());
+        turn.status = TurnStatus::Completed;
+        fixture
+            .store
+            .complete_turn(
+                WorkflowNodeId::Goals,
+                &fixture.session.id,
+                ChatMessage {
+                    id: "assistant-detail".into(),
+                    role: ChatRole::Assistant,
+                    content: "可见回复".into(),
+                    reasoning_content: None,
+                    sources: None,
+                    created_at: "later".into(),
+                    turn_id: Some(turn.id.clone()),
+                    reasoning_duration_ms: None,
+                    usage: None,
+                    attachments: vec![],
+                    model_execution: None,
+                },
+                turn.clone(),
+            )
+            .unwrap();
+
+        let detail = load_run_detail(&fixture.store, "project-1", &started.run.id).unwrap();
+        assert_eq!(detail.turn.unwrap().id, turn.id);
+        assert_eq!(detail.assistant_message.unwrap().content, "可见回复");
+        let serialized = serde_json::to_value(&detail.run).unwrap();
+        assert!(serialized.get("prompt").is_none());
+        assert!(load_run_detail(&fixture.store, "other-project", &started.run.id).is_err());
+        assert!(load_run_detail(&fixture.store, "project-1", "missing-run").is_err());
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
     fn listing_turns_does_not_recover_a_live_turn() {
         let fixture = send_fixture(128_000);
         let prepared = prepare_agent_send(
@@ -3541,6 +3760,7 @@ mod tests {
             turn_id: "turn-1".into(),
             expected_revision,
             delivery_write_allowed,
+            started_instant: Instant::now(),
         }
     }
 
@@ -3705,6 +3925,9 @@ mod tests {
                 file_ids: Vec::new(),
                 kind: sion_agent::AgentRunKind::DeliveryRegeneration,
                 created_at: "started".into(),
+                session_id: None,
+                turn_id: None,
+                context_snapshot: None,
             })
             .unwrap();
         let queued = scheduler
@@ -3717,6 +3940,9 @@ mod tests {
                 file_ids: Vec::new(),
                 kind: sion_agent::AgentRunKind::Conversation,
                 created_at: "queued".into(),
+                session_id: None,
+                turn_id: None,
+                context_snapshot: None,
             })
             .unwrap();
         assert_eq!(queued.status, sion_agent::AgentRunStatus::Queued);

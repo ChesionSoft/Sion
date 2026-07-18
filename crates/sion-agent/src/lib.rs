@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
-use sion_core::{ReasoningEffort, WorkflowNodeId};
+use sion_core::{ConversationContextSnapshot, ReasoningEffort, TurnTokenUsage, WorkflowNodeId};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -33,7 +33,7 @@ pub enum AgentRunKind {
     DeliveryRegeneration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRun {
     pub id: String,
@@ -54,6 +54,16 @@ pub struct AgentRun {
     pub file_ids: Vec<String>,
     #[serde(default)]
     pub kind: AgentRunKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_snapshot: Option<ConversationContextSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TurnTokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +76,9 @@ pub struct RunRequest {
     pub file_ids: Vec<String>,
     pub kind: AgentRunKind,
     pub created_at: String,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub context_snapshot: Option<ConversationContextSnapshot>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -127,6 +140,11 @@ impl RunScheduler {
             reasoning_effort: Some(request.reasoning_effort),
             file_ids: request.file_ids,
             kind: request.kind,
+            session_id: request.session_id,
+            turn_id: request.turn_id,
+            context_snapshot: request.context_snapshot,
+            usage: None,
+            duration_ms: None,
         };
         self.reserved_nodes.insert(key);
         self.queue.push_back(run.id.clone());
@@ -204,6 +222,21 @@ impl RunScheduler {
         self.runs.get(run_id)
     }
 
+    pub fn attach_usage(
+        &mut self,
+        run_id: &str,
+        usage: TurnTokenUsage,
+        duration_ms: u64,
+    ) -> Result<(), SchedulerError> {
+        let run = self
+            .runs
+            .get_mut(run_id)
+            .ok_or_else(|| SchedulerError::NotFound(run_id.to_string()))?;
+        run.usage = Some(usage);
+        run.duration_ms = Some(duration_ms);
+        Ok(())
+    }
+
     pub fn active_count(&self) -> usize {
         self.active.len()
     }
@@ -277,6 +310,9 @@ mod tests {
                 file_ids: Vec::new(),
                 kind: AgentRunKind::Conversation,
                 created_at: "2026-07-15T00:00:00.000Z".to_string(),
+                session_id: None,
+                turn_id: None,
+                context_snapshot: None,
             })
             .unwrap()
     }
@@ -311,7 +347,10 @@ mod tests {
                 reasoning_effort: ReasoningEffort::Medium,
                 file_ids: Vec::new(),
                 kind: AgentRunKind::Conversation,
-                created_at: "now".to_string()
+                created_at: "now".to_string(),
+                session_id: None,
+                turn_id: None,
+                context_snapshot: None,
             }),
             Err(SchedulerError::NodeBusy { .. })
         ));
@@ -328,7 +367,10 @@ mod tests {
                     reasoning_effort: ReasoningEffort::Medium,
                     file_ids: Vec::new(),
                     kind: AgentRunKind::Conversation,
-                    created_at: "later".to_string()
+                    created_at: "later".to_string(),
+                    session_id: None,
+                    turn_id: None,
+                    context_snapshot: None,
                 })
                 .is_ok()
         );
@@ -365,12 +407,37 @@ mod tests {
                 file_ids: vec!["file-a".into()],
                 kind: AgentRunKind::Conversation,
                 created_at: "now".into(),
+                session_id: Some("session-a".into()),
+                turn_id: Some("turn-a".into()),
+                context_snapshot: None,
             })
             .unwrap();
         assert_eq!(run.provider_id.as_deref(), Some("provider-a"));
         assert_eq!(run.model.as_deref(), Some("model-a"));
         assert_eq!(run.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(run.file_ids, vec!["file-a"]);
+        assert_eq!(run.session_id.as_deref(), Some("session-a"));
+        assert_eq!(run.turn_id.as_deref(), Some("turn-a"));
+    }
+
+    #[test]
+    fn attaches_usage_and_duration_to_a_durable_run() {
+        let mut scheduler = RunScheduler::default();
+        let run = enqueue(&mut scheduler, WorkflowNodeId::Goals);
+        let usage = sion_core::build_turn_usage(
+            "turn-a",
+            "call-a",
+            "provider-a",
+            "model-a",
+            sion_core::ModelCallCategory::Answer,
+            sion_core::ModelCallStatus::Completed,
+            None,
+            "input",
+            "output",
+        );
+        scheduler.attach_usage(&run.id, usage.clone(), 250).unwrap();
+        assert_eq!(scheduler.get(&run.id).unwrap().usage, Some(usage));
+        assert_eq!(scheduler.get(&run.id).unwrap().duration_ms, Some(250));
     }
 
     #[test]
@@ -386,6 +453,9 @@ mod tests {
                 file_ids: vec![],
                 kind: AgentRunKind::Conversation,
                 created_at: "now".into(),
+                session_id: None,
+                turn_id: None,
+                context_snapshot: None,
             })
             .unwrap();
         assert!(matches!(
@@ -396,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_run_defaults_to_conversation_kind() {
+    fn legacy_run_defaults_detail_links_and_telemetry() {
         let run: AgentRun = serde_json::from_value(serde_json::json!({
             "id": "run-1",
             "projectId": "project-1",
@@ -409,5 +479,10 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(run.kind, AgentRunKind::Conversation);
+        assert_eq!(run.session_id, None);
+        assert_eq!(run.turn_id, None);
+        assert_eq!(run.context_snapshot, None);
+        assert_eq!(run.usage, None);
+        assert_eq!(run.duration_ms, None);
     }
 }

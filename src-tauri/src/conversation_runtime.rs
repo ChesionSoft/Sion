@@ -4,8 +4,8 @@
 
 use sion_core::{
     ChatMessage, ChatRole, ContextUsageBreakdown, ConversationContextSnapshot,
-    MessageAttachmentRef, WorkflowNode, WorkflowNodeId, agent_rule, aggregate_message_usage,
-    estimate_context, estimate_input_tokens,
+    CumulativeTokenUsage, MessageAttachmentRef, WorkflowNode, WorkflowNodeId, agent_rule,
+    aggregate_message_usage, estimate_context, estimate_input_tokens,
 };
 use sion_storage::ProjectStore;
 
@@ -156,6 +156,30 @@ pub fn build_agent_prompt(parts: ConversationParts<'_>) -> String {
     prompt_from_sections(&prompt_sections(parts))
 }
 
+pub fn snapshot_for_prompt(
+    prompt: &str,
+    context_window_tokens: u64,
+    cumulative_usage: CumulativeTokenUsage,
+    calculated_at: &str,
+) -> ConversationContextSnapshot {
+    let estimate = estimate_context(prompt, context_window_tokens);
+    ConversationContextSnapshot {
+        estimated_input_tokens: estimate.estimated_input_tokens,
+        context_window_tokens: estimate.context_window_tokens,
+        ratio: estimate.ratio,
+        status: estimate.status,
+        breakdown: ContextUsageBreakdown {
+            protocol_tokens: estimate.estimated_input_tokens,
+            rules_tokens: 0,
+            node_markdown_tokens: 0,
+            conversation_tokens: 0,
+            attachment_tokens: 0,
+        },
+        cumulative_usage,
+        calculated_at: calculated_at.to_string(),
+    }
+}
+
 #[allow(dead_code)]
 pub fn build_delivery_retry_prompt(
     node: &WorkflowNode,
@@ -245,11 +269,19 @@ pub fn prepare_conversation(
             .map_err(|error| error.to_string())?,
         None => Vec::new(),
     };
+    let cumulative_usage = match session_id {
+        Some(session_id) => Some(
+            store
+                .session_usage(node_id, session_id)
+                .map_err(|error| error.to_string())?,
+        ),
+        None => None,
+    };
     let project_override = store
         .agent_override(node_id)
         .map_err(|error| error.to_string())?;
     let attachments = load_selected_files(store, file_ids)?;
-    Ok(prepare_from_parts(
+    let mut prepared = prepare_from_parts(
         ConversationParts {
             node: &node,
             messages: &messages,
@@ -259,7 +291,11 @@ pub fn prepare_conversation(
         },
         context_window_tokens,
         calculated_at,
-    ))
+    );
+    if let Some(cumulative_usage) = cumulative_usage {
+        prepared.snapshot.cumulative_usage = cumulative_usage;
+    }
+    Ok(prepared)
 }
 
 #[cfg(test)]
