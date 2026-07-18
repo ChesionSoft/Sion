@@ -109,6 +109,16 @@ struct AgentTokenEvent {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct AgentReasoningSummaryEvent {
+    run_id: String,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    delta: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct AgentFinishedEvent {
     run: sion_agent::AgentRun,
 }
@@ -2168,7 +2178,18 @@ fn spawn_agent_run(
                         );
                     }
                 }
-                sion_agent::model_stream::StreamDelta::ReasoningSummary(_) => {}
+                sion_agent::model_stream::StreamDelta::ReasoningSummary(text) => {
+                    let _ = event_app.emit(
+                        "agent-reasoning-summary",
+                        AgentReasoningSummaryEvent {
+                            run_id: event_run.id.clone(),
+                            project_id: event_run.project_id.clone(),
+                            node_id: event_run.node_id,
+                            session_id: event_session.clone(),
+                            delta: text.to_string(),
+                        },
+                    );
+                }
             },
         )
         .await;
@@ -3185,6 +3206,21 @@ mod tests {
             )))
             .unwrap();
         assert_eq!(completion, (true, None));
+    }
+
+    #[test]
+    fn public_reasoning_event_contains_only_scoped_delta_fields() {
+        let event = AgentReasoningSummaryEvent {
+            run_id: "run-1".into(),
+            project_id: "project-1".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: "session-1".into(),
+            delta: "公开思考".into(),
+        };
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["delta"], "公开思考");
+        assert!(value.get("reasoningContent").is_none());
+        assert_eq!(value.as_object().unwrap().len(), 5);
     }
 
     #[test]

@@ -185,6 +185,7 @@ export type AgentRunStartOutcome =
       largestSection: string;
     };
 export type AgentTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
+export type AgentReasoningSummaryEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
 export type AgentFinishedEvent = { run: AgentRun };
 export type TurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
 export type TurnActivityKind = "response" | "delivery_check" | "delivery_validate" | "delivery_save";

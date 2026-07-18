@@ -254,6 +254,16 @@ test("conversation turns own agent status and the app no longer notices run comp
   assert.match(card, /重新判断交付稿/);
 });
 
+test("conversation emits public reasoning summaries but never hidden reasoning", async () => {
+  const source = await readFile("src-tauri/src/lib.rs", "utf8");
+  assert.match(source, /"agent-reasoning-summary"/);
+  assert.match(source, /StreamDelta::ReasoningSummary\(text\)/);
+  const start = source.indexOf("struct AgentReasoningSummaryEvent");
+  const end = source.indexOf("struct AgentFinishedEvent", start);
+  assert.ok(start >= 0 && end > start);
+  assert.doesNotMatch(source.slice(start, end), /reasoning_content/);
+});
+
 test("delivery regenerates locally while DOCX stays in Export Center", async () => {
   const [delivery, exportCenter, app, shellCss] = await Promise.all([
     readFile("src/components/workspace/DeliveryWorkspace.tsx", "utf8"),
