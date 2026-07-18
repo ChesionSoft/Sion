@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod conversation;
+mod conversation_turn;
 pub use conversation::*;
+pub use conversation_turn::*;
 
 pub const PROJECT_SCHEMA_VERSION: u32 = 1;
 
@@ -532,6 +534,7 @@ pub fn default_nodes(now: impl Into<String>) -> Vec<WorkflowNode> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum AgentDelivery {
+    Unchanged,
     Rewrite { markdown: String },
     Patch { sections: Vec<AgentDeliverySection> },
 }
@@ -550,6 +553,8 @@ pub enum DeliveryError {
     MultipleBlocks,
     #[error("assistant response included an unterminated fenced ```delivery block")]
     UnterminatedBlock,
+    #[error("assistant response had non-whitespace content after the delivery block")]
+    TrailingContent,
     #[error("delivery block JSON is invalid: {0}")]
     InvalidJson(String),
     #[error("delivery markdown is empty")]
@@ -576,10 +581,52 @@ pub enum DeliveryError {
     MissingTargetSection { section: String },
 }
 
+#[derive(Debug, Clone)]
+pub struct ParsedAgentResponse {
+    pub visible_content: String,
+    pub delivery: AgentDelivery,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryResolution {
+    Unchanged,
+    Markdown(String),
+}
+
 pub fn parse_agent_delivery(response: &str) -> Result<AgentDelivery, DeliveryError> {
     let block = extract_delivery_block(response)?;
-    serde_json::from_str(block.trim())
+    serde_json::from_str(block.body.trim())
         .map_err(|error| DeliveryError::InvalidJson(error.to_string()))
+}
+
+pub fn parse_agent_response(response: &str) -> Result<ParsedAgentResponse, DeliveryError> {
+    let block = extract_delivery_block(response)?;
+    let trailing = &response[block.block_end..];
+    if !trailing.trim().is_empty() {
+        return Err(DeliveryError::TrailingContent);
+    }
+    let delivery: AgentDelivery = serde_json::from_str(block.body.trim())
+        .map_err(|error| DeliveryError::InvalidJson(error.to_string()))?;
+    let visible_content = response[..block.visible_end].trim_end().to_string();
+    Ok(ParsedAgentResponse {
+        visible_content,
+        delivery,
+    })
+}
+
+pub fn resolve_agent_delivery(
+    delivery: AgentDelivery,
+    node: WorkflowNodeId,
+    current_markdown: &str,
+) -> Result<DeliveryResolution, DeliveryError> {
+    match delivery {
+        AgentDelivery::Unchanged => Ok(DeliveryResolution::Unchanged),
+        AgentDelivery::Rewrite { markdown } => {
+            validate_delivery_markdown(markdown, node).map(DeliveryResolution::Markdown)
+        }
+        AgentDelivery::Patch { sections } => apply_delivery_patch(current_markdown, node, &sections)
+            .map(DeliveryResolution::Markdown),
+    }
 }
 
 pub fn apply_agent_delivery(
@@ -589,14 +636,13 @@ pub fn apply_agent_delivery(
 ) -> Result<String, DeliveryError> {
     let delivery = parse_agent_delivery(response)?;
     match delivery {
-        AgentDelivery::Rewrite { markdown } => validate_delivery_rewrite(markdown, node),
-        AgentDelivery::Patch { sections } => {
-            apply_delivery_patch(current_markdown, node, &sections)
-        }
+        AgentDelivery::Unchanged => Ok(current_markdown.to_string()),
+        AgentDelivery::Rewrite { markdown } => validate_delivery_markdown(markdown, node),
+        AgentDelivery::Patch { sections } => apply_delivery_patch(current_markdown, node, &sections),
     }
 }
 
-fn validate_delivery_rewrite(
+pub fn validate_delivery_markdown(
     markdown: String,
     node: WorkflowNodeId,
 ) -> Result<String, DeliveryError> {
@@ -669,7 +715,7 @@ fn apply_delivery_patch(
     for (start, end, content) in replacements {
         result.replace_range(start..end, &format!("\n\n{content}\n\n"));
     }
-    validate_delivery_rewrite(result, node)
+    validate_delivery_markdown(result, node)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -724,8 +770,14 @@ fn contains_structural_heading(markdown: &str) -> bool {
     false
 }
 
-fn extract_delivery_block(response: &str) -> Result<&str, DeliveryError> {
-    let mut found = None;
+struct DeliveryBlock<'a> {
+    body: &'a str,
+    visible_end: usize,
+    block_end: usize,
+}
+
+fn extract_delivery_block(response: &str) -> Result<DeliveryBlock<'_>, DeliveryError> {
+    let mut found: Option<DeliveryBlock<'_>> = None;
     let mut search_start = 0;
     while let Some(relative_start) = response[search_start..].find("```") {
         let fence_start = search_start + relative_start;
@@ -744,13 +796,20 @@ fn extract_delivery_block(response: &str) -> Result<&str, DeliveryError> {
             let Some(body_end) = find_closing_fence(response, body_start) else {
                 return Err(DeliveryError::UnterminatedBlock);
             };
-            if found
-                .replace(response[body_start..body_end].trim())
-                .is_some()
-            {
+            let closing_fence_end = (body_end + 3).min(response.len());
+            let block_end = response[closing_fence_end..]
+                .find('\n')
+                .map(|offset| closing_fence_end + offset + 1)
+                .unwrap_or(response.len());
+            let block = DeliveryBlock {
+                body: response[body_start..body_end].trim(),
+                visible_end: fence_start,
+                block_end,
+            };
+            if found.replace(block).is_some() {
                 return Err(DeliveryError::MultipleBlocks);
             }
-            search_start = body_end + 3;
+            search_start = block_end;
         } else {
             if line_end == response.len() {
                 break;
@@ -1097,5 +1156,23 @@ mod tests {
         )
         .unwrap();
         assert!(markdown.contains("## 这不是文档章节"));
+    }
+
+    #[test]
+    fn parses_unchanged_without_mutating_markdown() {
+        let parsed = parse_agent_response(
+            "当前信息已经覆盖该要求。\n\n```delivery\n{\"mode\":\"unchanged\"}\n```",
+        )
+        .unwrap();
+        assert_eq!(parsed.visible_content, "当前信息已经覆盖该要求。");
+        assert_eq!(parsed.delivery, AgentDelivery::Unchanged);
+        assert_eq!(
+            resolve_agent_delivery(
+                parsed.delivery,
+                WorkflowNodeId::Goals,
+                "# 目标\n\n## 建设目标\n已有"
+            ),
+            Ok(DeliveryResolution::Unchanged),
+        );
     }
 }
