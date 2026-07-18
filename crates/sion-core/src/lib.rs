@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod conversation;
+mod conversation_telemetry;
 mod conversation_turn;
 pub use conversation::*;
+pub use conversation_telemetry::*;
 pub use conversation_turn::*;
 
 pub const PROJECT_SCHEMA_VERSION: u32 = 1;
@@ -837,6 +839,127 @@ fn find_closing_fence(response: &str, body_start: usize) -> Option<usize> {
         offset += line.len();
     }
     None
+}
+
+#[cfg(test)]
+mod conversation_telemetry_tests {
+    use super::*;
+
+    fn call(source: TokenUsageSource, input: u64, output: u64) -> TurnTokenUsage {
+        TurnTokenUsage {
+            turn_id: "turn-1".into(),
+            source: source.clone(),
+            call_count: 1,
+            calls: vec![ModelCallUsage {
+                id: "call-1".into(),
+                category: ModelCallCategory::Answer,
+                provider_id: "provider-1".into(),
+                model: "model-1".into(),
+                source,
+                status: ModelCallStatus::Completed,
+                input_tokens: input,
+                output_tokens: output,
+                total_tokens: input + output,
+            }],
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: input + output,
+        }
+    }
+
+    fn assistant_message(usage: Option<TurnTokenUsage>) -> ChatMessage {
+        ChatMessage {
+            id: "message-1".into(),
+            role: ChatRole::Assistant,
+            content: "结果".into(),
+            reasoning_content: None,
+            sources: None,
+            created_at: "2026-07-18T00:00:00Z".into(),
+            turn_id: Some("turn-1".into()),
+            reasoning_duration_ms: None,
+            usage,
+            attachments: vec![],
+            model_execution: None,
+        }
+    }
+
+    #[test]
+    fn aggregates_persisted_assistant_usage_and_ignores_missing_usage() {
+        let messages = vec![
+            assistant_message(Some(call(TokenUsageSource::Exact, 40, 10))),
+            assistant_message(None),
+        ];
+        assert_eq!(
+            aggregate_message_usage(&messages),
+            CumulativeTokenUsage {
+                input_tokens: 40,
+                output_tokens: 10,
+                total_tokens: 50,
+                call_count: 1,
+                source: TokenUsageSource::Exact,
+            }
+        );
+    }
+
+    #[test]
+    fn aggregates_exact_and_estimated_calls_as_mixed() {
+        let summary = aggregate_usages([
+            &call(TokenUsageSource::Exact, 40, 10),
+            &call(TokenUsageSource::Estimated, 20, 5),
+        ]);
+        assert_eq!(summary.input_tokens, 60);
+        assert_eq!(summary.output_tokens, 15);
+        assert_eq!(summary.total_tokens, 75);
+        assert_eq!(summary.call_count, 2);
+        assert_eq!(summary.source, TokenUsageSource::Mixed);
+    }
+
+    #[test]
+    fn rejects_zero_input_provider_usage_and_estimates_the_call() {
+        assert_eq!(
+            normalize_provider_usage(ProviderTokenUsage {
+                input_tokens: 0,
+                output_tokens: 8,
+                total_tokens: 8,
+            }),
+            None
+        );
+        let usage = build_turn_usage(
+            "turn-1",
+            "call-1",
+            "provider-1",
+            "model-1",
+            ModelCallCategory::Answer,
+            ModelCallStatus::Completed,
+            None,
+            "你好abcd你好abcd",
+            "结果",
+        );
+        assert_eq!(usage.source, TokenUsageSource::Estimated);
+        assert!(usage.input_tokens > 0);
+        assert!(usage.output_tokens > 0);
+        assert_eq!(usage.total_tokens, usage.input_tokens + usage.output_tokens);
+    }
+
+    #[test]
+    fn rejects_inconsistent_or_overflowing_provider_totals() {
+        assert_eq!(
+            normalize_provider_usage(ProviderTokenUsage {
+                input_tokens: 4,
+                output_tokens: 3,
+                total_tokens: 8,
+            }),
+            None
+        );
+        assert_eq!(
+            normalize_provider_usage(ProviderTokenUsage {
+                input_tokens: u64::MAX,
+                output_tokens: 1,
+                total_tokens: 0,
+            }),
+            None
+        );
+    }
 }
 
 #[cfg(test)]
