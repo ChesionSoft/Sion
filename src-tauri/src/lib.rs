@@ -121,7 +121,11 @@ struct AgentRunStartResult {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 enum AgentRunStartOutcome {
     Started {
         run: Box<sion_agent::AgentRun>,
@@ -2126,7 +2130,7 @@ fn spawn_agent_run(
                     &state,
                     &run,
                     &job,
-                    Err("unsupported provider protocol".to_string()),
+                    Err(sion_agent::model_stream::StreamFailure::UnsupportedProtocol),
                     turn_runtime::DeliveryStreamProjector::default(),
                 );
                 return;
@@ -2201,13 +2205,18 @@ fn finish_regeneration_scheduler(
     run_id: &str,
     finished_at: &str,
     status: &DeliveryGenerationStatus,
+    public_error: Option<&str>,
 ) -> (Option<sion_agent::AgentRun>, Vec<sion_agent::AgentRun>) {
     let promoted = match status {
         DeliveryGenerationStatus::Completed => scheduler.complete(run_id, finished_at.into(), None),
         DeliveryGenerationStatus::Cancelled => {
             scheduler.cancel(run_id, finished_at.into(), Some("已取消".into()))
         }
-        _ => scheduler.fail(run_id, finished_at.into(), "重新生成失败".into()),
+        _ => scheduler.fail(
+            run_id,
+            finished_at.into(),
+            public_error.unwrap_or("重新生成失败").to_string(),
+        ),
     }
     .unwrap_or_default();
     (scheduler.get(run_id).cloned(), promoted)
@@ -2371,7 +2380,7 @@ fn spawn_regeneration_run(
                     &state,
                     &run,
                     &job,
-                    Err("unsupported provider protocol".to_string()),
+                    Err(sion_agent::model_stream::StreamFailure::UnsupportedProtocol),
                 );
                 return;
             }
@@ -2418,16 +2427,22 @@ fn complete_regeneration_run(
     state: &Arc<AgentState>,
     run: &sion_agent::AgentRun,
     job: &RegenerationJob,
-    outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
+    outcome: Result<
+        sion_agent::model_stream::StreamOutcome,
+        sion_agent::model_stream::StreamFailure,
+    >,
 ) {
     let finished_at = utc_now();
     let duration_ms = elapsed_ms(job.started_instant);
     let store = ProjectStore::at(&job.project_root);
     let candidate = job.candidate.lock().unwrap().clone();
     let usage = match &outcome {
-        Ok(sion_agent::model_stream::StreamOutcome::Completed(content)) => {
-            regeneration_usage(run, job, sion_core::ModelCallStatus::Completed, Some(content))
-        }
+        Ok(sion_agent::model_stream::StreamOutcome::Completed(content)) => regeneration_usage(
+            run,
+            job,
+            sion_core::ModelCallStatus::Completed,
+            Some(content),
+        ),
         Ok(sion_agent::model_stream::StreamOutcome::Cancelled(content)) => regeneration_usage(
             run,
             job,
@@ -2465,10 +2480,10 @@ fn complete_regeneration_run(
         Ok(sion_agent::model_stream::StreamOutcome::Cancelled(_)) => {
             (DeliveryGenerationStatus::Cancelled, None, None)
         }
-        Err(_) => (
+        Err(error) => (
             DeliveryGenerationStatus::Failed,
             None,
-            Some("模型回复失败".to_string()),
+            Some(turn_runtime::public_model_failure(&error)),
         ),
     };
     let promoted = {
@@ -2476,8 +2491,13 @@ fn complete_regeneration_run(
             return;
         };
         let _ = scheduler.attach_usage(&run.id, usage, duration_ms);
-        let (final_run, promoted) =
-            finish_regeneration_scheduler(&mut scheduler, &run.id, &finished_at, &status);
+        let (final_run, promoted) = finish_regeneration_scheduler(
+            &mut scheduler,
+            &run.id,
+            &finished_at,
+            &status,
+            error.as_deref(),
+        );
         if let Some(final_run) = final_run {
             let _ = store.save_run(&final_run);
         }
@@ -2562,7 +2582,10 @@ fn complete_agent_run(
     state: &Arc<AgentState>,
     run: &sion_agent::AgentRun,
     job: &AgentJob,
-    outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
+    outcome: Result<
+        sion_agent::model_stream::StreamOutcome,
+        sion_agent::model_stream::StreamFailure,
+    >,
     projector: turn_runtime::DeliveryStreamProjector,
 ) {
     let finished_at = utc_now();
@@ -2729,15 +2752,10 @@ fn complete_agent_run(
                 (final_run, promoted, persisted.then_some((turn, None)))
             }
             Err(error) => {
-                let usage = agent_turn_usage(
-                    run,
-                    job,
-                    sion_core::ModelCallStatus::Failed,
-                    None,
-                );
+                let usage = agent_turn_usage(run, job, sion_core::ModelCallStatus::Failed, None);
                 let _ = scheduler.attach_usage(&run.id, usage, duration_ms);
-                let delivery_outcome =
-                    turn_runtime::safe_delivery_error(DeliveryStage::Response, &error);
+                let public_error = turn_runtime::public_model_failure(&error);
+                let delivery_outcome = turn_runtime::response_failure(&error);
                 let turn = ConversationTurn {
                     status: TurnStatus::Failed,
                     activities: turn_runtime::completed_activities(&delivery_outcome, &finished_at),
@@ -2749,17 +2767,8 @@ fn complete_agent_run(
                 let persisted = store
                     .save_turn(job.node_id, &job.session_id, turn.clone())
                     .is_ok();
-                let error = if error.contains("reasoning") {
-                    format!("{error}请将推理强度改为“关闭”后重试。")
-                } else {
-                    error
-                };
                 let promoted = scheduler
-                    .fail(
-                        &run.id,
-                        finished_at.clone(),
-                        format!("模型调用失败：{error}"),
-                    )
+                    .fail(&run.id, finished_at.clone(), public_error)
                     .unwrap_or_default();
                 let final_run = scheduler.get(&run.id).cloned();
                 (final_run, promoted, persisted.then_some((turn, None)))
@@ -2788,8 +2797,11 @@ fn complete_agent_run(
 /// user from mistaking a truncated draft for a completed answer.
 #[allow(dead_code)]
 fn completion_from_stream(
-    outcome: Result<sion_agent::model_stream::StreamOutcome, String>,
-) -> Result<(bool, Option<String>), String> {
+    outcome: Result<
+        sion_agent::model_stream::StreamOutcome,
+        sion_agent::model_stream::StreamFailure,
+    >,
+) -> Result<(bool, Option<String>), sion_agent::model_stream::StreamFailure> {
     match outcome {
         Ok(sion_agent::model_stream::StreamOutcome::Completed(content)) => {
             Ok((false, Some(content.output.join(""))))
@@ -3041,17 +3053,16 @@ mod tests {
 
     #[test]
     fn conversation_context_request_uses_an_existing_session_without_a_message() {
-        let request: ConversationContextGetRequest =
-            serde_json::from_value(serde_json::json!({
-                "apiVersion": API_VERSION,
-                "projectId": "project-1",
-                "nodeId": "goals",
-                "sessionId": "session-1",
-                "modelSelection": { "providerId": "p", "model": "m", "reasoningEffort": "medium" },
-                "fileIds": [],
-                "now": "2026-07-18T00:00:00Z"
-            }))
-            .unwrap();
+        let request: ConversationContextGetRequest = serde_json::from_value(serde_json::json!({
+            "apiVersion": API_VERSION,
+            "projectId": "project-1",
+            "nodeId": "goals",
+            "sessionId": "session-1",
+            "modelSelection": { "providerId": "p", "model": "m", "reasoningEffort": "medium" },
+            "fileIds": [],
+            "now": "2026-07-18T00:00:00Z"
+        }))
+        .unwrap();
         assert_eq!(request.session_id, "session-1");
         assert_eq!(request.model_selection.model, "m");
         assert!(
@@ -3891,6 +3902,7 @@ mod tests {
             &regeneration.id,
             "finished",
             &DeliveryGenerationStatus::Completed,
+            None,
         );
         assert_eq!(promoted.len(), 1);
         assert_eq!(promoted[0].id, queued.id);

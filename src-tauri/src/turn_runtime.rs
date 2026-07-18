@@ -204,14 +204,14 @@ pub fn completed_activities(outcome: &DeliveryOutcome, now: &str) -> Vec<TurnAct
                         TurnActivityStatus::Completed
                     },
                     "Agent 回复",
-                    None,
+                    matches!(stage, DeliveryStage::Response).then_some(public_error.as_str()),
                     now,
                 ),
                 activity(
                     TurnActivityKind::DeliveryCheck,
                     check,
                     "判断是否更新交付稿",
-                    Some(public_error),
+                    (!matches!(stage, DeliveryStage::Response)).then_some(public_error.as_str()),
                     now,
                 ),
                 activity(
@@ -338,6 +338,46 @@ pub fn safe_delivery_error(stage: DeliveryStage, _error: &str) -> DeliveryOutcom
     }
 }
 
+pub fn public_model_failure(error: &sion_agent::model_stream::StreamFailure) -> String {
+    use sion_agent::model_stream::{ProviderRejection, StreamFailure};
+
+    let rejection_message = |rejection| match rejection {
+        ProviderRejection::Reasoning => "模型不支持当前推理强度，请调整后重新发送",
+        ProviderRejection::Context => "模型服务拒绝了当前输入上下文，请缩短对话后重新发送",
+        ProviderRejection::Other => "模型流式回复失败，本次未保存未完成内容",
+    };
+
+    match error {
+        StreamFailure::UnsupportedProtocol => "接口协议不受支持，请检查模型配置".to_string(),
+        StreamFailure::RequestConnect => "无法连接模型服务，请检查地址和网络".to_string(),
+        StreamFailure::RequestTimeout => "连接模型服务超时，请稍后重新发送".to_string(),
+        StreamFailure::RequestOther => "模型请求失败，请稍后重新发送".to_string(),
+        StreamFailure::ProviderHttp { status, rejection } => match status {
+            401 | 403 => "API Key 无效，或当前账号没有该模型权限".to_string(),
+            404 => "接口地址、协议或模型名称不匹配".to_string(),
+            429 => "模型服务请求过于频繁，请稍后重新发送".to_string(),
+            502 | 503 => "模型服务暂时不可用，请稍后重新发送".to_string(),
+            504 => "模型服务上游网关超时（HTTP 504），请稍后重新发送".to_string(),
+            _ if !matches!(rejection, ProviderRejection::Other) => {
+                rejection_message(*rejection).to_string()
+            }
+            _ => format!("模型服务返回 HTTP {status}"),
+        },
+        StreamFailure::ProviderStream { rejection } => rejection_message(*rejection).to_string(),
+        StreamFailure::StreamRead | StreamFailure::StreamIncomplete => {
+            "模型流式回复中断，本次未保存未完成内容".to_string()
+        }
+        StreamFailure::InvalidFrame => "模型返回了无法解析的流式数据".to_string(),
+    }
+}
+
+pub fn response_failure(error: &sion_agent::model_stream::StreamFailure) -> DeliveryOutcome {
+    DeliveryOutcome::Failed {
+        stage: DeliveryStage::Response,
+        public_error: public_model_failure(error),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryCompletionPlan {
     Unchanged,
@@ -389,6 +429,7 @@ pub fn plan_delivery_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sion_agent::model_stream::{ProviderRejection, StreamFailure};
 
     #[test]
     fn projector_never_emits_delivery_json_even_when_marker_splits_across_tokens() {
@@ -516,6 +557,49 @@ mod tests {
         };
         assert_eq!(public_error, "交付稿结构校验失败");
         assert!(!public_error.contains("secret"));
+    }
+
+    #[test]
+    fn provider_failures_map_to_stable_public_reasons() {
+        assert_eq!(
+            public_model_failure(&StreamFailure::ProviderHttp {
+                status: 504,
+                rejection: ProviderRejection::Other,
+            }),
+            "模型服务上游网关超时（HTTP 504），请稍后重新发送"
+        );
+        assert_eq!(
+            public_model_failure(&StreamFailure::ProviderHttp {
+                status: 401,
+                rejection: ProviderRejection::Other,
+            }),
+            "API Key 无效，或当前账号没有该模型权限"
+        );
+        assert_eq!(
+            public_model_failure(&StreamFailure::RequestTimeout),
+            "连接模型服务超时，请稍后重新发送"
+        );
+        assert_eq!(
+            public_model_failure(&StreamFailure::ProviderStream {
+                rejection: ProviderRejection::Reasoning,
+            }),
+            "模型不支持当前推理强度，请调整后重新发送"
+        );
+    }
+
+    #[test]
+    fn response_failure_reason_is_attached_to_the_failed_response_activity() {
+        let outcome = response_failure(&StreamFailure::ProviderHttp {
+            status: 504,
+            rejection: ProviderRejection::Other,
+        });
+        let activities = completed_activities(&outcome, "finished");
+
+        assert_eq!(
+            activities[0].public_summary.as_deref(),
+            Some("模型服务上游网关超时（HTTP 504），请稍后重新发送")
+        );
+        assert_eq!(activities[1].public_summary, None);
     }
 
     fn goals_markdown() -> &'static str {

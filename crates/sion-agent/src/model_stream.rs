@@ -45,11 +45,36 @@ pub enum StreamOutcome {
     Cancelled(StreamContent),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderRejection {
+    Reasoning,
+    Context,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFailure {
+    UnsupportedProtocol,
+    RequestConnect,
+    RequestTimeout,
+    RequestOther,
+    ProviderHttp {
+        status: u16,
+        rejection: ProviderRejection,
+    },
+    ProviderStream {
+        rejection: ProviderRejection,
+    },
+    StreamRead,
+    StreamIncomplete,
+    InvalidFrame,
+}
+
 pub async fn stream_text(
     client: &Client,
     request: &StreamRequest,
     cancellation: CancellationToken,
-) -> Result<StreamOutcome, String> {
+) -> Result<StreamOutcome, StreamFailure> {
     stream_text_with(client, request, cancellation, |_| {}).await
 }
 
@@ -58,7 +83,7 @@ pub async fn stream_text_with<F>(
     request: &StreamRequest,
     cancellation: CancellationToken,
     mut on_delta: F,
-) -> Result<StreamOutcome, String>
+) -> Result<StreamOutcome, StreamFailure>
 where
     F: FnMut(&StreamDelta),
 {
@@ -69,14 +94,14 @@ where
         .json(&body)
         .send()
         .await
-        .map_err(|error| format!("model request failed: {error}"))?;
+        .map_err(|error| request_failure_kind(error.is_connect(), error.is_timeout()))?;
     if !response.status().is_success() {
-        let status = response.status();
+        let status = response.status().as_u16();
         let body = read_bounded_error_body(response).await;
-        return Err(classify_provider_error(
-            &format!("model provider returned HTTP {status}"),
-            &body,
-        ));
+        return Err(StreamFailure::ProviderHttp {
+            status,
+            rejection: provider_rejection(&body),
+        });
     }
 
     let mut bytes = response.bytes_stream();
@@ -96,7 +121,7 @@ where
             next = bytes.next() => next,
         };
         let Some(chunk) = next else { break };
-        let chunk = chunk.map_err(|error| format!("model stream read failed: {error}"))?;
+        let chunk = chunk.map_err(|_| StreamFailure::StreamRead)?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         for frame in take_frames(&mut buffer) {
             if let Some(error) = provider_error_from_frame(request.protocol, &frame) {
@@ -121,7 +146,7 @@ where
             }
         }
     }
-    Err("model stream ended before completion".to_string())
+    Err(StreamFailure::StreamIncomplete)
 }
 
 async fn read_bounded_error_body(response: reqwest::Response) -> String {
@@ -140,14 +165,24 @@ async fn read_bounded_error_body(response: reqwest::Response) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-fn classify_provider_error(prefix: &str, provider_text: &str) -> String {
+fn request_failure_kind(is_connect: bool, is_timeout: bool) -> StreamFailure {
+    if is_connect {
+        StreamFailure::RequestConnect
+    } else if is_timeout {
+        StreamFailure::RequestTimeout
+    } else {
+        StreamFailure::RequestOther
+    }
+}
+
+fn provider_rejection(provider_text: &str) -> ProviderRejection {
     let normalized = provider_text.to_ascii_lowercase();
     if normalized.contains("reasoning") {
-        format!("{prefix}: reasoning setting rejected")
+        ProviderRejection::Reasoning
     } else if normalized.contains("context") || normalized.contains("token limit") {
-        format!("{prefix}: input context rejected")
+        ProviderRejection::Context
     } else {
-        prefix.to_string()
+        ProviderRejection::Other
     }
 }
 
@@ -190,7 +225,10 @@ fn frame_completes_stream(protocol: ProviderProtocol, frame: &SseFrame) -> bool 
             && frame.event.as_deref() == Some("response.completed")
 }
 
-fn provider_error_from_frame(protocol: ProviderProtocol, frame: &SseFrame) -> Option<String> {
+fn provider_error_from_frame(
+    _protocol: ProviderProtocol,
+    frame: &SseFrame,
+) -> Option<StreamFailure> {
     let explicit_error_event = matches!(
         frame.event.as_deref(),
         Some("error" | "response.failed" | "response.incomplete")
@@ -205,13 +243,9 @@ fn provider_error_from_frame(protocol: ProviderProtocol, frame: &SseFrame) -> Op
                 || body.get("type").and_then(|value| value.as_str()) == Some("error")
         });
     if explicit_error_event || json_error {
-        Some(classify_provider_error(
-            match protocol {
-                ProviderProtocol::ChatCompletions => "model provider stream failed",
-                ProviderProtocol::OpenaiResponses => "model Responses stream failed",
-            },
-            &frame.data,
-        ))
+        Some(StreamFailure::ProviderStream {
+            rejection: provider_rejection(&frame.data),
+        })
     } else {
         None
     }
@@ -271,9 +305,9 @@ fn take_frames(buffer: &mut String) -> Vec<SseFrame> {
 fn frame_delta(
     protocol: ProviderProtocol,
     frame: &SseFrame,
-) -> Result<Option<StreamDelta>, String> {
-    let body: serde_json::Value = serde_json::from_str(&frame.data)
-        .map_err(|error| format!("invalid model SSE JSON: {error}"))?;
+) -> Result<Option<StreamDelta>, StreamFailure> {
+    let body: serde_json::Value =
+        serde_json::from_str(&frame.data).map_err(|_| StreamFailure::InvalidFrame)?;
     match protocol {
         ProviderProtocol::ChatCompletions => {
             let Some(delta) = body.pointer("/choices/0/delta") else {
@@ -483,9 +517,55 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("HTTP 400"));
-        assert!(error.contains("reasoning"));
-        assert!(!error.contains(secret));
+        assert_eq!(
+            error,
+            StreamFailure::ProviderHttp {
+                status: 400,
+                rejection: ProviderRejection::Reasoning,
+            }
+        );
+        assert!(!format!("{error:?}").contains(secret));
+    }
+
+    #[tokio::test]
+    async fn gateway_timeout_is_a_typed_non_retrying_failure() {
+        let secret = "upstream-secret-body";
+        let response = format!(
+            "HTTP/1.1 504 Gateway Timeout\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n{secret}"
+        );
+        let url = serve_response(response.into_bytes()).await;
+        let error = stream_text(
+            &Client::new(),
+            &request(url, ProviderProtocol::ChatCompletions),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            StreamFailure::ProviderHttp {
+                status: 504,
+                rejection: ProviderRejection::Other,
+            }
+        );
+        assert!(!format!("{error:?}").contains(secret));
+    }
+
+    #[test]
+    fn request_failure_flags_map_without_provider_text() {
+        assert_eq!(
+            request_failure_kind(true, false),
+            StreamFailure::RequestConnect
+        );
+        assert_eq!(
+            request_failure_kind(false, true),
+            StreamFailure::RequestTimeout
+        );
+        assert_eq!(
+            request_failure_kind(false, false),
+            StreamFailure::RequestOther
+        );
     }
 
     #[tokio::test]
@@ -511,7 +591,12 @@ mod tests {
             )
             .await
             .unwrap_err();
-            assert!(error.contains("reasoning"));
+            assert_eq!(
+                error,
+                StreamFailure::ProviderStream {
+                    rejection: ProviderRejection::Reasoning,
+                }
+            );
         }
     }
 
@@ -585,7 +670,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("ended before completion"));
+        assert_eq!(error, StreamFailure::StreamIncomplete);
     }
 
     #[test]
