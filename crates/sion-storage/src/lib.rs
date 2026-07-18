@@ -10,9 +10,9 @@ use calamine::{Reader, open_workbook_auto};
 use serde::Serialize;
 use sion_agent::AgentRun;
 use sion_core::{
-    ChatMessage, ChatModelSelection, ChatSession, FileExtractionStatus, NodeStatus,
-    PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind, ProjectManifest, WorkflowNode,
-    WorkflowNodeId, default_nodes,
+    ChatMessage, ChatModelSelection, ChatSession, ConversationTurn, FileExtractionStatus,
+    NodeStatus, PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind, ProjectManifest,
+    TurnActivityStatus, TurnStatus, WorkflowNode, WorkflowNodeId, default_nodes,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -33,6 +33,8 @@ pub enum StorageError {
     SessionNotFound(String),
     #[error("chat message count exceeds the supported range")]
     MessageCountOverflow,
+    #[error("turn {turn_id} does not belong to session {session_id}")]
+    TurnPathMismatch { turn_id: String, session_id: String },
     #[error("file path has no usable filename: {0}")]
     InvalidFileName(PathBuf),
     #[error("project file {0} does not exist")]
@@ -84,10 +86,46 @@ pub struct FilePreview {
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PendingMessageAppend {
+struct ConversationDocument {
+    #[serde(default)]
+    messages: Vec<ChatMessage>,
+    #[serde(default)]
+    turns: Vec<ConversationTurn>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum StoredConversationDocument {
+    Legacy(Vec<ChatMessage>),
+    Current(ConversationDocument),
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingConversationWrite {
     session_id: String,
-    message: ChatMessage,
+    document: ConversationDocument,
     updated_at: String,
+}
+
+fn read_conversation_document(path: &Path) -> Result<ConversationDocument> {
+    if !path.exists() {
+        return Ok(ConversationDocument {
+            messages: Vec::new(),
+            turns: Vec::new(),
+        });
+    }
+    match read_json::<StoredConversationDocument>(path)? {
+        StoredConversationDocument::Legacy(messages) => Ok(ConversationDocument {
+            messages,
+            turns: Vec::new(),
+        }),
+        StoredConversationDocument::Current(document) => Ok(document),
+    }
+}
+
+fn write_conversation_document(path: &Path, document: &ConversationDocument) -> Result<()> {
+    atomic_write_json(path, document)
 }
 
 #[derive(Debug, Clone)]
@@ -367,9 +405,12 @@ impl ProjectStore {
             updated_at: now,
             model_selection,
         };
-        atomic_write_json(
+        write_conversation_document(
             &self.messages_path(node_id, &session.id)?,
-            &Vec::<ChatMessage>::new(),
+            &ConversationDocument {
+                messages: Vec::new(),
+                turns: Vec::new(),
+            },
         )?;
         let mut sessions = self.list_sessions(node_id)?;
         sessions.push(session.clone());
@@ -410,7 +451,18 @@ impl ProjectStore {
         self.manifest()?;
         self.recover_pending_append(node_id)?;
         self.require_session(node_id, session_id)?;
-        read_json(&self.messages_path(node_id, session_id)?)
+        Ok(read_conversation_document(&self.messages_path(node_id, session_id)?)?.messages)
+    }
+
+    pub fn turns(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+    ) -> Result<Vec<ConversationTurn>> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        self.require_session(node_id, session_id)?;
+        Ok(read_conversation_document(&self.messages_path(node_id, session_id)?)?.turns)
     }
 
     /// Appends a fully formed message with a small write-ahead journal so an
@@ -425,20 +477,94 @@ impl ProjectStore {
         self.manifest()?;
         self.recover_pending_append(node_id)?;
         self.require_session(node_id, session_id)?;
-        let journal = PendingMessageAppend {
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        if !document.messages.iter().any(|item| item.id == message.id) {
+            document.messages.push(message);
+        }
+        self.persist_conversation(node_id, session_id, &document, updated_at)
+    }
+
+    /// Begins a turn by atomically appending the user message and the queued
+    /// turn record to the same conversation document.
+    pub fn begin_turn(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        user_message: ChatMessage,
+        turn: ConversationTurn,
+        now: String,
+    ) -> Result<ChatSession> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        self.require_session(node_id, session_id)?;
+        if turn.node_id != node_id || turn.session_id != session_id {
+            return Err(StorageError::TurnPathMismatch {
+                turn_id: turn.id,
+                session_id: session_id.to_string(),
+            });
+        }
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        if !document.messages.iter().any(|item| item.id == user_message.id) {
+            document.messages.push(user_message);
+        }
+        if !document.turns.iter().any(|item| item.id == turn.id) {
+            document.turns.push(turn);
+        }
+        self.persist_conversation(node_id, session_id, &document, now)
+    }
+
+    /// Replaces a single turn by id inside the conversation document.
+    pub fn save_turn(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        turn: ConversationTurn,
+    ) -> Result<()> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        self.require_session(node_id, session_id)?;
+        if turn.node_id != node_id || turn.session_id != session_id {
+            return Err(StorageError::TurnPathMismatch {
+                turn_id: turn.id,
+                session_id: session_id.to_string(),
+            });
+        }
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        match document.turns.iter_mut().find(|item| item.id == turn.id) {
+            Some(existing) => *existing = turn.clone(),
+            None => document.turns.push(turn.clone()),
+        }
+        let updated_at = turn
+            .finished_at
+            .clone()
+            .unwrap_or_else(|| turn.started_at.clone());
+        self.persist_conversation(node_id, session_id, &document, updated_at)?;
+        Ok(())
+    }
+
+    fn persist_conversation(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        document: &ConversationDocument,
+        updated_at: String,
+    ) -> Result<ChatSession> {
+        let journal = PendingConversationWrite {
             session_id: session_id.to_string(),
-            message: message.clone(),
+            document: document.clone(),
             updated_at: updated_at.clone(),
         };
         atomic_write_json(&self.append_journal_path(node_id), &journal)?;
-
-        let mut messages: Vec<ChatMessage> = read_json(&self.messages_path(node_id, session_id)?)?;
-        if !messages.iter().any(|item| item.id == message.id) {
-            messages.push(message);
-            atomic_write_json(&self.messages_path(node_id, session_id)?, &messages)?;
-        }
-        let session =
-            self.update_session_metadata(node_id, session_id, messages.len(), updated_at)?;
+        write_conversation_document(&self.messages_path(node_id, session_id)?, document)?;
+        let session = self.update_session_metadata(
+            node_id,
+            session_id,
+            document.messages.len(),
+            updated_at,
+        )?;
         fs::remove_file(self.append_journal_path(node_id)).map_err(|source| StorageError::Io {
             path: self.append_journal_path(node_id),
             source,
@@ -669,27 +795,55 @@ impl ProjectStore {
         if !journal_path.exists() {
             return Ok(());
         }
-        let pending: PendingMessageAppend = read_json(&journal_path)?;
+        let pending: PendingConversationWrite = read_json(&journal_path)?;
         self.require_session(node_id, &pending.session_id)?;
         let message_path = self.messages_path(node_id, &pending.session_id)?;
-        let mut messages: Vec<ChatMessage> = read_json(&message_path)?;
-        if !messages
-            .iter()
-            .any(|message| message.id == pending.message.id)
-        {
-            messages.push(pending.message);
-            atomic_write_json(&message_path, &messages)?;
-        }
+        write_conversation_document(&message_path, &pending.document)?;
         self.update_session_metadata(
             node_id,
             &pending.session_id,
-            messages.len(),
+            pending.document.messages.len(),
             pending.updated_at,
         )?;
         fs::remove_file(&journal_path).map_err(|source| StorageError::Io {
             path: journal_path,
             source,
         })
+    }
+
+    /// Marks queued/running turns interrupted after an unclean shutdown so stale
+    /// in-flight records never survive a restart. Returns every turn snapshot.
+    pub fn recover_interrupted_turns(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        now: String,
+    ) -> Result<Vec<ConversationTurn>> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        self.require_session(node_id, session_id)?;
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        let mut changed = false;
+        for turn in &mut document.turns {
+            if matches!(turn.status, TurnStatus::Queued | TurnStatus::Running) {
+                for activity in &mut turn.activities {
+                    if matches!(activity.status, TurnActivityStatus::Running) {
+                        activity.status = TurnActivityStatus::Failed;
+                        activity.public_summary = Some("应用退出前运行未完成".into());
+                        activity.finished_at = Some(now.clone());
+                    }
+                }
+                turn.status = TurnStatus::Interrupted;
+                turn.finished_at = Some(now.clone());
+                changed = true;
+            }
+        }
+        let recovered = document.turns.clone();
+        if changed {
+            self.persist_conversation(node_id, session_id, &document, now)?;
+        }
+        Ok(recovered)
     }
 
     fn update_session_metadata(
@@ -1359,9 +1513,12 @@ mod tests {
         .unwrap();
         atomic_write_json(
             &store.append_journal_path(WorkflowNodeId::Goals),
-            &PendingMessageAppend {
+            &PendingConversationWrite {
                 session_id: session.id.clone(),
-                message,
+                document: ConversationDocument {
+                    messages: vec![message],
+                    turns: Vec::new(),
+                },
                 updated_at: "2026-07-15T00:04:00.000Z".to_string(),
             },
         )
@@ -1378,6 +1535,115 @@ mod tests {
         );
         assert!(!store.append_journal_path(WorkflowNodeId::Goals).exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn conversation_fixture() -> (PathBuf, ProjectStore, ChatSession) {
+        let root = temp_project();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
+        let session = store
+            .create_session(
+                WorkflowNodeId::Goals,
+                "需求讨论".into(),
+                None,
+                "2026-07-18T00:00:00Z".into(),
+            )
+            .unwrap();
+        (root, store, session)
+    }
+
+    fn turn_with_status(session_id: &str, id: &str, status: TurnStatus) -> ConversationTurn {
+        ConversationTurn {
+            id: id.into(),
+            project_id: "project-1".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: session_id.into(),
+            run_id: format!("run-{id}"),
+            user_message_id: format!("user-{id}"),
+            assistant_message_id: None,
+            status,
+            activities: Vec::new(),
+            reasoning_summary: None,
+            delivery_outcome: sion_core::DeliveryOutcome::Pending,
+            started_at: "2026-07-18T00:00:00Z".into(),
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn legacy_message_array_reads_with_no_turns_and_upgrades_on_write() {
+        let (root, store, session) = conversation_fixture();
+        let path = store
+            .messages_path(WorkflowNodeId::Goals, &session.id)
+            .unwrap();
+        atomic_write_json(
+            &path,
+            &vec![chat_message("legacy", sion_core::ChatRole::User, "旧消息")],
+        )
+        .unwrap();
+        assert_eq!(
+            store.messages(WorkflowNodeId::Goals, &session.id).unwrap().len(),
+            1
+        );
+        assert!(
+            store
+                .turns(WorkflowNodeId::Goals, &session.id)
+                .unwrap()
+                .is_empty()
+        );
+
+        let turn = turn_with_status(&session.id, "queued", TurnStatus::Queued);
+        store
+            .begin_turn(
+                WorkflowNodeId::Goals,
+                &session.id,
+                chat_message("user-2", sion_core::ChatRole::User, "新消息"),
+                turn,
+                "later".into(),
+            )
+            .unwrap();
+        let value: serde_json::Value = read_json(&path).unwrap();
+        assert!(value["messages"].is_array());
+        assert!(value["turns"].is_array());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_marks_only_running_turns_interrupted() {
+        let (_, store, session) = conversation_fixture();
+        let running = turn_with_status(&session.id, "running", TurnStatus::Running);
+        let mut completed = turn_with_status(&session.id, "completed", TurnStatus::Completed);
+        completed.finished_at = Some("2026-07-18T00:00:01Z".into());
+        store
+            .save_turn(WorkflowNodeId::Goals, &session.id, running)
+            .unwrap();
+        store
+            .save_turn(WorkflowNodeId::Goals, &session.id, completed)
+            .unwrap();
+        let recovered = store
+            .recover_interrupted_turns(
+                WorkflowNodeId::Goals,
+                &session.id,
+                "recovered-at".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            recovered
+                .iter()
+                .find(|turn| turn.id == "running")
+                .unwrap()
+                .status,
+            TurnStatus::Interrupted
+        );
+        assert_eq!(
+            recovered
+                .iter()
+                .find(|turn| turn.id == "completed")
+                .unwrap()
+                .status,
+            TurnStatus::Completed
+        );
     }
 
     #[test]
