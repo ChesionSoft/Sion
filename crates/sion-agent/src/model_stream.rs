@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sion_core::ReasoningEffort;
+use sion_core::{ProviderTokenUsage, ReasoningEffort, normalize_provider_usage};
 use tokio_util::sync::CancellationToken;
 
 const MAX_PROVIDER_ERROR_BYTES: usize = 16 * 1024;
@@ -36,6 +36,7 @@ pub enum StreamDelta {
 pub struct StreamContent {
     pub output: Vec<String>,
     pub reasoning_summary: Vec<String>,
+    pub usage: Option<ProviderTokenUsage>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -82,12 +83,14 @@ where
     let mut buffer = String::new();
     let mut output = Vec::new();
     let mut reasoning_summary = Vec::new();
+    let mut usage = None;
     loop {
         let next = tokio::select! {
             _ = cancellation.cancelled() => {
                 return Ok(StreamOutcome::Cancelled(StreamContent {
                     output,
                     reasoning_summary,
+                    usage,
                 }))
             }
             next = bytes.next() => next,
@@ -99,10 +102,14 @@ where
             if let Some(error) = provider_error_from_frame(request.protocol, &frame) {
                 return Err(error);
             }
+            if let Some(frame_usage) = frame_usage(request.protocol, &frame) {
+                usage = Some(frame_usage);
+            }
             if frame_completes_stream(request.protocol, &frame) {
                 return Ok(StreamOutcome::Completed(StreamContent {
                     output,
                     reasoning_summary,
+                    usage,
                 }));
             }
             if let Some(delta) = frame_delta(request.protocol, &frame)? {
@@ -149,6 +156,7 @@ pub fn request_body(request: &StreamRequest) -> serde_json::Value {
         ProviderProtocol::ChatCompletions => json!({
             "model": request.model,
             "stream": true,
+            "stream_options": { "include_usage": true },
             "messages": [{"role": "user", "content": request.prompt}]
         }),
         ProviderProtocol::OpenaiResponses => json!({
@@ -207,6 +215,27 @@ fn provider_error_from_frame(protocol: ProviderProtocol, frame: &SseFrame) -> Op
     } else {
         None
     }
+}
+
+fn frame_usage(protocol: ProviderProtocol, frame: &SseFrame) -> Option<ProviderTokenUsage> {
+    let body: serde_json::Value = serde_json::from_str(&frame.data).ok()?;
+    let usage = match protocol {
+        ProviderProtocol::ChatCompletions => body.get("usage")?,
+        ProviderProtocol::OpenaiResponses => body.pointer("/response/usage")?,
+    };
+    let input_tokens = match protocol {
+        ProviderProtocol::ChatCompletions => usage.get("prompt_tokens")?.as_u64()?,
+        ProviderProtocol::OpenaiResponses => usage.get("input_tokens")?.as_u64()?,
+    };
+    let output_tokens = match protocol {
+        ProviderProtocol::ChatCompletions => usage.get("completion_tokens")?.as_u64()?,
+        ProviderProtocol::OpenaiResponses => usage.get("output_tokens")?.as_u64()?,
+    };
+    normalize_provider_usage(ProviderTokenUsage {
+        input_tokens,
+        output_tokens,
+        total_tokens: usage.get("total_tokens")?.as_u64()?,
+    })
 }
 
 fn take_frames(buffer: &mut String) -> Vec<SseFrame> {
@@ -364,7 +393,8 @@ mod tests {
                 outcome,
                 StreamOutcome::Completed(StreamContent {
                     output: vec!["Sion".to_string()],
-                    reasoning_summary: Vec::new()
+                    reasoning_summary: Vec::new(),
+                    usage: None,
                 })
             );
         }
@@ -386,6 +416,29 @@ mod tests {
             Some(StreamDelta::ReasoningSummary("公开摘要".to_string()))
         );
         assert!(!format!("{summary:?}").contains("秘密思维链"));
+    }
+
+    #[test]
+    fn parses_usage_from_both_protocols() {
+        let chat = frame_usage(
+            ProviderProtocol::ChatCompletions,
+            &SseFrame {
+                event: None,
+                data:
+                    r#"{"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150}}"#
+                        .into(),
+            },
+        );
+        let responses = frame_usage(
+            ProviderProtocol::OpenaiResponses,
+            &SseFrame {
+                event: Some("response.completed".into()),
+                data: r#"{"response":{"usage":{"input_tokens":80,"output_tokens":20,"total_tokens":100}}}"#
+                    .into(),
+            },
+        );
+        assert_eq!(chat.unwrap().input_tokens, 120);
+        assert_eq!(responses.unwrap().output_tokens, 20);
     }
 
     #[tokio::test]
@@ -410,7 +463,8 @@ mod tests {
             task.await.unwrap().unwrap(),
             StreamOutcome::Cancelled(StreamContent {
                 output: vec!["Sion".to_string()],
-                reasoning_summary: Vec::new()
+                reasoning_summary: Vec::new(),
+                usage: None,
             })
         );
     }
@@ -488,7 +542,8 @@ mod tests {
                 outcome,
                 StreamOutcome::Completed(StreamContent {
                     output: vec!["Sion".to_string()],
-                    reasoning_summary: Vec::new()
+                    reasoning_summary: Vec::new(),
+                    usage: None,
                 })
             );
         }
@@ -576,6 +631,7 @@ mod tests {
         responses_request.reasoning_effort = ReasoningEffort::Off;
         let responses_off = request_body(&responses_request);
         assert_eq!(chat_high["reasoning_effort"], "high");
+        assert_eq!(chat_high["stream_options"]["include_usage"], true);
         assert!(chat_off.get("reasoning_effort").is_none());
         assert_eq!(responses_low["reasoning"]["effort"], "low");
         assert!(responses_off.get("reasoning").is_none());

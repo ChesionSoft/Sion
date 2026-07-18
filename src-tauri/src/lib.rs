@@ -2452,6 +2452,24 @@ fn complete_regeneration_run(
     spawn_promoted_runs(app.clone(), state.clone(), promoted);
 }
 
+fn completed_turn_usage(
+    run: &sion_agent::AgentRun,
+    job: &AgentJob,
+    content: &sion_agent::model_stream::StreamContent,
+) -> sion_core::TurnTokenUsage {
+    sion_core::build_turn_usage(
+        &job.turn_id,
+        &format!("{}:answer", run.id),
+        &job.model.provider_id,
+        &job.model.model,
+        sion_core::ModelCallCategory::Answer,
+        sion_core::ModelCallStatus::Completed,
+        content.usage,
+        &job.prompt,
+        &content.output.join(""),
+    )
+}
+
 fn complete_agent_run(
     app: &tauri::AppHandle,
     state: &Arc<AgentState>,
@@ -2487,6 +2505,7 @@ fn complete_agent_run(
         };
         match outcome {
             Ok(sion_agent::model_stream::StreamOutcome::Completed(content)) => {
+                let usage = completed_turn_usage(run, job, &content);
                 let projected = projector.finish();
                 let application = match projected.delivery {
                     Ok(delivery) => apply_delivery_outcome(
@@ -2540,7 +2559,7 @@ fn complete_agent_run(
                                 created_at: finished_at.clone(),
                                 turn_id: Some(job.turn_id.clone()),
                                 reasoning_duration_ms: None,
-                                usage: None,
+                                usage: Some(usage),
                                 attachments: Vec::new(),
                                 model_execution: Some(sion_core::ModelExecution {
                                     provider_id: run
@@ -3062,10 +3081,58 @@ mod tests {
                 sion_agent::model_stream::StreamContent {
                     output: vec!["partial".to_string()],
                     reasoning_summary: Vec::new(),
+                    usage: None,
                 },
             )))
             .unwrap();
         assert_eq!(completion, (true, None));
+    }
+
+    #[test]
+    fn completed_stream_usage_accepts_exact_values_and_estimates_when_missing() {
+        let fixture = send_fixture(128_000);
+        let job = test_delivery_job(&fixture, 0, true);
+        let mut scheduler = sion_agent::RunScheduler::default();
+        let run = scheduler
+            .enqueue(sion_agent::RunRequest {
+                project_id: "project-1".into(),
+                node_id: WorkflowNodeId::Goals,
+                provider_id: "provider-a".into(),
+                model: "model-a".into(),
+                reasoning_effort: ReasoningEffort::Medium,
+                file_ids: vec![],
+                kind: sion_agent::AgentRunKind::Conversation,
+                created_at: "now".into(),
+            })
+            .unwrap();
+        let exact = completed_turn_usage(
+            &run,
+            &job,
+            &sion_agent::model_stream::StreamContent {
+                output: vec!["answer".into()],
+                reasoning_summary: vec![],
+                usage: Some(sion_core::ProviderTokenUsage {
+                    input_tokens: 12,
+                    output_tokens: 3,
+                    total_tokens: 15,
+                }),
+            },
+        );
+        assert_eq!(exact.source, sion_core::TokenUsageSource::Exact);
+        assert_eq!(exact.total_tokens, 15);
+
+        let estimated = completed_turn_usage(
+            &run,
+            &job,
+            &sion_agent::model_stream::StreamContent {
+                output: vec!["answer".into()],
+                reasoning_summary: vec![],
+                usage: None,
+            },
+        );
+        assert_eq!(estimated.source, sion_core::TokenUsageSource::Estimated);
+        assert!(estimated.total_tokens > 0);
+        std::fs::remove_dir_all(fixture.root).unwrap();
     }
 
     #[test]
