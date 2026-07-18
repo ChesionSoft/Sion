@@ -87,44 +87,83 @@ pub fn load_selected_files(
     Ok(result)
 }
 
-pub fn build_agent_prompt(parts: ConversationParts<'_>) -> String {
-    let mut transcript: Vec<String> = parts
-        .messages
+fn role_label(role: &ChatRole) -> &'static str {
+    match role {
+        ChatRole::User => "用户",
+        ChatRole::Assistant => "助手",
+        ChatRole::System => "系统",
+    }
+}
+
+fn recent_transcript(messages: &[ChatMessage], draft: &str) -> String {
+    let mut transcript: Vec<String> = messages
         .iter()
         .rev()
         .take(TRANSCRIPT_WINDOW)
         .rev()
-        .map(|message| {
-            format!(
-                "{}: {}",
-                match message.role {
-                    ChatRole::User => "用户",
-                    ChatRole::Assistant => "助手",
-                    ChatRole::System => "系统",
-                },
-                message.content
-            )
-        })
+        .map(|message| format!("{}: {}", role_label(&message.role), message.content))
         .collect();
-    transcript.push(format!("用户: {}", parts.draft));
-    let transcript_str = transcript.join("\n\n");
+    if !draft.is_empty() {
+        transcript.push(format!("用户: {}", draft));
+    }
+    transcript.join("\n\n")
+}
+
+fn attachment_block(attachments: &[SelectedFileContext]) -> String {
+    attachments
+        .iter()
+        .map(|attachment| format!("## {}\n{}", attachment.original_name, attachment.text))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+pub fn build_agent_prompt(parts: ConversationParts<'_>) -> String {
+    let transcript_str = recent_transcript(parts.messages, parts.draft);
     let effective_rules = compose_effective_agent_rules(
         parts.node.id,
         parts.project_override.map(|rule| rule.to_string()),
     );
-    let attachment_block = parts
-        .attachments
-        .iter()
-        .map(|attachment| format!("## {}\n{}", attachment.original_name, attachment.text))
-        .collect::<Vec<_>>()
-        .join("\n\n");
     format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。\n\n必须在回复末尾提供且只提供一个 fenced delivery JSON 交付块。默认使用分节补丁，格式为：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}}]}}\n```。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。\n\n兼容例外：只有当用户明确要求整篇重写时，才可用 `{{\"mode\":\"rewrite\",\"markdown\":\"完整节点 Markdown\"}}`，且必须保留本节点所有必填二级标题。\n\n# 本节点规则\n{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。不要输出隐藏思维链。\n\n回复正文先给出可见说明，然后在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{{\"mode\":\"unchanged\"}}\n```\n- 分节补丁：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}}]}}\n```\n常规对话默认使用 unchanged；只有需要改动交付稿时才用 patch。不要使用整篇 rewrite。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。\n\n# 本节点规则\n{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
         effective_rules.effective_markdown,
-        attachment_block,
+        attachment_block(parts.attachments),
         parts.node.id.as_str(),
         parts.node.markdown,
         transcript_str
+    )
+}
+
+#[allow(dead_code)]
+pub fn build_delivery_retry_prompt(
+    node: &WorkflowNode,
+    messages: &[ChatMessage],
+    assistant_message: &ChatMessage,
+    rules: &str,
+) -> String {
+    format!(
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。\n\n此前助手回复如下：\n{}\n\n请仅基于最新保存的交付稿重新判断，在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{{\"mode\":\"unchanged\"}}\n```\n- 分节补丁：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容\"}}]}}\n```\n不要使用整篇 rewrite。\n\n# 本节点规则\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        assistant_message.content,
+        rules,
+        node.id.as_str(),
+        node.markdown,
+        recent_transcript(messages, "")
+    )
+}
+
+#[allow(dead_code)]
+pub fn build_delivery_regeneration_prompt(
+    node: &WorkflowNode,
+    messages: &[ChatMessage],
+    attachments: &[SelectedFileContext],
+    effective_rules: &str,
+) -> String {
+    format!(
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。请基于当前节点、选定文件和会话，重新生成本节点的完整交付稿。\n\n输出完整 Markdown，包含本节点所有必填二级标题。不要输出 delivery 交付块，不要在前后添加解释说明。\n\n# 本节点规则\n{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        effective_rules,
+        attachment_block(attachments),
+        node.id.as_str(),
+        node.markdown,
+        recent_transcript(messages, "")
     )
 }
 
@@ -217,5 +256,66 @@ mod tests {
             prepared.estimate,
             estimate_context(&prepared.prompt, 100_000)
         );
+    }
+
+    #[test]
+    fn conversation_prompt_requires_an_explicit_delivery_decision() {
+        let node = WorkflowNode {
+            id: WorkflowNodeId::Goals,
+            status: NodeStatus::Draft,
+            markdown: "# 需求背景与建设目标\n\n## 需求背景\n已有\n\n## 建设目标\n已有\n\n## 范围边界\n已有"
+                .into(),
+            revision: 7,
+            updated_at: "2026-07-18T00:00:00Z".into(),
+        };
+        let prompt = build_agent_prompt(ConversationParts {
+            node: &node,
+            messages: &[],
+            project_override: None,
+            attachments: &[],
+            draft: "只回答，不修改",
+        });
+        assert!(prompt.contains(r#"{"mode":"unchanged"}"#));
+        assert!(prompt.contains(r#"{"mode":"patch","sections"#));
+        assert!(prompt.contains("不要输出隐藏思维链"));
+        assert!(!prompt.contains("每轮必须修改"));
+    }
+
+    #[test]
+    fn retry_and_regeneration_prompts_carry_context_without_a_delivery_fence() {
+        let node = WorkflowNode {
+            id: WorkflowNodeId::Goals,
+            status: NodeStatus::Draft,
+            markdown: "# 需求背景与建设目标\n\n## 需求背景\n已有\n\n## 建设目标\n已有\n\n## 范围边界\n已有"
+                .into(),
+            revision: 7,
+            updated_at: "now".into(),
+        };
+        let assistant = ChatMessage {
+            id: "a-1".into(),
+            role: ChatRole::Assistant,
+            content: "此前回复".into(),
+            reasoning_content: None,
+            sources: None,
+            created_at: "now".into(),
+            turn_id: None,
+            reasoning_duration_ms: None,
+            usage: None,
+            attachments: Vec::new(),
+            model_execution: None,
+        };
+        let attachments = vec![SelectedFileContext {
+            file_id: "file-1".into(),
+            original_name: "brief.md".into(),
+            text: "历史附件正文".into(),
+        }];
+        let retry = build_delivery_retry_prompt(&node, &[], &assistant, "当前自定义规则");
+        assert!(retry.contains("此前回复"));
+        assert!(retry.contains(r#"{"mode":"unchanged"}"#));
+        let regen = build_delivery_regeneration_prompt(&node, &[], &attachments, "当前自定义规则");
+        assert!(regen.contains("历史附件正文"));
+        assert!(regen.contains("当前自定义规则"));
+        assert!(regen.contains("输出完整 Markdown"));
+        assert!(!regen.contains("```delivery"));
     }
 }
