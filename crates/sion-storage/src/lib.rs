@@ -18,6 +18,9 @@ use sion_core::{
 use thiserror::Error;
 use uuid::Uuid;
 
+mod export_store;
+pub use export_store::*;
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("project destination already exists")]
@@ -42,6 +45,16 @@ pub enum StorageError {
     ProjectFileNotFound(String),
     #[error("agent run id is unsafe: {0}")]
     UnsafeRunId(String),
+    #[error("export id is unsafe: {0}")]
+    UnsafeExportId(String),
+    #[error("export state is inconsistent with disk: {0}")]
+    InvalidExportState(String),
+    #[error("export content is invalid: {0}")]
+    InvalidExportContent(String),
+    #[error("export candidate {0} does not exist")]
+    ExportCandidateNotFound(String),
+    #[error("export review task {0} does not exist")]
+    ExportReviewNotFound(String),
     #[error("project uses schema {found}, but this app supports up to {supported}")]
     UnsupportedSchema { found: u32, supported: u32 },
     #[error("project JSON is invalid at {path}: {source}")]
