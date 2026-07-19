@@ -130,6 +130,12 @@ export const updateSessionModel = (
     modelSelection,
     now,
   });
+export const deleteSession = (
+  projectId: string,
+  nodeId: NodeId,
+  sessionId: string,
+) =>
+  invokePayload<void>("session_delete", { projectId, nodeId, sessionId });
 export const getConversationContext = (
   projectId: string,
   nodeId: NodeId,

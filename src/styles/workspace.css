@@ -196,11 +196,14 @@
 .conversation-history-header h3 { margin: 0; font-size: 12px; font-weight: 600; }
 .conversation-history-body { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; padding: 10px; overflow-y: auto; }
 .conversation-history-list { display: grid; gap: 2px; }
-.conversation-history-list button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; border: 0; border-radius: var(--radius-md); padding: 7px 8px; background: transparent; text-align: left; color: var(--text); }
-.conversation-history-list button:hover, .conversation-history-list button.is-active { background: var(--bg-hover); }
-.conversation-history-list strong, .conversation-history-list small { display: block; }
-.conversation-history-list strong { font-size: 12px; font-weight: 500; }
-.conversation-history-list small { margin-top: 2px; color: var(--text-muted); font-size: 10px; }
+.conversation-history-row { display: flex; align-items: stretch; gap: 2px; border-radius: var(--radius-md); }
+.conversation-history-row-main { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: 1; min-width: 0; border: 0; border-radius: var(--radius-md); padding: 7px 8px; background: transparent; text-align: left; color: var(--text); cursor: pointer; }
+.conversation-history-row-main:hover, .conversation-history-row-main.is-active { background: var(--bg-hover); }
+.conversation-history-row-main strong, .conversation-history-row-main small { display: block; }
+.conversation-history-row-main strong { font-size: 12px; font-weight: 500; }
+.conversation-history-row-main small { margin-top: 2px; color: var(--text-muted); font-size: 10px; }
+.conversation-history-row-delete { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 26px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--text-muted); cursor: pointer; }
+.conversation-history-row-delete:hover { background: var(--bg-hover); color: var(--text); }
 
 .run-history-row { display: flex; align-items: center; gap: 9px; width: 100%; min-width: 250px; padding: 8px 9px; cursor: pointer; }
 .run-history-row .ui-status-dot { margin: 0; }

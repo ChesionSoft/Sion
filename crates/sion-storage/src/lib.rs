@@ -58,6 +58,11 @@ pub enum StorageError {
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
+/// Maximum conversation records (chat sessions) retained per workflow node.
+/// Creating a new session beyond this cap deletes the oldest sessions, both
+/// the index entry and its message file, so 对话记录最多保留这么多条。
+const MAX_SESSIONS_PER_NODE: usize = 10;
+
 #[derive(Debug, Clone)]
 pub struct CreateProjectInput {
     pub id: String,
@@ -416,8 +421,34 @@ impl ProjectStore {
         let mut sessions = self.list_sessions(node_id)?;
         sessions.push(session.clone());
         sessions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        let sessions = self.prune_excess_sessions(node_id, sessions)?;
         atomic_write_json(&self.sessions_path(node_id), &sessions)?;
         Ok(session)
+    }
+
+    /// Deletes a single conversation record: removes its index entry and its
+    /// message file. Returns `SessionNotFound` if the session is not listed.
+    pub fn delete_session(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+    ) -> Result<()> {
+        self.manifest()?;
+        self.recover_pending_append(node_id)?;
+        let message_path = self.messages_path(node_id, session_id)?;
+        let mut sessions = self.read_sessions(node_id)?;
+        let before = sessions.len();
+        sessions.retain(|session| session.id != session_id);
+        if sessions.len() == before {
+            return Err(StorageError::SessionNotFound(session_id.to_string()));
+        }
+        if message_path.exists() {
+            fs::remove_file(&message_path).map_err(|source| StorageError::Io {
+                path: message_path.clone(),
+                source,
+            })?;
+        }
+        atomic_write_json(&self.sessions_path(node_id), &sessions)
     }
 
     pub fn session(&self, node_id: WorkflowNodeId, session_id: &str) -> Result<ChatSession> {
@@ -940,6 +971,30 @@ impl ProjectStore {
         let updated = session.clone();
         atomic_write_json(&self.sessions_path(node_id), &sessions)?;
         Ok(updated)
+    }
+
+    /// Drops the oldest sessions beyond [`MAX_SESSIONS_PER_NODE`]. `sessions`
+    /// must already be sorted newest-first; the trimmed head is returned and
+    /// each dropped session's message file is removed from disk.
+    fn prune_excess_sessions(
+        &self,
+        node_id: WorkflowNodeId,
+        mut sessions: Vec<ChatSession>,
+    ) -> Result<Vec<ChatSession>> {
+        if sessions.len() <= MAX_SESSIONS_PER_NODE {
+            return Ok(sessions);
+        }
+        let dropped = sessions.split_off(MAX_SESSIONS_PER_NODE);
+        for session in &dropped {
+            let path = self.messages_path(node_id, &session.id)?;
+            if path.exists() {
+                fs::remove_file(&path).map_err(|source| StorageError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            }
+        }
+        Ok(sessions)
     }
 
     fn require_session(&self, node_id: WorkflowNodeId, session_id: &str) -> Result<()> {
@@ -1562,6 +1617,103 @@ mod tests {
             root.join(format!("project-1/chat/goals/{}.json", session.id))
                 .is_file()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn keeps_at_most_ten_sessions_deleting_the_oldest() {
+        let root = temp_project();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
+
+        let mut oldest_id = String::new();
+        for index in 0..MAX_SESSIONS_PER_NODE {
+            let now = format!("2026-07-15T00:{:02}:00.000Z", index);
+            let session = store
+                .create_session(
+                    WorkflowNodeId::Goals,
+                    format!("会话 {index}"),
+                    None,
+                    now,
+                )
+                .unwrap();
+            if index == 0 {
+                oldest_id = session.id;
+            }
+        }
+        assert!(store
+            .messages_path(WorkflowNodeId::Goals, &oldest_id)
+            .unwrap()
+            .is_file());
+        assert_eq!(
+            store.list_sessions(WorkflowNodeId::Goals).unwrap().len(),
+            MAX_SESSIONS_PER_NODE
+        );
+
+        // An eleventh session evicts the oldest record and its message file.
+        store
+            .create_session(
+                WorkflowNodeId::Goals,
+                "第十一会话".into(),
+                None,
+                "2026-07-15T01:00:00.000Z".into(),
+            )
+            .unwrap();
+
+        let sessions = store.list_sessions(WorkflowNodeId::Goals).unwrap();
+        assert_eq!(sessions.len(), MAX_SESSIONS_PER_NODE);
+        assert!(sessions.iter().all(|session| session.id != oldest_id));
+        assert!(!store
+            .messages_path(WorkflowNodeId::Goals, &oldest_id)
+            .unwrap()
+            .is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn delete_session_removes_the_record_and_its_message_file() {
+        let root = temp_project();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
+        let session = store
+            .create_session(
+                WorkflowNodeId::Goals,
+                "待删除".into(),
+                None,
+                "2026-07-15T00:02:00.000Z".into(),
+            )
+            .unwrap();
+        store
+            .append_message(
+                WorkflowNodeId::Goals,
+                &session.id,
+                chat_message("user-1", sion_core::ChatRole::User, "你好"),
+                "2026-07-15T00:03:00.000Z".into(),
+            )
+            .unwrap();
+        assert!(store
+            .messages_path(WorkflowNodeId::Goals, &session.id)
+            .unwrap()
+            .is_file());
+
+        store
+            .delete_session(WorkflowNodeId::Goals, &session.id)
+            .unwrap();
+
+        assert!(store
+            .list_sessions(WorkflowNodeId::Goals)
+            .unwrap()
+            .is_empty());
+        assert!(!store
+            .messages_path(WorkflowNodeId::Goals, &session.id)
+            .unwrap()
+            .is_file());
+        assert!(matches!(
+            store.delete_session(WorkflowNodeId::Goals, &session.id),
+            Err(StorageError::SessionNotFound(_))
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 

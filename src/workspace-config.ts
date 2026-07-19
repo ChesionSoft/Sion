@@ -15,6 +15,7 @@ export const ICON_NAMES = [
   "sidebar-expand",
   "back",
   "close",
+  "trash",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];

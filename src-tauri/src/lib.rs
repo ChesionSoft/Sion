@@ -546,6 +546,16 @@ struct SessionModelUpdateRequest {
     now: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionDeleteRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConversationContextGetRequest {
@@ -1994,6 +2004,22 @@ fn session_model_update(
 }
 
 #[tauri::command]
+fn session_delete(
+    request: SessionDeleteRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<()>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    ProjectStore::at(project_root)
+        .delete_session(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: (),
+    })
+}
+
+#[tauri::command]
 fn conversation_context_get(
     request: ConversationContextGetRequest,
     app: tauri::AppHandle,
@@ -3032,6 +3058,7 @@ pub fn run() {
             session_list,
             session_create,
             session_model_update,
+            session_delete,
             conversation_context_get,
             message_list,
             message_append,

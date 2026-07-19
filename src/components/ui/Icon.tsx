@@ -22,6 +22,7 @@ export function Icon({
     "sidebar-expand": <path d="m10 6 6 6-6 6" />,
     back: <><path d="m10 6-6 6 6 6" /><path d="M4 12h16" /></>,
     close: <path d="m7 7 10 10M17 7 7 17" />,
+    trash: <><path d="M4 6h16" /><path d="M9 6V4h6v2M6 6l1 14h10l1-14" /><path d="M10 10v6M14 10v6" /></>,
   } satisfies Record<IconName, ReactNode>;
   return (
     <svg

@@ -38,6 +38,7 @@ type ProjectWorkspaceProps = {
   onRightSurface: (surface: RightSurface) => void;
   onSelectSession: (sessionId: string) => void;
   onCreateSession: () => void;
+  onDeleteSession: (sessionId: string) => Promise<void>;
   onCancelAgent: () => void;
   onRetryDelivery: (turnId: string) => void;
   onOpenRunDetail: (runId: string) => void;
@@ -154,6 +155,7 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             sessionId={props.sessionId}
             onSelect={props.onSelectSession}
             onCreate={props.onCreateSession}
+            onDelete={props.onDeleteSession}
             onClose={closeHistory}
           />
         </div>

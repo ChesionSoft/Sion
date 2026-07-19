@@ -10,6 +10,7 @@ import {
   deleteProvider,
   getConversationContext,
   getAgentRunDetail,
+  deleteSession as deleteSessionApi,
   exportDocx as exportDocxApi,
   getAgentRules,
   getFilePreview,
@@ -733,6 +734,38 @@ export function App() {
     }
   }
 
+  async function deleteSession(targetSessionId: string): Promise<void> {
+    if (!project) return;
+    const projectId = project.id;
+    const targetNodeId = nodeId;
+    const wasActive = sessionId === targetSessionId;
+    try {
+      await deleteSessionApi(projectId, targetNodeId, targetSessionId);
+      if (project?.id !== projectId || nodeId !== targetNodeId) return;
+      const remaining = sessions.filter((session) => session.id !== targetSessionId);
+      setSessions(remaining);
+      if (wasActive) {
+        const nextSessionId = remaining[0]?.id ?? null;
+        if (nextSessionId) {
+          selectSession(nextSessionId);
+        } else {
+          sessionMutationScopeRef.current = null;
+          messageMutationScopeRef.current = null;
+          messageScopeRef.current = null;
+          setSessionId(null);
+          setMessages([]);
+          setTurns([]);
+          setGeneration(null);
+          setGenerationCandidate("");
+        }
+      }
+      setNotice("已删除会话");
+    } catch (error) {
+      if (project?.id !== projectId || nodeId !== targetNodeId) return;
+      setNotice(`删除会话失败：${String(error)}`);
+    }
+  }
+
   async function loadMessages(projectId: string, nextNodeId: NodeId, nextSessionId: string) {
     const scope = requestScope(projectId, nextNodeId, nextSessionId);
     try {
@@ -1305,6 +1338,7 @@ export function App() {
       sessionId={sessionId}
       onSelectSession={selectSession}
       onCreateSession={() => void createSession()}
+      onDeleteSession={(id) => deleteSession(id)}
       runs={runs}
       runsError={runsError}
       activeRunId={activeRunId}
