@@ -428,11 +428,7 @@ impl ProjectStore {
 
     /// Deletes a single conversation record: removes its index entry and its
     /// message file. Returns `SessionNotFound` if the session is not listed.
-    pub fn delete_session(
-        &self,
-        node_id: WorkflowNodeId,
-        session_id: &str,
-    ) -> Result<()> {
+    pub fn delete_session(&self, node_id: WorkflowNodeId, session_id: &str) -> Result<()> {
         self.manifest()?;
         self.recover_pending_append(node_id)?;
         let message_path = self.messages_path(node_id, session_id)?;
@@ -1631,21 +1627,18 @@ mod tests {
         for index in 0..MAX_SESSIONS_PER_NODE {
             let now = format!("2026-07-15T00:{:02}:00.000Z", index);
             let session = store
-                .create_session(
-                    WorkflowNodeId::Goals,
-                    format!("会话 {index}"),
-                    None,
-                    now,
-                )
+                .create_session(WorkflowNodeId::Goals, format!("会话 {index}"), None, now)
                 .unwrap();
             if index == 0 {
                 oldest_id = session.id;
             }
         }
-        assert!(store
-            .messages_path(WorkflowNodeId::Goals, &oldest_id)
-            .unwrap()
-            .is_file());
+        assert!(
+            store
+                .messages_path(WorkflowNodeId::Goals, &oldest_id)
+                .unwrap()
+                .is_file()
+        );
         assert_eq!(
             store.list_sessions(WorkflowNodeId::Goals).unwrap().len(),
             MAX_SESSIONS_PER_NODE
@@ -1664,10 +1657,12 @@ mod tests {
         let sessions = store.list_sessions(WorkflowNodeId::Goals).unwrap();
         assert_eq!(sessions.len(), MAX_SESSIONS_PER_NODE);
         assert!(sessions.iter().all(|session| session.id != oldest_id));
-        assert!(!store
-            .messages_path(WorkflowNodeId::Goals, &oldest_id)
-            .unwrap()
-            .is_file());
+        assert!(
+            !store
+                .messages_path(WorkflowNodeId::Goals, &oldest_id)
+                .unwrap()
+                .is_file()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1693,23 +1688,29 @@ mod tests {
                 "2026-07-15T00:03:00.000Z".into(),
             )
             .unwrap();
-        assert!(store
-            .messages_path(WorkflowNodeId::Goals, &session.id)
-            .unwrap()
-            .is_file());
+        assert!(
+            store
+                .messages_path(WorkflowNodeId::Goals, &session.id)
+                .unwrap()
+                .is_file()
+        );
 
         store
             .delete_session(WorkflowNodeId::Goals, &session.id)
             .unwrap();
 
-        assert!(store
-            .list_sessions(WorkflowNodeId::Goals)
-            .unwrap()
-            .is_empty());
-        assert!(!store
-            .messages_path(WorkflowNodeId::Goals, &session.id)
-            .unwrap()
-            .is_file());
+        assert!(
+            store
+                .list_sessions(WorkflowNodeId::Goals)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !store
+                .messages_path(WorkflowNodeId::Goals, &session.id)
+                .unwrap()
+                .is_file()
+        );
         assert!(matches!(
             store.delete_session(WorkflowNodeId::Goals, &session.id),
             Err(StorageError::SessionNotFound(_))
