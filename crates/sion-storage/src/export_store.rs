@@ -15,8 +15,8 @@ use sion_core::{
     ExportCandidate, ExportContentError, ExportPatchApplication, ExportPatchResult,
     ExportProposedChange, ExportProposedOp, ExportReviewStatus, ExportReviewTask,
     ExportSourceSnapshot, ExportWorkspaceState, apply_blueprint_patch, apply_draft_patch,
-    approve_current, export_digest, parse_blueprint, record_artifact_change, serialize_blueprint,
-    validate_draft,
+    approve_current, capture_export_source, export_digest, parse_blueprint, record_artifact_change,
+    serialize_blueprint, validate_draft,
 };
 
 use super::{
@@ -35,6 +35,14 @@ pub enum ExportCasResult {
         latest_revision: u64,
         latest_digest: String,
     },
+}
+
+/// Optional generation-time lineage for a markdown artifact write. `None` fields
+/// preserve the previous record's values so manual edits do not erase provenance.
+#[derive(Debug, Clone, Default)]
+pub struct ExportMarkdownLineage {
+    pub source_snapshot: Option<ExportSourceSnapshot>,
+    pub based_on_blueprint_digest: Option<String>,
 }
 
 impl ProjectStore {
@@ -192,6 +200,9 @@ impl ProjectStore {
 
     /// Validates blueprint or formal draft Markdown with the Task 2 contracts,
     /// then CAS-saves it. Only blueprint and formal draft are markdown-editable.
+    ///
+    /// Lineage fields that are `None` preserve the previous record so manual
+    /// edits do not erase generation-time provenance.
     pub fn save_export_markdown_if_revision(
         &self,
         kind: ExportArtifactKind,
@@ -199,12 +210,18 @@ impl ProjectStore {
         expected_digest: &str,
         markdown: String,
         now: String,
+        lineage: ExportMarkdownLineage,
     ) -> Result<ExportCasResult> {
         self.manifest()?;
         validate_export_markdown(kind, &markdown)?;
         let mut state = self.export_workspace()?;
-        let (current_revision, current_digest, based_on_blueprint, based_on_draft) =
+        let (current_revision, current_digest, previous_based_on_blueprint, based_on_draft) =
             self.current_artifact_fields(&state, kind);
+        let previous_source = state
+            .artifacts
+            .iter()
+            .find(|record| record.kind == kind)
+            .and_then(|record| record.source_snapshot.clone());
         if expected_revision != current_revision || expected_digest != current_digest {
             return Ok(ExportCasResult::Conflict {
                 latest_revision: current_revision,
@@ -220,8 +237,10 @@ impl ProjectStore {
             digest: export_digest(&bytes),
             byte_size: bytes.len() as u64,
             updated_at: now.clone(),
-            source_snapshot: None,
-            based_on_blueprint_digest: based_on_blueprint,
+            source_snapshot: lineage.source_snapshot.or(previous_source),
+            based_on_blueprint_digest: lineage
+                .based_on_blueprint_digest
+                .or(previous_based_on_blueprint),
             based_on_draft_digest: based_on_draft,
         };
         record_artifact_change(&mut state, new_record);
@@ -390,6 +409,22 @@ impl ProjectStore {
         validate_export_markdown(kind, &candidate.markdown)?;
         let bytes = candidate.markdown.into_bytes();
         atomic_write_bytes(&self.export_artifact_path(kind), &bytes)?;
+        let nodes = self.list_nodes()?;
+        let source_snapshot = Some(capture_export_source(&nodes));
+        let based_on_blueprint_digest = match kind {
+            ExportArtifactKind::FormalDraft => state
+                .artifacts
+                .iter()
+                .find(|record| record.kind == ExportArtifactKind::Blueprint)
+                .map(|record| record.digest.clone())
+                .or_else(|| {
+                    state
+                        .blueprint_approval
+                        .as_ref()
+                        .map(|approval| approval.approved_digest.clone())
+                }),
+            _ => None,
+        };
         let new_record = ExportArtifactRecord {
             kind,
             filename: kind.filename().into(),
@@ -397,8 +432,8 @@ impl ProjectStore {
             digest: export_digest(&bytes),
             byte_size: bytes.len() as u64,
             updated_at: now.clone(),
-            source_snapshot: None,
-            based_on_blueprint_digest: None,
+            source_snapshot,
+            based_on_blueprint_digest,
             based_on_draft_digest: None,
         };
         record_artifact_change(&mut state, new_record);
@@ -524,7 +559,13 @@ impl ProjectStore {
         let current_markdown = String::from_utf8(current_bytes).map_err(|_| {
             StorageError::InvalidExportContent("current artifact is not valid UTF-8".into())
         })?;
-        let (current_revision, current_digest, _, _) = self.current_artifact_fields(&state, kind);
+        let (current_revision, current_digest, based_on_blueprint, based_on_draft) =
+            self.current_artifact_fields(&state, kind);
+        let previous_source = state
+            .artifacts
+            .iter()
+            .find(|record| record.kind == kind)
+            .and_then(|record| record.source_snapshot.clone());
         if expected_revision != current_revision || expected_digest != current_digest {
             return Ok(ExportCasResult::Conflict {
                 latest_revision: current_revision,
@@ -615,9 +656,9 @@ impl ProjectStore {
             digest: export_digest(&bytes),
             byte_size: bytes.len() as u64,
             updated_at: now.clone(),
-            source_snapshot: None,
-            based_on_blueprint_digest: None,
-            based_on_draft_digest: None,
+            source_snapshot: previous_source,
+            based_on_blueprint_digest: based_on_blueprint,
+            based_on_draft_digest: based_on_draft,
         };
         record_artifact_change(&mut state, new_record);
         task.status = if applications.iter().all(|application| application.applied) {
@@ -700,6 +741,7 @@ mod tests {
                 digest,
                 markdown,
                 "2026-07-19T00:00:00Z".into(),
+                ExportMarkdownLineage::default(),
             )
             .unwrap();
     }
@@ -718,6 +760,8 @@ mod tests {
     fn export_store_round_trips_state_artifacts_candidates_and_reviews() {
         let root = export_fixture();
         let store = ProjectStore::at(root.join("project-1"));
+        let nodes = store.list_nodes().unwrap();
+        let snapshot = capture_export_source(&nodes);
         let first = store
             .save_export_markdown_if_revision(
                 ExportArtifactKind::Blueprint,
@@ -725,6 +769,10 @@ mod tests {
                 "",
                 valid_blueprint(),
                 "2026-07-19T00:00:00Z".into(),
+                ExportMarkdownLineage {
+                    source_snapshot: Some(snapshot.clone()),
+                    based_on_blueprint_digest: None,
+                },
             )
             .unwrap();
         assert!(matches!(first, ExportCasResult::Saved(_)));
@@ -738,6 +786,13 @@ mod tests {
             .unwrap(),
             valid_blueprint()
         );
+        let state = store.export_workspace().unwrap();
+        let record = state
+            .artifacts
+            .iter()
+            .find(|item| item.kind == ExportArtifactKind::Blueprint)
+            .unwrap();
+        assert_eq!(record.source_snapshot.as_ref(), Some(&snapshot));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -752,6 +807,7 @@ mod tests {
                 "",
                 changed_blueprint(),
                 "2026-07-19T00:01:00Z".into(),
+                ExportMarkdownLineage::default(),
             )
             .unwrap();
         assert!(matches!(stale, ExportCasResult::Conflict { .. }));

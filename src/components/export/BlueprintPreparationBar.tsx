@@ -7,9 +7,11 @@ export type BlueprintPreparationBarProps = {
   selected: boolean;
   onSelect: () => void;
   onEdit?: () => void;
+  onRegenerate?: () => void;
   onReview?: () => void;
   onApprove?: () => void;
   canApprove?: boolean;
+  actionsDisabled?: boolean;
 };
 
 export function BlueprintPreparationBar({
@@ -18,9 +20,11 @@ export function BlueprintPreparationBar({
   selected,
   onSelect,
   onEdit,
+  onRegenerate,
   onReview,
   onApprove,
   canApprove,
+  actionsDisabled,
 }: BlueprintPreparationBarProps) {
   const tag = !blueprint.available
     ? { label: "未生成", className: "" }
@@ -44,10 +48,27 @@ export function BlueprintPreparationBar({
         <Button variant={selected ? "secondary" : "ghost"} onClick={onSelect}>
           {selected ? "查看中" : "查看"}
         </Button>
-        {onEdit ? <Button variant="ghost" onClick={onEdit}>编辑</Button> : null}
-        {onReview ? <Button variant="ghost" onClick={onReview}>评审</Button> : null}
+        {onEdit ? (
+          <Button variant="ghost" onClick={onEdit} disabled={actionsDisabled}>
+            编辑
+          </Button>
+        ) : null}
+        {onRegenerate ? (
+          <Button variant="ghost" onClick={onRegenerate} disabled={actionsDisabled}>
+            重新生成
+          </Button>
+        ) : null}
+        {onReview ? (
+          <Button variant="ghost" onClick={onReview} disabled={actionsDisabled}>
+            评审
+          </Button>
+        ) : null}
         {onApprove ? (
-          <Button variant="primary" onClick={onApprove} disabled={!canApprove}>
+          <Button
+            variant="primary"
+            onClick={onApprove}
+            disabled={!canApprove || actionsDisabled}
+          >
             批准
           </Button>
         ) : null}

@@ -14,6 +14,9 @@ export type ArtifactPreviewProps = {
   onEditStart: () => void;
   onEditSave: () => void;
   onEditCancel: () => void;
+  onRegenerate?: () => void;
+  onSaveAs?: () => void;
+  actionsDisabled?: boolean;
 };
 
 export function ArtifactPreview({
@@ -28,6 +31,9 @@ export function ArtifactPreview({
   onEditStart,
   onEditSave,
   onEditCancel,
+  onRegenerate,
+  onSaveAs,
+  actionsDisabled,
 }: ArtifactPreviewProps) {
   if (editing) {
     return (
@@ -51,18 +57,31 @@ export function ArtifactPreview({
     );
   }
 
-  const editButton = canEdit ? (
-    <div className="export-preview-toolbar">
-      <Button variant="ghost" onClick={onEditStart}>
-        编辑
-      </Button>
-    </div>
-  ) : null;
+  const toolbar =
+    canEdit || onRegenerate || onSaveAs ? (
+      <div className="export-preview-toolbar">
+        {canEdit ? (
+          <Button variant="ghost" onClick={onEditStart} disabled={actionsDisabled}>
+            编辑
+          </Button>
+        ) : null}
+        {onRegenerate ? (
+          <Button variant="ghost" onClick={onRegenerate} disabled={actionsDisabled}>
+            重新生成
+          </Button>
+        ) : null}
+        {onSaveAs ? (
+          <Button variant="secondary" onClick={onSaveAs} disabled={actionsDisabled}>
+            另存为
+          </Button>
+        ) : null}
+      </div>
+    ) : null;
 
   if (loading) {
     return (
       <>
-        {editButton}
+        {toolbar}
         <div className="export-preview-empty">
           正在加载{label ? `「${label}」` : ""}内容…
         </div>
@@ -72,7 +91,7 @@ export function ArtifactPreview({
   if (!content) {
     return (
       <>
-        {editButton}
+        {toolbar}
         <div className="export-preview-empty">选择左侧产物查看内容预览。</div>
       </>
     );
@@ -80,7 +99,7 @@ export function ArtifactPreview({
   if (content.kind === "empty") {
     return (
       <>
-        {editButton}
+        {toolbar}
         <div className="export-preview-empty">该产物尚未生成，暂无内容。</div>
       </>
     );
@@ -88,7 +107,7 @@ export function ArtifactPreview({
   if (content.kind === "error") {
     return (
       <>
-        {editButton}
+        {toolbar}
         <div className="export-preview-error">{content.message}</div>
       </>
     );
@@ -96,7 +115,7 @@ export function ArtifactPreview({
   if (content.kind === "markdown" || content.kind === "source") {
     return (
       <>
-        {editButton}
+        {toolbar}
         <SafeMarkdown markdown={content.markdown} variant="document" />
       </>
     );
@@ -104,7 +123,7 @@ export function ArtifactPreview({
   // docx_html: the only HTML accepted here is the sanitized backend response.
   return (
     <>
-      {editButton}
+      {toolbar}
       <div className="export-preview-warning">
         当前为内容预览。封面、目录、页眉页脚和分页请另存后在 Word 或 WPS 中查看。
       </div>
