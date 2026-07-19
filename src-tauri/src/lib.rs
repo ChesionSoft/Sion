@@ -3,6 +3,7 @@ mod app_settings;
 pub mod docx_check;
 pub mod docx_preview;
 pub mod export_documents;
+mod export_runtime;
 mod project_export;
 mod provider_settings;
 mod run_detail;
@@ -3067,6 +3068,15 @@ pub fn run() {
             project_save_agent_override,
             project_save_node,
             project_export_docx,
+            export_runtime::export_workspace_get,
+            export_runtime::export_model_selection_save,
+            export_runtime::export_artifact_get,
+            export_runtime::export_artifact_save,
+            export_runtime::export_artifact_approve,
+            export_runtime::export_candidate_apply,
+            export_runtime::export_candidate_discard,
+            export_runtime::export_review_apply,
+            export_runtime::export_docx_save_as,
             session_list,
             session_create,
             session_model_update,
