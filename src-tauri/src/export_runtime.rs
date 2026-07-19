@@ -9,17 +9,25 @@
 //! synchronous commands and are added in Task 8.
 
 use serde::{Deserialize, Serialize};
-use sion_agent::AgentRunStatus;
+use sion_agent::{
+    AgentRunKind, AgentRunStatus, RunRequest, SchedulerError,
+    model_stream::{self, ProviderProtocol, StreamOutcome, StreamRequest},
+};
 use sion_core::{
-    ChatModelSelection, ExportApproval, ExportArtifactKind, ExportArtifactRecord, ExportCandidate,
-    ExportReviewTask, ExportWorkspaceState, WorkflowNode, WorkflowNodeId, stale_source_nodes,
+    ChatModelSelection, ExportApproval, ExportArtifactKind, ExportArtifactRecord,
+    ExportAttachmentBatchStatus, ExportBlueprint, ExportCandidate, ExportDelivery,
+    ExportProposedChange, ExportProposedOp, ExportQaState, ExportReviewStatus, ExportReviewTask,
+    ExportWorkspaceState, WorkflowNode, WorkflowNodeId, apply_blueprint_patch, apply_draft_patch,
+    build_blueprint_prompt, build_draft_prompt, build_review_prompt, capture_export_source,
+    export_digest, parse_export_delivery, serialize_blueprint, stale_source_nodes, validate_draft,
 };
 use sion_storage::{ExportCasResult, ProjectStore, StorageError};
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 use super::{
-    API_VERSION, ApiError, VersionedRequest, VersionedResponse, assert_api_version,
-    resolve_registered_project_root,
+    API_VERSION, AgentState, ApiError, VersionedRequest, VersionedResponse, assert_api_version,
+    resolve_registered_project_root, sion_root,
 };
 
 const MARKDOWN_PREVIEW_MAX_CHARS: usize = 100_000;
@@ -453,6 +461,18 @@ fn store_nodes(
     Ok((store, nodes))
 }
 
+fn store_nodes_with_root(
+    app: &tauri::AppHandle,
+    project_id: &str,
+) -> Result<(PathBuf, ProjectStore, Vec<WorkflowNode>), ApiError> {
+    let project_root = resolve_registered_project_root(app, project_id)?;
+    let store = ProjectStore::at(&project_root);
+    let nodes = store
+        .list_nodes()
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok((project_root, store, nodes))
+}
+
 // --- Commands ---------------------------------------------------------------
 
 #[tauri::command]
@@ -650,9 +670,1247 @@ pub async fn export_docx_save_as(
     })
 }
 
+// --- Task 8: model runs, candidates, review, finalization -------------------
+
+use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportModelTarget {
+    GenerateBlueprint,
+    RegenerateBlueprint,
+    GenerateDraft,
+    RegenerateDraft,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportAction {
+    GenerateBlueprint,
+    RegenerateBlueprint,
+    GenerateDraft,
+    RegenerateDraft,
+    FinalizeDocx,
+    GenerateEngineeringAttachments,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRunEvent {
+    pub project_id: String,
+    pub run_id: String,
+    pub status: AgentRunStatus,
+    pub public_summary: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportWorkspaceInvalidatedEvent {
+    pub project_id: String,
+}
+
+fn current_record(state: &ExportWorkspaceState, kind: ExportArtifactKind) -> (u64, String) {
+    state
+        .artifacts
+        .iter()
+        .find(|record| record.kind == kind)
+        .map(|record| (record.revision, record.digest.clone()))
+        .unwrap_or((0, String::new()))
+}
+
+fn validation_error(message: impl Into<String>) -> ExportCommandError {
+    ExportCommandError {
+        kind: ExportCommandErrorKind::ValidationFailed,
+        message: message.into(),
+        latest_revision: None,
+        latest_digest: None,
+    }
+}
+
+fn io_error(message: impl Into<String>) -> ExportCommandError {
+    ExportCommandError {
+        kind: ExportCommandErrorKind::IoFailed,
+        message: message.into(),
+        latest_revision: None,
+        latest_digest: None,
+    }
+}
+
+/// Completes an export model run by parsing the agent's delivery and persisting
+/// either a new artifact (first generation) or a regeneration candidate (never
+/// replacing the current artifact). This is the production completion function.
+pub fn complete_export_model_run(
+    store: &ProjectStore,
+    target: ExportModelTarget,
+    delivery_raw: &str,
+    run_id: &str,
+    now: &str,
+) -> Result<(), ExportCommandError> {
+    let delivery = parse_export_delivery(delivery_raw).map_err(|error| ExportCommandError {
+        kind: ExportCommandErrorKind::ProviderFailed,
+        message: format!("model delivery was invalid: {error}"),
+        latest_revision: None,
+        latest_digest: None,
+    })?;
+    let state = store.export_workspace().map_err(map_storage_error)?;
+    match (target, delivery) {
+        (ExportModelTarget::GenerateBlueprint, ExportDelivery::ExportBlueprint { blueprint }) => {
+            let markdown = serialize_blueprint(&blueprint);
+            let (revision, digest) = current_record(&state, ExportArtifactKind::Blueprint);
+            store
+                .save_export_markdown_if_revision(
+                    ExportArtifactKind::Blueprint,
+                    revision,
+                    &digest,
+                    markdown,
+                    now.to_string(),
+                )
+                .map_err(map_storage_error)?;
+        }
+        (ExportModelTarget::RegenerateBlueprint, ExportDelivery::ExportBlueprint { blueprint }) => {
+            let markdown = serialize_blueprint(&blueprint);
+            let (base_revision, base_digest) =
+                current_record(&state, ExportArtifactKind::Blueprint);
+            let candidate = ExportCandidate {
+                id: run_id.to_string(),
+                target_kind: ExportArtifactKind::Blueprint,
+                base_revision,
+                base_digest,
+                candidate_digest: export_digest(markdown.as_bytes()),
+                markdown,
+                model_selection: state.model_selection.clone(),
+                created_at: now.to_string(),
+            };
+            store
+                .save_export_candidate(candidate, now.to_string())
+                .map_err(map_storage_error)?;
+        }
+        (ExportModelTarget::GenerateDraft, ExportDelivery::ExportDraft { markdown, .. }) => {
+            let validated =
+                validate_draft(&markdown).map_err(|error| validation_error(error.to_string()))?;
+            let (revision, digest) = current_record(&state, ExportArtifactKind::FormalDraft);
+            store
+                .save_export_markdown_if_revision(
+                    ExportArtifactKind::FormalDraft,
+                    revision,
+                    &digest,
+                    validated,
+                    now.to_string(),
+                )
+                .map_err(map_storage_error)?;
+        }
+        (ExportModelTarget::RegenerateDraft, ExportDelivery::ExportDraft { markdown, .. }) => {
+            let validated =
+                validate_draft(&markdown).map_err(|error| validation_error(error.to_string()))?;
+            let (base_revision, base_digest) =
+                current_record(&state, ExportArtifactKind::FormalDraft);
+            let candidate = ExportCandidate {
+                id: run_id.to_string(),
+                target_kind: ExportArtifactKind::FormalDraft,
+                base_revision,
+                base_digest,
+                candidate_digest: export_digest(validated.as_bytes()),
+                markdown: validated,
+                model_selection: state.model_selection.clone(),
+                created_at: now.to_string(),
+            };
+            store
+                .save_export_candidate(candidate, now.to_string())
+                .map_err(map_storage_error)?;
+        }
+        _ => {
+            return Err(validation_error(
+                "delivery kind does not match the run target",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Marks every persisted Queued or Running export run as Interrupted and clears
+/// the active run id, so an unclean shutdown never leaves a stale in-flight run.
+pub fn recover_interrupted_export_run(
+    store: &ProjectStore,
+    now: &str,
+) -> Result<(), ExportCommandError> {
+    let runs = store.list_runs().map_err(map_storage_error)?;
+    for run in runs {
+        if matches!(
+            run.kind,
+            AgentRunKind::ExportBlueprint | AgentRunKind::ExportDraft | AgentRunKind::ExportReview
+        ) && matches!(run.status, AgentRunStatus::Queued | AgentRunStatus::Running)
+        {
+            let mut updated = run.clone();
+            updated.status = AgentRunStatus::Interrupted;
+            updated.finished_at = Some(now.to_string());
+            store.save_run(&updated).map_err(map_storage_error)?;
+        }
+    }
+    store
+        .set_export_active_run(None, now.to_string())
+        .map_err(map_storage_error)?;
+    Ok(())
+}
+
+fn format_qa_report_markdown(report: &super::docx_check::DocxQaReport) -> String {
+    let mut out = format!(
+        "# DOCX QA 报告\n\n- 通过：{}\n- 结构单元数：{}\n- 检查时间：{}\n",
+        report.passed, report.structural_unit_count, report.checked_at
+    );
+    if !report.issues.is_empty() {
+        out.push_str("\n## 问题\n\n");
+        for issue in &report.issues {
+            out.push_str(&format!("- {}: {}\n", issue.code, issue.message));
+        }
+    }
+    out
+}
+
+/// Deterministically builds the formal Word from the approved draft, runs
+/// structural QA, publishes on pass (then builds engineering attachments), or
+/// writes a failure report and keeps the previous passing Word on failure.
+pub fn finalize_docx(store: &ProjectStore, now: &str) -> Result<(), ExportCommandError> {
+    let state = store.export_workspace().map_err(map_storage_error)?;
+    let draft_approval = state
+        .draft_approval
+        .clone()
+        .ok_or_else(|| validation_error("formal draft must be approved before finalizing Word"))?;
+    let current_draft_digest = state
+        .artifacts
+        .iter()
+        .find(|record| record.kind == ExportArtifactKind::FormalDraft)
+        .map(|record| record.digest.clone());
+    if current_draft_digest.as_deref() != Some(draft_approval.approved_digest.as_str()) {
+        return Err(validation_error(
+            "approved draft digest does not match the current draft",
+        ));
+    }
+    let draft_bytes = store
+        .export_artifact(ExportArtifactKind::FormalDraft)
+        .map_err(map_storage_error)?
+        .ok_or_else(|| validation_error("formal draft is missing"))?;
+    let draft_markdown =
+        String::from_utf8(draft_bytes).map_err(|_| io_error("draft is not valid UTF-8"))?;
+    let manifest = store.manifest().map_err(map_storage_error)?;
+    let docx_bytes =
+        super::project_export::build_docx(&manifest, &draft_markdown).map_err(io_error)?;
+    let qa_report = super::docx_check::check_export_docx(&docx_bytes, &draft_markdown, now);
+    let (qa_revision, qa_digest) = current_record(&state, ExportArtifactKind::QaReport);
+    let qa_markdown = format_qa_report_markdown(&qa_report);
+    store
+        .publish_export_bytes(
+            ExportArtifactKind::QaReport,
+            qa_revision,
+            &qa_digest,
+            qa_markdown.as_bytes(),
+            None,
+            now.to_string(),
+        )
+        .map_err(map_storage_error)?;
+    if qa_report.passed {
+        let (docx_revision, docx_digest) = current_record(&state, ExportArtifactKind::FormalDocx);
+        store
+            .publish_export_bytes(
+                ExportArtifactKind::FormalDocx,
+                docx_revision,
+                &docx_digest,
+                &docx_bytes,
+                None,
+                now.to_string(),
+            )
+            .map_err(map_storage_error)?;
+        store
+            .set_export_qa_state(
+                ExportQaState::Passed {
+                    checked_draft_digest: draft_approval.approved_digest.clone(),
+                    checked_at: now.to_string(),
+                },
+                now.to_string(),
+            )
+            .map_err(map_storage_error)?;
+        generate_engineering_attachments(store, &manifest, now)?;
+        Ok(())
+    } else {
+        store
+            .set_export_qa_state(
+                ExportQaState::Failed {
+                    checked_draft_digest: draft_approval.approved_digest.clone(),
+                    checked_at: now.to_string(),
+                    issue_codes: qa_report
+                        .issues
+                        .iter()
+                        .map(|issue| issue.code.clone())
+                        .collect(),
+                },
+                now.to_string(),
+            )
+            .map_err(map_storage_error)?;
+        Err(ExportCommandError {
+            kind: ExportCommandErrorKind::QaFailed,
+            message: "DOCX 结构或内容 QA 未通过".into(),
+            latest_revision: None,
+            latest_digest: None,
+        })
+    }
+}
+
+/// Builds or rebuilds the four engineering attachments deterministically. The
+/// batch is `Complete` only when all four publish; otherwise the failed kinds
+/// are recorded for retry.
+pub fn generate_engineering_attachments(
+    store: &ProjectStore,
+    manifest: &sion_core::ProjectManifest,
+    now: &str,
+) -> Result<(), ExportCommandError> {
+    let nodes = store.list_nodes().map_err(map_storage_error)?;
+    let artifacts =
+        super::export_documents::build_engineering_artifacts(manifest, &nodes).map_err(io_error)?;
+    let state = store.export_workspace().map_err(map_storage_error)?;
+    let source_snapshot = capture_export_source(&nodes);
+    let mut failed = Vec::new();
+    for (kind, markdown) in artifacts {
+        let (revision, digest) = current_record(&state, kind);
+        if store
+            .publish_export_bytes(
+                kind,
+                revision,
+                &digest,
+                markdown.as_bytes(),
+                Some(source_snapshot.clone()),
+                now.to_string(),
+            )
+            .is_err()
+        {
+            failed.push(kind);
+        }
+    }
+    let status = if failed.is_empty() {
+        ExportAttachmentBatchStatus::Complete
+    } else {
+        ExportAttachmentBatchStatus::Failed {
+            failed_kinds: failed,
+        }
+    };
+    store
+        .set_export_attachment_batch(status, now.to_string())
+        .map_err(map_storage_error)?;
+    Ok(())
+}
+
+fn finish_export_run(
+    app: &tauri::AppHandle,
+    store: &ProjectStore,
+    project_id: &str,
+    run_id: &str,
+    status: AgentRunStatus,
+    summary: Option<String>,
+    now: &str,
+) {
+    {
+        let state = app.state::<AgentState>();
+        let mut scheduler = state.scheduler.lock().expect("scheduler mutex");
+        let _ = match &status {
+            AgentRunStatus::Completed => {
+                scheduler.complete(run_id, now.to_string(), summary.clone())
+            }
+            AgentRunStatus::Failed => {
+                scheduler.fail(run_id, now.to_string(), summary.clone().unwrap_or_default())
+            }
+            AgentRunStatus::Cancelled => scheduler.cancel(run_id, now.to_string(), summary.clone()),
+            _ => Ok(Vec::new()),
+        };
+        state
+            .export_jobs
+            .lock()
+            .expect("export jobs mutex")
+            .remove(run_id);
+    }
+    if let Ok(mut run) = store.run(run_id) {
+        run.status = status.clone();
+        run.finished_at = Some(now.to_string());
+        run.summary = summary.clone();
+        let _ = store.save_run(&run);
+    }
+    let _ = store.set_export_active_run(None, now.to_string());
+    let _ = app.emit(
+        "export-run-updated",
+        ExportRunEvent {
+            project_id: project_id.to_string(),
+            run_id: run_id.to_string(),
+            status,
+            public_summary: summary,
+            updated_at: now.to_string(),
+        },
+    );
+    let _ = app.emit(
+        "export-workspace-invalidated",
+        ExportWorkspaceInvalidatedEvent {
+            project_id: project_id.to_string(),
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_export_model_run(
+    app: tauri::AppHandle,
+    project_root: PathBuf,
+    project_id: String,
+    run_id: String,
+    target: ExportModelTarget,
+    prompt: String,
+    model_selection: ChatModelSelection,
+    now: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        let store = ProjectStore::at(&project_root);
+        let root = match sion_root(&app) {
+            Ok(root) => root,
+            Err(error) => {
+                finish_export_run(
+                    &app,
+                    &store,
+                    &project_id,
+                    &run_id,
+                    AgentRunStatus::Failed,
+                    Some(error.to_string()),
+                    &now,
+                );
+                return;
+            }
+        };
+        let resolved = match super::provider_settings::resolve_model(
+            &root,
+            &model_selection.provider_id,
+            &model_selection.model,
+        ) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                finish_export_run(
+                    &app,
+                    &store,
+                    &project_id,
+                    &run_id,
+                    AgentRunStatus::Failed,
+                    Some(error),
+                    &now,
+                );
+                return;
+            }
+        };
+        let protocol = match resolved.protocol.as_str() {
+            "chat_completions" => ProviderProtocol::ChatCompletions,
+            "openai_responses" => ProviderProtocol::OpenaiResponses,
+            _ => {
+                finish_export_run(
+                    &app,
+                    &store,
+                    &project_id,
+                    &run_id,
+                    AgentRunStatus::Failed,
+                    Some("unsupported provider protocol".into()),
+                    &now,
+                );
+                return;
+            }
+        };
+        let cancellation = CancellationToken::new();
+        {
+            let state = app.state::<AgentState>();
+            state
+                .export_jobs
+                .lock()
+                .expect("export jobs mutex")
+                .insert(run_id.clone(), cancellation.clone());
+        }
+        let client = app.state::<AgentState>().client.clone();
+        let request = StreamRequest {
+            endpoint: resolved.endpoint,
+            api_key: resolved.api_key,
+            protocol,
+            model: resolved.model,
+            prompt,
+            reasoning_effort: model_selection.reasoning_effort,
+            request_public_reasoning_summary: true,
+        };
+        let result = model_stream::stream_text(&client, &request, cancellation).await;
+        match result {
+            Ok(StreamOutcome::Completed(content)) => {
+                let output = content.output.join("");
+                let completion = complete_export_model_run(&store, target, &output, &run_id, &now);
+                let (status, summary) = match completion {
+                    Ok(()) => (
+                        AgentRunStatus::Completed,
+                        Some("已完成导出生成".to_string()),
+                    ),
+                    Err(error) => (AgentRunStatus::Failed, Some(error.message)),
+                };
+                finish_export_run(&app, &store, &project_id, &run_id, status, summary, &now);
+            }
+            Ok(StreamOutcome::Cancelled(_)) => {
+                finish_export_run(
+                    &app,
+                    &store,
+                    &project_id,
+                    &run_id,
+                    AgentRunStatus::Cancelled,
+                    Some("用户取消".into()),
+                    &now,
+                );
+            }
+            Err(failure) => {
+                finish_export_run(
+                    &app,
+                    &store,
+                    &project_id,
+                    &run_id,
+                    AgentRunStatus::Failed,
+                    Some(format!("provider 失败：{failure:?}")),
+                    &now,
+                );
+            }
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_export_model_run(
+    app: &tauri::AppHandle,
+    store: &ProjectStore,
+    project_root: PathBuf,
+    project_id: &str,
+    target: ExportModelTarget,
+    prompt: String,
+    model_selection: ChatModelSelection,
+    now: &str,
+) -> Result<ExportRunSummary, ExportCommandError> {
+    let run_kind = match target {
+        ExportModelTarget::GenerateBlueprint | ExportModelTarget::RegenerateBlueprint => {
+            AgentRunKind::ExportBlueprint
+        }
+        ExportModelTarget::GenerateDraft | ExportModelTarget::RegenerateDraft => {
+            AgentRunKind::ExportDraft
+        }
+    };
+    let request = RunRequest {
+        project_id: project_id.to_string(),
+        node_id: WorkflowNodeId::FinalExport,
+        provider_id: model_selection.provider_id.clone(),
+        model: model_selection.model.clone(),
+        reasoning_effort: model_selection.reasoning_effort,
+        file_ids: Vec::new(),
+        kind: run_kind,
+        created_at: now.to_string(),
+        session_id: None,
+        turn_id: None,
+        context_snapshot: None,
+    };
+    let run = {
+        let state = app.state::<AgentState>();
+        let mut scheduler = state.scheduler.lock().expect("scheduler mutex");
+        scheduler.enqueue(request).map_err(|error| match error {
+            SchedulerError::NodeBusy { .. } => ExportCommandError {
+                kind: ExportCommandErrorKind::RunBusy,
+                message: "an export run is already active for this project".into(),
+                latest_revision: None,
+                latest_digest: None,
+            },
+            SchedulerError::NotFound(_) | SchedulerError::NotRunning(_) => ExportCommandError {
+                kind: ExportCommandErrorKind::IoFailed,
+                message: error.to_string(),
+                latest_revision: None,
+                latest_digest: None,
+            },
+        })?
+    };
+    store.save_run(&run).map_err(map_storage_error)?;
+    store
+        .set_export_active_run(Some(&run.id), now.to_string())
+        .map_err(map_storage_error)?;
+    let _ = app.emit(
+        "export-run-updated",
+        ExportRunEvent {
+            project_id: project_id.to_string(),
+            run_id: run.id.clone(),
+            status: run.status,
+            public_summary: None,
+            updated_at: now.to_string(),
+        },
+    );
+    let run_id = run.id.clone();
+    spawn_export_model_run(
+        app.clone(),
+        project_root,
+        project_id.to_string(),
+        run_id.clone(),
+        target,
+        prompt,
+        model_selection,
+        now.to_string(),
+    );
+    Ok(ExportRunSummary {
+        run_id,
+        status: AgentRunStatus::Running,
+        public_summary: None,
+        updated_at: now.to_string(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportActionStartRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    action: ExportAction,
+    model_selection: Option<ChatModelSelection>,
+    #[allow(dead_code)]
+    expected_revision: Option<u64>,
+    #[allow(dead_code)]
+    expected_digest: Option<String>,
+    acknowledge_source_warnings: bool,
+    now: String,
+}
+
+#[tauri::command]
+pub fn export_action_start(
+    request: ExportActionStartRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ExportCommandOutcome<ExportWorkspaceSnapshot>>, ApiError> {
+    assert_api_version(&request.version)?;
+    let (project_root, store, nodes) = store_nodes_with_root(&app, &request.project_id)?;
+    let manifest = store
+        .manifest()
+        .map_err(|e| ApiError::CheckFailed(e.to_string()))?;
+    // Advisory source warnings block generation unless acknowledged.
+    if matches!(
+        request.action,
+        ExportAction::GenerateBlueprint
+            | ExportAction::RegenerateBlueprint
+            | ExportAction::GenerateDraft
+            | ExportAction::RegenerateDraft
+    ) && !request.acknowledge_source_warnings
+    {
+        let state = store
+            .export_workspace()
+            .map_err(|e| ApiError::CheckFailed(e.to_string()))?;
+        let warnings = advisory_source_warnings(&state, &nodes);
+        if !warnings.is_empty() {
+            return Ok(VersionedResponse {
+                api_version: API_VERSION,
+                payload: outcome(Err(ExportCommandError {
+                    kind: ExportCommandErrorKind::ValidationFailed,
+                    message: format!(
+                        "source nodes changed: {}。请确认按当前已批准内容继续。",
+                        warnings
+                            .iter()
+                            .map(|node| node.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    latest_revision: None,
+                    latest_digest: None,
+                })),
+            });
+        }
+    }
+    let result: Result<ExportRunSummary, ExportCommandError> = (|| {
+        let action = request.action;
+        match action {
+            ExportAction::FinalizeDocx => {
+                finalize_docx(&store, &request.now)?;
+                Ok(ExportRunSummary {
+                    run_id: "finalize-docx".into(),
+                    status: AgentRunStatus::Completed,
+                    public_summary: Some("正式 Word 与工程附件已生成".into()),
+                    updated_at: request.now.clone(),
+                })
+            }
+            ExportAction::GenerateEngineeringAttachments => {
+                generate_engineering_attachments(&store, &manifest, &request.now)?;
+                Ok(ExportRunSummary {
+                    run_id: "engineering-attachments".into(),
+                    status: AgentRunStatus::Completed,
+                    public_summary: Some("工程附件已更新".into()),
+                    updated_at: request.now.clone(),
+                })
+            }
+            ExportAction::GenerateBlueprint => {
+                let model_selection = require_model_selection(&store, request.model_selection)?;
+                let prompt = build_blueprint_prompt(&manifest, &nodes);
+                start_export_model_run(
+                    &app,
+                    &store,
+                    project_root.clone(),
+                    &request.project_id,
+                    ExportModelTarget::GenerateBlueprint,
+                    prompt,
+                    model_selection,
+                    &request.now,
+                )
+            }
+            ExportAction::RegenerateBlueprint => {
+                let model_selection = require_model_selection(&store, request.model_selection)?;
+                let prompt = build_blueprint_prompt(&manifest, &nodes);
+                start_export_model_run(
+                    &app,
+                    &store,
+                    project_root.clone(),
+                    &request.project_id,
+                    ExportModelTarget::RegenerateBlueprint,
+                    prompt,
+                    model_selection,
+                    &request.now,
+                )
+            }
+            ExportAction::GenerateDraft => {
+                let model_selection = require_model_selection(&store, request.model_selection)?;
+                let blueprint = approved_blueprint(&store)?;
+                let prompt = build_draft_prompt(&manifest, &blueprint, &nodes);
+                start_export_model_run(
+                    &app,
+                    &store,
+                    project_root.clone(),
+                    &request.project_id,
+                    ExportModelTarget::GenerateDraft,
+                    prompt,
+                    model_selection,
+                    &request.now,
+                )
+            }
+            ExportAction::RegenerateDraft => {
+                let model_selection = require_model_selection(&store, request.model_selection)?;
+                let blueprint = approved_blueprint(&store)?;
+                let prompt = build_draft_prompt(&manifest, &blueprint, &nodes);
+                start_export_model_run(
+                    &app,
+                    &store,
+                    project_root.clone(),
+                    &request.project_id,
+                    ExportModelTarget::RegenerateDraft,
+                    prompt,
+                    model_selection,
+                    &request.now,
+                )
+            }
+        }
+    })();
+    let snapshot = match result {
+        Ok(_) => export_workspace_snapshot(&store, &nodes),
+        Err(error) => Err(error),
+    };
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: outcome(snapshot),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportActionCancelRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    run_id: String,
+    now: String,
+}
+
+#[tauri::command]
+pub fn export_action_cancel(
+    request: ExportActionCancelRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ExportCommandOutcome<ExportWorkspaceSnapshot>>, ApiError> {
+    assert_api_version(&request.version)?;
+    let (store, nodes) = store_nodes(&app, &request.project_id)?;
+    let cancelled = {
+        let state = app.state::<AgentState>();
+        if let Some(token) = state
+            .export_jobs
+            .lock()
+            .expect("export jobs mutex")
+            .get(&request.run_id)
+        {
+            token.cancel();
+            true
+        } else {
+            false
+        }
+    };
+    if !cancelled {
+        let state = app.state::<AgentState>();
+        let mut scheduler = state.scheduler.lock().expect("scheduler mutex");
+        let _ = scheduler.cancel(
+            &request.run_id,
+            request.now.clone(),
+            Some("用户取消".into()),
+        );
+    }
+    let _ = store.set_export_active_run(None, request.now.clone());
+    let _ = app.emit(
+        "export-workspace-invalidated",
+        ExportWorkspaceInvalidatedEvent {
+            project_id: request.project_id.clone(),
+        },
+    );
+    let snapshot = export_workspace_snapshot(&store, &nodes);
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: outcome(snapshot),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportReviewStartRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    artifact_kind: ExportArtifactKind,
+    instruction: String,
+    expected_revision: u64,
+    expected_digest: String,
+    model_selection: ChatModelSelection,
+    now: String,
+}
+
+#[tauri::command]
+pub fn export_review_start(
+    request: ExportReviewStartRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ExportCommandOutcome<ExportWorkspaceSnapshot>>, ApiError> {
+    assert_api_version(&request.version)?;
+    let (project_root, store, nodes) = store_nodes_with_root(&app, &request.project_id)?;
+    if !matches!(
+        request.artifact_kind,
+        ExportArtifactKind::Blueprint | ExportArtifactKind::FormalDraft
+    ) {
+        return Ok(VersionedResponse {
+            api_version: API_VERSION,
+            payload: outcome(Err(validation_error(
+                "only blueprint or formal draft can be reviewed",
+            ))),
+        });
+    }
+    let current_bytes = store
+        .export_artifact(request.artifact_kind)
+        .map_err(|e| ApiError::CheckFailed(e.to_string()))?
+        .ok_or_else(|| ApiError::CheckFailed("artifact missing".into()))?;
+    let current_markdown = String::from_utf8(current_bytes)
+        .map_err(|_| ApiError::CheckFailed("artifact not utf-8".into()))?;
+    let task = ExportReviewTask {
+        id: uuid::Uuid::new_v4().to_string(),
+        target_kind: request.artifact_kind,
+        instruction: request.instruction.clone(),
+        base_revision: request.expected_revision,
+        base_digest: request.expected_digest.clone(),
+        model_selection: Some(request.model_selection.clone()),
+        status: ExportReviewStatus::Running,
+        proposed_changes: Vec::new(),
+        applied_results: Vec::new(),
+        created_at: request.now.clone(),
+        finished_at: None,
+        applied_at: None,
+    };
+    store
+        .save_export_review(&task)
+        .map_err(|e| ApiError::CheckFailed(e.to_string()))?;
+    let run_request = RunRequest {
+        project_id: request.project_id.clone(),
+        node_id: WorkflowNodeId::FinalExport,
+        provider_id: request.model_selection.provider_id.clone(),
+        model: request.model_selection.model.clone(),
+        reasoning_effort: request.model_selection.reasoning_effort,
+        file_ids: Vec::new(),
+        kind: AgentRunKind::ExportReview,
+        created_at: request.now.clone(),
+        session_id: None,
+        turn_id: None,
+        context_snapshot: None,
+    };
+    let run = {
+        let state = app.state::<AgentState>();
+        let mut scheduler = state.scheduler.lock().expect("scheduler mutex");
+        scheduler
+            .enqueue(run_request)
+            .map_err(|e| ApiError::CheckFailed(e.to_string()))?
+    };
+    store
+        .save_run(&run)
+        .map_err(|e| ApiError::CheckFailed(e.to_string()))?;
+    store
+        .set_export_active_run(Some(&run.id), request.now.clone())
+        .map_err(|e| ApiError::CheckFailed(e.to_string()))?;
+    spawn_export_review_run(
+        app.clone(),
+        project_root,
+        request.project_id.clone(),
+        run.id.clone(),
+        task.id.clone(),
+        request.artifact_kind,
+        current_markdown,
+        request.expected_digest.clone(),
+        request.instruction.clone(),
+        request.model_selection,
+        request.now.clone(),
+    );
+    let snapshot = export_workspace_snapshot(&store, &nodes);
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: outcome(snapshot),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_export_review_run(
+    app: tauri::AppHandle,
+    project_root: PathBuf,
+    project_id: String,
+    run_id: String,
+    task_id: String,
+    target_kind: ExportArtifactKind,
+    current_markdown: String,
+    digest: String,
+    instruction: String,
+    model_selection: ChatModelSelection,
+    now: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        let store = ProjectStore::at(&project_root);
+        let nodes = store.list_nodes().unwrap_or_default();
+        let prompt = match build_review_prompt(
+            target_kind,
+            &current_markdown,
+            &digest,
+            &instruction,
+            &nodes,
+        ) {
+            Ok(prompt) => prompt,
+            Err(_) => {
+                finish_review_run(
+                    &app,
+                    &store,
+                    &project_id,
+                    &run_id,
+                    &task_id,
+                    ExportReviewStatus::Failed,
+                    &now,
+                );
+                return;
+            }
+        };
+        let root = match sion_root(&app) {
+            Ok(root) => root,
+            Err(error) => {
+                let _ = finish_review_run_status(
+                    &app,
+                    &store,
+                    &project_id,
+                    &run_id,
+                    &task_id,
+                    ExportReviewStatus::Failed,
+                    &now,
+                );
+                let _ = error;
+                return;
+            }
+        };
+        let resolved = match super::provider_settings::resolve_model(
+            &root,
+            &model_selection.provider_id,
+            &model_selection.model,
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => {
+                finish_review_run(
+                    &app,
+                    &store,
+                    &project_id,
+                    &run_id,
+                    &task_id,
+                    ExportReviewStatus::Failed,
+                    &now,
+                );
+                return;
+            }
+        };
+        let protocol = match resolved.protocol.as_str() {
+            "chat_completions" => ProviderProtocol::ChatCompletions,
+            "openai_responses" => ProviderProtocol::OpenaiResponses,
+            _ => {
+                finish_review_run(
+                    &app,
+                    &store,
+                    &project_id,
+                    &run_id,
+                    &task_id,
+                    ExportReviewStatus::Failed,
+                    &now,
+                );
+                return;
+            }
+        };
+        let cancellation = CancellationToken::new();
+        {
+            let state = app.state::<AgentState>();
+            state
+                .export_jobs
+                .lock()
+                .expect("export jobs mutex")
+                .insert(run_id.clone(), cancellation.clone());
+        }
+        let client = app.state::<AgentState>().client.clone();
+        let request = StreamRequest {
+            endpoint: resolved.endpoint,
+            api_key: resolved.api_key,
+            protocol,
+            model: resolved.model,
+            prompt,
+            reasoning_effort: model_selection.reasoning_effort,
+            request_public_reasoning_summary: true,
+        };
+        let result = model_stream::stream_text(&client, &request, cancellation).await;
+        let status = match result {
+            Ok(StreamOutcome::Completed(content)) => {
+                let output = content.output.join("");
+                populate_review_proposals(
+                    &store,
+                    &task_id,
+                    target_kind,
+                    &current_markdown,
+                    &output,
+                    &now,
+                );
+                ExportReviewStatus::Ready
+            }
+            Ok(StreamOutcome::Cancelled(_)) => ExportReviewStatus::Cancelled,
+            Err(_) => ExportReviewStatus::Failed,
+        };
+        finish_review_run(&app, &store, &project_id, &run_id, &task_id, status, &now);
+    });
+}
+
+fn populate_review_proposals(
+    store: &ProjectStore,
+    task_id: &str,
+    target_kind: ExportArtifactKind,
+    current_markdown: &str,
+    delivery_raw: &str,
+    now: &str,
+) {
+    let Ok(mut task) = store.read_export_review(task_id) else {
+        return;
+    };
+    let delivery = match parse_export_delivery(delivery_raw) {
+        Ok(delivery) => delivery,
+        Err(_) => {
+            task.status = ExportReviewStatus::Failed;
+            task.finished_at = Some(now.to_string());
+            let _ = store.save_export_review(&task);
+            return;
+        }
+    };
+    let changes = match (target_kind, delivery) {
+        (ExportArtifactKind::Blueprint, ExportDelivery::BlueprintPatch { ops, .. }) => {
+            let blueprint = match sion_core::parse_blueprint(current_markdown) {
+                Ok(blueprint) => blueprint,
+                Err(_) => {
+                    task.status = ExportReviewStatus::Failed;
+                    task.finished_at = Some(now.to_string());
+                    let _ = store.save_export_review(&task);
+                    return;
+                }
+            };
+            build_proposed_changes(
+                target_kind,
+                ops.into_iter().map(ExportProposedOp::Blueprint).collect(),
+                &blueprint,
+                current_markdown,
+            )
+        }
+        (ExportArtifactKind::FormalDraft, ExportDelivery::DraftPatch { ops, .. }) => {
+            build_proposed_changes_draft(target_kind, ops, current_markdown)
+        }
+        _ => Vec::new(),
+    };
+    task.proposed_changes = changes;
+    task.status = ExportReviewStatus::Ready;
+    task.finished_at = Some(now.to_string());
+    let _ = store.save_export_review(&task);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_review_run(
+    app: &tauri::AppHandle,
+    store: &ProjectStore,
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    status: ExportReviewStatus,
+    now: &str,
+) {
+    let _ = finish_review_run_status(app, store, project_id, run_id, task_id, status, now);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_review_run_status(
+    app: &tauri::AppHandle,
+    store: &ProjectStore,
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    status: ExportReviewStatus,
+    now: &str,
+) -> Result<(), ExportCommandError> {
+    {
+        let state = app.state::<AgentState>();
+        let mut scheduler = state.scheduler.lock().expect("scheduler mutex");
+        let terminal = match status {
+            ExportReviewStatus::Ready => AgentRunStatus::Completed,
+            ExportReviewStatus::Failed => AgentRunStatus::Failed,
+            ExportReviewStatus::Cancelled => AgentRunStatus::Cancelled,
+            _ => AgentRunStatus::Completed,
+        };
+        let _ = match terminal {
+            AgentRunStatus::Completed => {
+                scheduler.complete(run_id, now.to_string(), Some(format!("review {task_id}")))
+            }
+            AgentRunStatus::Failed => {
+                scheduler.fail(run_id, now.to_string(), format!("review {task_id} failed"))
+            }
+            AgentRunStatus::Cancelled => {
+                scheduler.cancel(run_id, now.to_string(), Some("cancelled".into()))
+            }
+            _ => Ok(Vec::new()),
+        };
+        state
+            .export_jobs
+            .lock()
+            .expect("export jobs mutex")
+            .remove(run_id);
+    }
+    if let Ok(mut run) = store.run(run_id) {
+        run.status = AgentRunStatus::Completed;
+        run.finished_at = Some(now.to_string());
+        let _ = store.save_run(&run);
+    }
+    store
+        .set_export_active_run(None, now.to_string())
+        .map_err(map_storage_error)?;
+    let _ = app.emit(
+        "export-review-updated",
+        ExportRunEvent {
+            project_id: project_id.to_string(),
+            run_id: run_id.to_string(),
+            status: AgentRunStatus::Completed,
+            public_summary: Some(format!("review {task_id} {status:?}")),
+            updated_at: now.to_string(),
+        },
+    );
+    let _ = app.emit(
+        "export-workspace-invalidated",
+        ExportWorkspaceInvalidatedEvent {
+            project_id: project_id.to_string(),
+        },
+    );
+    Ok(())
+}
+
+fn build_proposed_changes(
+    target_kind: ExportArtifactKind,
+    ops: Vec<ExportProposedOp>,
+    blueprint: &ExportBlueprint,
+    current_markdown: &str,
+) -> Vec<ExportProposedChange> {
+    ops.into_iter()
+        .enumerate()
+        .filter_map(|(index, op)| {
+            let ExportProposedOp::Blueprint(patch) = &op else {
+                return None;
+            };
+            let (updated, _results) =
+                apply_blueprint_patch(blueprint, std::slice::from_ref(patch)).ok()?;
+            let after = serialize_blueprint(&updated);
+            Some(ExportProposedChange {
+                id: format!("change-{index}"),
+                target_kind,
+                op,
+                before: current_markdown.to_string(),
+                after,
+            })
+        })
+        .collect()
+}
+
+fn build_proposed_changes_draft(
+    target_kind: ExportArtifactKind,
+    ops: Vec<sion_core::DraftPatchOp>,
+    current_markdown: &str,
+) -> Vec<ExportProposedChange> {
+    ops.into_iter()
+        .enumerate()
+        .filter_map(|(index, op)| {
+            let (after, results) =
+                apply_draft_patch(current_markdown, std::slice::from_ref(&op)).ok()?;
+            let _ = results;
+            Some(ExportProposedChange {
+                id: format!("change-{index}"),
+                target_kind,
+                op: ExportProposedOp::Draft(op),
+                before: current_markdown.to_string(),
+                after,
+            })
+        })
+        .collect()
+}
+
+fn advisory_source_warnings(
+    state: &ExportWorkspaceState,
+    nodes: &[WorkflowNode],
+) -> Vec<WorkflowNodeId> {
+    state
+        .artifacts
+        .iter()
+        .find(|record| record.kind == ExportArtifactKind::Blueprint)
+        .and_then(|record| record.source_snapshot.as_ref())
+        .map(|snapshot| stale_source_nodes(snapshot, nodes))
+        .unwrap_or_default()
+}
+
+fn require_model_selection(
+    store: &ProjectStore,
+    supplied: Option<ChatModelSelection>,
+) -> Result<ChatModelSelection, ExportCommandError> {
+    if let Some(selection) = supplied {
+        return Ok(selection);
+    }
+    store
+        .export_workspace()
+        .map_err(map_storage_error)?
+        .model_selection
+        .ok_or_else(|| validation_error("no model selection configured for this project"))
+}
+
+fn approved_blueprint(store: &ProjectStore) -> Result<ExportBlueprint, ExportCommandError> {
+    let state = store.export_workspace().map_err(map_storage_error)?;
+    if state.blueprint_approval.is_none() {
+        return Err(validation_error(
+            "blueprint must be approved before generating the draft",
+        ));
+    }
+    let bytes = store
+        .export_artifact(ExportArtifactKind::Blueprint)
+        .map_err(map_storage_error)?
+        .ok_or_else(|| validation_error("blueprint is missing"))?;
+    let markdown =
+        String::from_utf8(bytes).map_err(|_| io_error("blueprint is not valid UTF-8"))?;
+    sion_core::parse_blueprint(&markdown).map_err(|error| validation_error(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sion_agent::AgentRun;
+    use sion_core::{ExportBlueprintSection, ExportInclusion, ExportPresentation};
     use sion_storage::CreateProjectInput;
 
     fn store() -> (std::path::PathBuf, ProjectStore) {
@@ -706,5 +1964,112 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(request.expected_revision, 2);
+    }
+
+    fn original_blueprint() -> String {
+        "# 示例导出蓝图\n\n## 目标\n\n- id: goal\n- inclusion: confirmed\n- presentation: paragraphs\n- source: basic-info\n- headings: 建设目标\n- rationale: 对外交付\n".into()
+    }
+
+    fn valid_blueprint_delivery() -> String {
+        let blueprint = ExportBlueprint {
+            title: "示例导出蓝图".into(),
+            sections: vec![ExportBlueprintSection {
+                title: "目标".into(),
+                id: "goal".into(),
+                inclusion: ExportInclusion::Confirmed,
+                presentation: ExportPresentation::Paragraphs,
+                source: WorkflowNodeId::BasicInfo,
+                headings: "建设目标".into(),
+                rationale: "对外交付与评审".into(),
+            }],
+        };
+        let body = serde_json::json!({ "kind": "export_blueprint", "blueprint": blueprint });
+        format!("```delivery\n{body}\n```")
+    }
+
+    fn export_store_with_blueprint() -> (std::path::PathBuf, ProjectStore) {
+        let (root, store) = store();
+        store
+            .save_export_markdown_if_revision(
+                ExportArtifactKind::Blueprint,
+                0,
+                "",
+                original_blueprint(),
+                "2026-07-19T00:00:00Z".into(),
+            )
+            .unwrap();
+        (root, store)
+    }
+
+    fn read_blueprint(store: &ProjectStore) -> String {
+        String::from_utf8(
+            store
+                .export_artifact(ExportArtifactKind::Blueprint)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn export_store_with_running_export(run_id: &str) -> (std::path::PathBuf, ProjectStore) {
+        let (root, store) = store();
+        let run = AgentRun {
+            id: run_id.to_string(),
+            project_id: "project-1".to_string(),
+            node_id: WorkflowNodeId::FinalExport,
+            status: AgentRunStatus::Running,
+            created_at: "2026-07-19T00:00:00Z".to_string(),
+            started_at: Some("2026-07-19T00:00:00Z".to_string()),
+            finished_at: None,
+            summary: None,
+            provider_id: Some("provider-1".to_string()),
+            model: Some("model-1".to_string()),
+            reasoning_effort: None,
+            file_ids: Vec::new(),
+            kind: AgentRunKind::ExportBlueprint,
+            session_id: None,
+            turn_id: None,
+            context_snapshot: None,
+            usage: None,
+            duration_ms: None,
+        };
+        store.save_run(&run).unwrap();
+        store
+            .set_export_active_run(Some(run_id), "2026-07-19T00:00:00Z".into())
+            .unwrap();
+        (root, store)
+    }
+
+    fn read_export_run(store: &ProjectStore, run_id: &str) -> AgentRun {
+        store.run(run_id).unwrap()
+    }
+
+    #[test]
+    fn regeneration_completion_persists_candidate_without_replacing_current_artifact() {
+        let (root, store) = export_store_with_blueprint();
+        complete_export_model_run(
+            &store,
+            ExportModelTarget::RegenerateBlueprint,
+            &valid_blueprint_delivery(),
+            "run-1",
+            "2026-07-19T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(read_blueprint(&store), original_blueprint());
+        assert_eq!(
+            store.export_workspace().unwrap().pending_candidates.len(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unfinished_export_run_recovers_as_interrupted() {
+        let (root, store) = export_store_with_running_export("run-1");
+        recover_interrupted_export_run(&store, "2026-07-19T00:10:00Z").unwrap();
+        let run = read_export_run(&store, "run-1");
+        assert_eq!(run.status, AgentRunStatus::Interrupted);
+        assert!(store.export_workspace().unwrap().active_run_id.is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

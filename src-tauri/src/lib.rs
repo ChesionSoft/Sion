@@ -50,6 +50,7 @@ struct AgentState {
     scheduler: Mutex<sion_agent::RunScheduler>,
     jobs: Mutex<HashMap<String, AgentJob>>,
     regenerations: Mutex<HashMap<String, RegenerationJob>>,
+    export_jobs: Mutex<HashMap<String, CancellationToken>>,
     client: reqwest::Client,
 }
 
@@ -64,6 +65,7 @@ impl Default for AgentState {
             scheduler: Mutex::new(sion_agent::RunScheduler::default()),
             jobs: Mutex::new(HashMap::new()),
             regenerations: Mutex::new(HashMap::new()),
+            export_jobs: Mutex::new(HashMap::new()),
             client: reqwest::Client::new(),
         }
     }
@@ -320,6 +322,23 @@ fn list_projects_from_settings(root: &Path) -> Result<ProjectDiscovery, ApiError
     ProjectRegistry::at(root)
         .discover(configured)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))
+}
+
+/// On startup, mark every persisted Queued or Running export run as Interrupted
+/// and clear each project's active run id, so an unclean shutdown never leaves a
+/// stale in-flight run. Called once before any run can be in flight.
+fn recover_all_export_runs(app: &tauri::AppHandle) {
+    let Ok(root) = sion_root(app) else {
+        return;
+    };
+    let Ok(discovery) = list_projects_from_settings(&root) else {
+        return;
+    };
+    let now = utc_now();
+    for project in discovery.projects {
+        let store = ProjectStore::at(&project.root_path);
+        let _ = export_runtime::recover_interrupted_export_run(&store, &now);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2256,6 +2275,7 @@ fn generation_status_for_run(status: sion_agent::AgentRunStatus) -> DeliveryGene
         sion_agent::AgentRunStatus::Completed => DeliveryGenerationStatus::Completed,
         sion_agent::AgentRunStatus::Failed => DeliveryGenerationStatus::Failed,
         sion_agent::AgentRunStatus::Cancelled => DeliveryGenerationStatus::Cancelled,
+        sion_agent::AgentRunStatus::Interrupted => DeliveryGenerationStatus::Failed,
     }
 }
 
@@ -3040,6 +3060,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(AgentState::default()))
         .manage(SettingsState::default())
+        .setup(|app| {
+            recover_all_export_runs(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             app_get_version,
             spike_docx_check,
@@ -3077,6 +3101,9 @@ pub fn run() {
             export_runtime::export_candidate_discard,
             export_runtime::export_review_apply,
             export_runtime::export_docx_save_as,
+            export_runtime::export_action_start,
+            export_runtime::export_action_cancel,
+            export_runtime::export_review_start,
             session_list,
             session_create,
             session_model_update,

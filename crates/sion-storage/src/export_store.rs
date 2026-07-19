@@ -131,6 +131,49 @@ impl ProjectStore {
         Ok(state)
     }
 
+    /// Sets or clears the active export run id. Pass `None` to clear (used on
+    /// terminal completion, cancellation, and interrupted-run recovery).
+    pub fn set_export_active_run(
+        &self,
+        run_id: Option<&str>,
+        now: String,
+    ) -> Result<ExportWorkspaceState> {
+        self.manifest()?;
+        let mut state = self.export_workspace()?;
+        state.active_run_id = run_id.map(str::to_string);
+        state.updated_at = now;
+        self.save_export_state(&state)?;
+        Ok(state)
+    }
+
+    /// Records the formal Word QA outcome.
+    pub fn set_export_qa_state(
+        &self,
+        qa_state: sion_core::ExportQaState,
+        now: String,
+    ) -> Result<ExportWorkspaceState> {
+        self.manifest()?;
+        let mut state = self.export_workspace()?;
+        state.qa_state = qa_state;
+        state.updated_at = now;
+        self.save_export_state(&state)?;
+        Ok(state)
+    }
+
+    /// Records the engineering attachment batch status.
+    pub fn set_export_attachment_batch(
+        &self,
+        status: sion_core::ExportAttachmentBatchStatus,
+        now: String,
+    ) -> Result<ExportWorkspaceState> {
+        self.manifest()?;
+        let mut state = self.export_workspace()?;
+        state.attachment_batch_status = status;
+        state.updated_at = now;
+        self.save_export_state(&state)?;
+        Ok(state)
+    }
+
     fn current_artifact_fields(
         &self,
         state: &ExportWorkspaceState,
@@ -445,6 +488,16 @@ impl ProjectStore {
     pub fn save_export_review(&self, task: &ExportReviewTask) -> Result<()> {
         self.manifest()?;
         atomic_write_json(&self.export_review_path(&task.id)?, task)
+    }
+
+    /// Reads a single review task by id.
+    pub fn read_export_review(&self, task_id: &str) -> Result<ExportReviewTask> {
+        self.manifest()?;
+        let path = self.export_review_path(task_id)?;
+        if !path.exists() {
+            return Err(StorageError::ExportReviewNotFound(task_id.to_string()));
+        }
+        read_json(&path)
     }
 
     /// CAS-applies selected review changes, revalidating the result and writing

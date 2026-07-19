@@ -22,6 +22,9 @@ pub enum AgentRunStatus {
     Completed,
     Failed,
     Cancelled,
+    /// A run that was still Queued or Running when the application exited; it is
+    /// never shown as successful and never automatically rerun.
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +34,12 @@ pub enum AgentRunKind {
     Conversation,
     DeliveryRetry,
     DeliveryRegeneration,
+    /// Generate or regenerate the export blueprint.
+    ExportBlueprint,
+    /// Generate or regenerate the formal draft.
+    ExportDraft,
+    /// Generate a structured review proposal for the blueprint or draft.
+    ExportReview,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -484,5 +493,36 @@ mod tests {
         assert_eq!(run.context_snapshot, None);
         assert_eq!(run.usage, None);
         assert_eq!(run.duration_ms, None);
+    }
+
+    fn export_request(project_id: &str, kind: AgentRunKind) -> RunRequest {
+        RunRequest {
+            project_id: project_id.to_string(),
+            node_id: WorkflowNodeId::FinalExport,
+            provider_id: "provider-1".to_string(),
+            model: "model-1".to_string(),
+            reasoning_effort: ReasoningEffort::Medium,
+            file_ids: Vec::new(),
+            kind,
+            created_at: "2026-07-19T00:00:00Z".to_string(),
+            session_id: None,
+            turn_id: None,
+            context_snapshot: None,
+        }
+    }
+
+    #[test]
+    fn export_runs_reserve_the_final_export_node_per_project() {
+        let mut scheduler = RunScheduler::new(2);
+        scheduler
+            .enqueue(export_request("project-a", AgentRunKind::ExportBlueprint))
+            .unwrap();
+        let conflict = scheduler.enqueue(export_request("project-a", AgentRunKind::ExportDraft));
+        assert!(matches!(conflict, Err(SchedulerError::NodeBusy { .. })));
+        assert!(
+            scheduler
+                .enqueue(export_request("project-b", AgentRunKind::ExportDraft))
+                .is_ok()
+        );
     }
 }
