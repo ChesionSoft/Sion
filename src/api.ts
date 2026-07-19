@@ -18,6 +18,13 @@ import {
   type ConversationContextSnapshot,
   type DeliveryGeneration,
   type EffectiveAgentRules,
+  type ExportAction,
+  type ExportArtifactContent,
+  type ExportArtifactKind,
+  type ExportCommandError,
+  type ExportCommandOutcome,
+  type ExportSaveAsResult,
+  type ExportWorkspaceSnapshot,
   type FilePreview,
   type NodeId,
   type NodeStatus,
@@ -285,3 +292,176 @@ export const getAgentRunDetail = (projectId: string, runId: string) =>
   invokePayload<AgentRunDetail>("agent_run_detail", { projectId, runId });
 export const cancelAgentRun = (projectId: string, runId: string, now: string) =>
   invokePayload<AgentRun>("agent_run_cancel", { projectId, runId, now });
+
+// --- Export center ----------------------------------------------------------
+
+/**
+ * Typed export error. Export domain failures travel inside a successful
+ * versioned IPC envelope as `ExportCommandOutcome::Error`, so the frontend
+ * unwraps a typed error instead of parsing an `ApiError` string.
+ */
+export class ExportClientError extends Error {
+  constructor(readonly detail: ExportCommandError) {
+    super(detail.message);
+    this.name = "ExportClientError";
+  }
+}
+
+const invokeExportPayload = async <T>(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> => {
+  const outcome = await invokePayload<ExportCommandOutcome<T>>(command, args);
+  if (outcome.outcome === "error") {
+    throw new ExportClientError(outcome.error);
+  }
+  return outcome.value;
+};
+
+export const getExportWorkspace = (projectId: string) =>
+  invokeExportPayload<ExportWorkspaceSnapshot>("export_workspace_get", { projectId });
+
+export const saveExportModelSelection = (
+  projectId: string,
+  modelSelection: ChatModelSelection,
+  now: string,
+) =>
+  invokeExportPayload<ExportWorkspaceSnapshot>("export_model_selection_save", {
+    projectId,
+    modelSelection,
+    now,
+  });
+
+export const getExportArtifact = (
+  projectId: string,
+  artifactKind: ExportArtifactKind,
+  view: "preview" | "source",
+) =>
+  invokeExportPayload<ExportArtifactContent>("export_artifact_get", {
+    projectId,
+    artifactKind,
+    view,
+  });
+
+export const saveExportArtifact = (
+  projectId: string,
+  artifactKind: ExportArtifactKind,
+  expectedRevision: number,
+  expectedDigest: string,
+  markdown: string,
+  now: string,
+) =>
+  invokeExportPayload<ExportWorkspaceSnapshot>("export_artifact_save", {
+    projectId,
+    artifactKind,
+    expectedRevision,
+    expectedDigest,
+    markdown,
+    now,
+  });
+
+export const approveExportArtifact = (
+  projectId: string,
+  artifactKind: ExportArtifactKind,
+  expectedRevision: number,
+  expectedDigest: string,
+  now: string,
+) =>
+  invokeExportPayload<ExportWorkspaceSnapshot>("export_artifact_approve", {
+    projectId,
+    artifactKind,
+    expectedRevision,
+    expectedDigest,
+    now,
+  });
+
+export const applyExportCandidate = (
+  projectId: string,
+  candidateId: string,
+  expectedRevision: number,
+  expectedDigest: string,
+  now: string,
+) =>
+  invokeExportPayload<ExportWorkspaceSnapshot>("export_candidate_apply", {
+    projectId,
+    candidateId,
+    expectedRevision,
+    expectedDigest,
+    now,
+  });
+
+export const discardExportCandidate = (
+  projectId: string,
+  candidateId: string,
+  now: string,
+) =>
+  invokeExportPayload<ExportWorkspaceSnapshot>("export_candidate_discard", {
+    projectId,
+    candidateId,
+    now,
+  });
+
+export const applyExportReview = (
+  projectId: string,
+  taskId: string,
+  selectedChangeIds: string[],
+  expectedRevision: number,
+  expectedDigest: string,
+  now: string,
+) =>
+  invokeExportPayload<ExportWorkspaceSnapshot>("export_review_apply", {
+    projectId,
+    taskId,
+    selectedChangeIds,
+    expectedRevision,
+    expectedDigest,
+    now,
+  });
+
+export const exportDocxSaveAs = (projectId: string) =>
+  invokeExportPayload<ExportSaveAsResult>("export_docx_save_as", { projectId });
+
+export const startExportAction = (
+  projectId: string,
+  action: ExportAction,
+  modelSelection: ChatModelSelection | null,
+  expectedRevision: number | null,
+  expectedDigest: string | null,
+  acknowledgeSourceWarnings: boolean,
+  now: string,
+) =>
+  invokeExportPayload<ExportWorkspaceSnapshot>("export_action_start", {
+    projectId,
+    action,
+    modelSelection,
+    expectedRevision,
+    expectedDigest,
+    acknowledgeSourceWarnings,
+    now,
+  });
+
+export const cancelExportAction = (projectId: string, runId: string, now: string) =>
+  invokeExportPayload<ExportWorkspaceSnapshot>("export_action_cancel", {
+    projectId,
+    runId,
+    now,
+  });
+
+export const startExportReview = (
+  projectId: string,
+  artifactKind: ExportArtifactKind,
+  instruction: string,
+  expectedRevision: number,
+  expectedDigest: string,
+  modelSelection: ChatModelSelection,
+  now: string,
+) =>
+  invokeExportPayload<ExportWorkspaceSnapshot>("export_review_start", {
+    projectId,
+    artifactKind,
+    instruction,
+    expectedRevision,
+    expectedDigest,
+    modelSelection,
+    now,
+  });

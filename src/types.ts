@@ -275,3 +275,192 @@ export const statusLabel: Record<NodeStatus, string> = {
 };
 
 // --- Component prop contracts -------------------------------------------------
+
+// --- Export center -----------------------------------------------------------
+
+export type ExportArtifactKind =
+  | "blueprint"
+  | "formal_draft"
+  | "qa_report"
+  | "formal_docx"
+  | "project_design"
+  | "spec"
+  | "tasks"
+  | "agents";
+
+export type ExportApproval = {
+  artifactKind: ExportArtifactKind;
+  approvedRevision: number;
+  approvedDigest: string;
+  approvedAt: string;
+};
+
+export type ExportApprovals = {
+  blueprint: ExportApproval | null;
+  draft: ExportApproval | null;
+};
+
+export type ExportQaState =
+  | "none"
+  | { passed: { checkedDraftDigest: string; checkedAt: string } }
+  | { failed: { checkedDraftDigest: string; checkedAt: string; issueCodes: string[] } };
+
+export type ExportAttachmentBatchStatus =
+  | "none"
+  | "complete"
+  | { failed: { failedKinds: ExportArtifactKind[] } };
+
+export type ExportArtifactSummary = {
+  kind: ExportArtifactKind;
+  filename: string;
+  revision: number;
+  digest: string;
+  available: boolean;
+  updatedAt: string | null;
+  stale: boolean;
+  byteSize: number;
+};
+
+export type ExportRunSummary = {
+  runId: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  publicSummary: string | null;
+  updatedAt: string;
+};
+
+export type ExportCandidate = {
+  id: string;
+  targetKind: ExportArtifactKind;
+  baseRevision: number;
+  baseDigest: string;
+  candidateDigest: string;
+  markdown: string;
+  modelSelection: ChatModelSelection | null;
+  createdAt: string;
+};
+
+export type BlueprintPatchOp =
+  | { op: "update"; sectionId: string; section: ExportBlueprintSection }
+  | { op: "insert"; afterSectionId: string | null; section: ExportBlueprintSection }
+  | { op: "delete"; sectionId: string }
+  | { op: "reorder"; orderedSectionIds: string[] };
+
+export type DraftPatchOp =
+  | { op: "replace"; heading: string; markdown: string }
+  | { op: "insert"; afterHeading: string | null; heading: string; markdown: string }
+  | { op: "delete"; heading: string }
+  | { op: "reorder"; orderedHeadings: string[] };
+
+export type ExportBlueprintSection = {
+  title: string;
+  id: string;
+  inclusion: "confirmed" | "confirmed-summary" | "omit" | "required-disclosure";
+  presentation: "paragraphs" | "bullets" | "table" | "flow" | "appendix";
+  source: NodeId;
+  headings: string;
+  rationale: string;
+};
+
+export type ExportProposedOp = { blueprint: BlueprintPatchOp } | { draft: DraftPatchOp };
+
+export type ExportPatchApplication = {
+  changeId: string;
+  applied: boolean;
+  reason: string | null;
+};
+
+export type ExportReviewStatus =
+  | "queued"
+  | "running"
+  | "ready"
+  | "partially_applied"
+  | "applied"
+  | "stale"
+  | "failed"
+  | "cancelled";
+
+export type ExportProposedChange = {
+  id: string;
+  targetKind: ExportArtifactKind;
+  op: ExportProposedOp;
+  before: string;
+  after: string;
+};
+
+export type ExportReviewTask = {
+  id: string;
+  targetKind: ExportArtifactKind;
+  instruction: string;
+  baseRevision: number;
+  baseDigest: string;
+  modelSelection: ChatModelSelection | null;
+  status: ExportReviewStatus;
+  proposedChanges: ExportProposedChange[];
+  appliedResults: ExportPatchApplication[];
+  createdAt: string;
+  finishedAt: string | null;
+  appliedAt: string | null;
+};
+
+export type ExportWorkspaceSnapshot = {
+  projectId: string;
+  modelSelection: ChatModelSelection | null;
+  blueprint: ExportArtifactSummary;
+  deliveryArtifacts: ExportArtifactSummary[];
+  approvals: ExportApprovals;
+  qaState: ExportQaState;
+  pendingCandidates: ExportCandidate[];
+  reviewTasks: ExportReviewTask[];
+  activeRun: ExportRunSummary | null;
+  sourceWarnings: NodeId[];
+  attachmentBatchStatus: ExportAttachmentBatchStatus;
+};
+
+export type ExportArtifactContent =
+  | { kind: "markdown"; markdown: string; truncated: boolean }
+  | { kind: "source"; markdown: string; truncated: boolean }
+  | { kind: "docx_html"; html: string; truncated: boolean; characterCount: number }
+  | { kind: "empty" }
+  | { kind: "error"; message: string };
+
+export type ExportCommandErrorKind =
+  | "not_found"
+  | "validation_failed"
+  | "revision_conflict"
+  | "stale_review"
+  | "run_busy"
+  | "provider_failed"
+  | "qa_failed"
+  | "cancelled"
+  | "io_failed";
+
+export type ExportCommandError = {
+  kind: ExportCommandErrorKind;
+  message: string;
+  latestRevision: number | null;
+  latestDigest: string | null;
+};
+
+export type ExportCommandOutcome<T> =
+  | { outcome: "success"; value: T }
+  | { outcome: "error"; error: ExportCommandError };
+
+export type ExportSaveAsResult = { exported: boolean; path: string | null };
+
+export type ExportAction =
+  | "generate_blueprint"
+  | "regenerate_blueprint"
+  | "generate_draft"
+  | "regenerate_draft"
+  | "finalize_docx"
+  | "generate_engineering_attachments";
+
+export type ExportRunEvent = {
+  projectId: string;
+  runId: string;
+  status: ExportRunSummary["status"];
+  publicSummary: string | null;
+  updatedAt: string;
+};
+
+export type ExportWorkspaceInvalidatedEvent = { projectId: string };
