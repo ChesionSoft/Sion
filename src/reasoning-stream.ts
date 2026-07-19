@@ -8,8 +8,6 @@ export type ReasoningScope = {
   sessionId: string;
 };
 
-const MAX_PUBLIC_REASONING_CHARACTERS = 2_000;
-
 export function appendLiveReasoning(
   current: LiveReasoningByRun,
   event: AgentReasoningSummaryEvent,
@@ -22,9 +20,7 @@ export function appendLiveReasoning(
   ) {
     return current;
   }
-  const next = [...`${current[event.runId] ?? ""}${event.delta}`]
-    .slice(0, MAX_PUBLIC_REASONING_CHARACTERS)
-    .join("");
+  const next = `${current[event.runId] ?? ""}${event.delta}`;
   return { ...current, [event.runId]: next };
 }
 

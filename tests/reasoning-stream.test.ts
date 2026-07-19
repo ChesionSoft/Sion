@@ -23,15 +23,20 @@ test("appends only matching scoped public reasoning", () => {
   );
 });
 
-test("bounds live reasoning to 2000 Unicode characters", () => {
+test("preserves complete live reasoning beyond 2000 Unicode characters", () => {
+  const completeReasoning = `${"思".repeat(2_500)}${"🧭".repeat(10)}`;
   const event = {
     runId: "r",
     projectId: "p",
     nodeId: "goals",
     sessionId: "s",
-    delta: "思".repeat(2001),
+    delta: completeReasoning,
   } as const;
-  assert.equal([...appendLiveReasoning({}, event, scope).r].length, 2000);
+
+  const next = appendLiveReasoning({}, event, scope);
+
+  assert.equal(next.r, completeReasoning);
+  assert.equal([...next.r].length, 2_510);
 });
 
 test("clears one terminal run or the whole navigation scope", () => {
