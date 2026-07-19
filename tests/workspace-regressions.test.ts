@@ -300,6 +300,24 @@ test("reasoning disclosure is collapsed, accessible, and adds no retry action", 
   assert.doesNotMatch(source, /reasoning_content|重新请求|自动重试/);
 });
 
+test("conversation renders assistant and reasoning Markdown with bounded scrolling", async () => {
+  const [turn, disclosure, css] = await Promise.all([
+    readFile("src/components/workspace/ConversationTurnCard.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationReasoningDisclosure.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+
+  assert.match(turn, /import \{ SafeMarkdown \} from "\.\/SafeMarkdown"/);
+  assert.match(turn, /<SafeMarkdown markdown=\{assistantMessage\.content\} variant="chat" \/>/);
+  assert.match(turn, /conversation-turn-message is-user">\{userMessage\.content\}/);
+  assert.match(disclosure, /<SafeMarkdown markdown=\{displayContent\} variant="reasoning" \/>/);
+  assert.match(disclosure, /\[\.\.\.\(content \?\? ""\)\]\.length/);
+  assert.match(disclosure, /conversation-reasoning-count/);
+  assert.match(css, /\.conversation-reasoning-content\s*\{[^}]*max-height:\s*min\(360px, 45vh\)/s);
+  assert.match(css, /\.conversation-reasoning-content\s*\{[^}]*overflow-y:\s*auto/s);
+  assert.doesNotMatch(disclosure, /scrollTop|scrollIntoView/);
+});
+
 test("delivery regenerates locally while DOCX stays in Export Center", async () => {
   const [delivery, exportCenter, app, shellCss] = await Promise.all([
     readFile("src/components/workspace/DeliveryWorkspace.tsx", "utf8"),

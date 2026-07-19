@@ -1,6 +1,7 @@
 import type { ChatMessage, ConversationTurn } from "../../types";
 import { turnCanRetryDelivery, turnHeadline } from "../../conversation-turns.ts";
 import { ConversationReasoningDisclosure } from "./ConversationReasoningDisclosure";
+import { SafeMarkdown } from "./SafeMarkdown";
 
 export type ConversationTurnCardProps = {
   turn: ConversationTurn;
@@ -36,7 +37,7 @@ export function ConversationTurnCard({
         <section className="conversation-turn-block is-assistant">
           <div className="conversation-turn-speaker">Sion</div>
           <div className="conversation-turn-message is-assistant">
-            {assistantMessage.content}
+            <SafeMarkdown markdown={assistantMessage.content} variant="chat" />
             {assistantMessage.modelExecution ? (
               <div className="conversation-message-execution">
                 {assistantMessage.modelExecution.providerId} · {assistantMessage.modelExecution.model}
