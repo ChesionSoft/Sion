@@ -1,6 +1,7 @@
 mod app_paths;
 mod app_settings;
-mod docx_check;
+pub mod docx_check;
+pub mod docx_preview;
 pub mod export_documents;
 mod project_export;
 mod provider_settings;
@@ -1917,7 +1918,15 @@ async fn project_export_docx(
     let nodes = store
         .list_nodes()
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    project_export::write_docx(&target, &manifest, &nodes).map_err(ApiError::CheckFailed)?;
+    let markdown = nodes
+        .iter()
+        .map(|node| node.markdown.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let bytes = project_export::build_docx(&manifest, &markdown).map_err(ApiError::CheckFailed)?;
+    std::fs::write(&target, bytes).map_err(|error| {
+        ApiError::CheckFailed(format!("cannot write {}: {error}", target.display()))
+    })?;
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: ProjectExportResult {

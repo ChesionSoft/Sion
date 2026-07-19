@@ -1,6 +1,6 @@
 //! DOCX export keeps the local Markdown readable as a structured Word document.
 
-use std::{io::Cursor, path::Path};
+use std::io::Cursor;
 
 use docx_rs::{
     AbstractNumbering, AlignmentType, Docx, IndentLevel, Level, LevelJc, LevelText, LineSpacing,
@@ -9,14 +9,20 @@ use docx_rs::{
     TableBorderPosition, TableBorders, TableCell, TableCellMargins, TableLayoutType,
     TableOfContents, TableRow, WidthType,
 };
-use sion_core::{ProjectManifest, WorkflowNode};
+use sion_core::ProjectManifest;
 
-pub fn write_docx(
-    target: &Path,
-    manifest: &ProjectManifest,
-    nodes: &[WorkflowNode],
-) -> Result<(), String> {
-    let mut document = Docx::new()
+pub fn build_docx(manifest: &ProjectManifest, approved_markdown: &str) -> Result<Vec<u8>, String> {
+    let document = build_document(manifest, approved_markdown);
+    let mut cursor = Cursor::new(Vec::new());
+    document
+        .build()
+        .pack(&mut cursor)
+        .map_err(|error| format!("DOCX pack failed: {error}"))?;
+    Ok(cursor.into_inner())
+}
+
+fn build_document(manifest: &ProjectManifest, markdown: &str) -> Docx {
+    let document = Docx::new()
         // standard_business_brief: Letter, one-inch margins, 0.492-inch header/footer.
         .page_size(12_240, 15_840)
         .page_margin(
@@ -202,16 +208,7 @@ pub fn write_docx(
                         .style("SionTocHeading"),
                 ),
         );
-    for node in nodes {
-        document = add_markdown(document, &node.markdown);
-    }
-    let mut bytes = Cursor::new(Vec::new());
-    document
-        .build()
-        .pack(&mut bytes)
-        .map_err(|error| format!("DOCX pack failed: {error}"))?;
-    std::fs::write(target, bytes.into_inner())
-        .map_err(|error| format!("cannot write {}: {error}", target.display()))
+    add_markdown(document, markdown)
 }
 
 fn add_markdown(mut document: Docx, markdown: &str) -> Docx {
@@ -408,37 +405,34 @@ mod tests {
     use std::io::Read;
     use zip::ZipArchive;
 
+    fn manifest() -> ProjectManifest {
+        ProjectManifest {
+            schema_version: 1,
+            id: "project-1".to_string(),
+            name: "示例项目".to_string(),
+            customer_name: "客户".to_string(),
+            author_name: "Sion".to_string(),
+            version: "V1.0".to_string(),
+            created_at: "2026-07-19T00:00:00Z".to_string(),
+            updated_at: "2026-07-19T00:00:00Z".to_string(),
+        }
+    }
+
     #[test]
     fn preserves_project_text_and_word_heading_structure() {
-        let root = std::env::temp_dir().join(format!("sion-export-{}", uuid::Uuid::new_v4()));
-        let manifest = ProjectManifest {
-            schema_version: 1,
-            id: "project-a".to_string(),
-            name: "导出样例".to_string(),
-            customer_name: "客户".to_string(),
-            author_name: "作者".to_string(),
-            version: "V1".to_string(),
-            created_at: "now".to_string(),
-            updated_at: "now".to_string(),
-        };
-        let node = WorkflowNode {
-            id: sion_core::WorkflowNodeId::BasicInfo,
-            status: sion_core::NodeStatus::Draft,
-            markdown:
-                "# 项目简介\n\n## 范围\n\n| 阶段 | 负责人 |\n| --- | :---: |\n| 调研 | 产品 |\n\n- 保留所有正文。\n* 兼容星号项目符号。\n1. 确认导出。"
-                    .to_string(),
-            revision: 1,
-            updated_at: "now".to_string(),
-        };
-        write_docx(&root, &manifest, &[node]).unwrap();
-        let mut archive = ZipArchive::new(std::fs::File::open(&root).unwrap()).unwrap();
+        let markdown = "# 项目简介\n\n## 范围\n\n| 阶段 | 负责人 |\n| --- | :---: |\n| 调研 | 产品 |\n\n- 保留所有正文。\n* 兼容星号项目符号。\n1. 确认导出。";
+        let bytes = build_docx(&manifest(), markdown).unwrap();
+        if let Some(destination) = std::env::var_os("SION_DOCX_QA_OUTPUT") {
+            std::fs::write(&destination, &bytes).unwrap();
+        }
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
         let mut xml = String::new();
         archive
             .by_name("word/document.xml")
             .unwrap()
             .read_to_string(&mut xml)
             .unwrap();
-        assert!(xml.contains("导出样例"));
+        assert!(xml.contains("示例项目"));
         assert!(xml.contains("项目简介"));
         assert!(xml.contains("w:pStyle w:val=\"Title\""));
         assert!(xml.contains("w:pStyle w:val=\"Heading1\""));
@@ -470,10 +464,24 @@ mod tests {
         assert!(xml.contains("w:tblLayout w:type=\"fixed\""));
         assert!(xml.contains("w:tblCellMar"));
         assert!(xml.contains("w:fill=\"F2F4F7\""));
-        if let Some(destination) = std::env::var_os("SION_DOCX_QA_OUTPUT") {
-            std::fs::copy(&root, destination).unwrap();
-        }
-        let _ = std::fs::remove_file(root);
+    }
+
+    #[test]
+    fn approved_markdown_builds_a_qa_passing_docx() {
+        let markdown = "# 示例项目 PRD\n\n## 目标\n\n- 保留中文正文\n\n## 范围\n\n| 项目 | 值 |\n| --- | --- |\n| 模式 | 本地 |";
+        let bytes = build_docx(&manifest(), markdown).unwrap();
+        let report = crate::docx_check::check_export_docx(&bytes, markdown, "2026-07-19T00:00:00Z");
+        assert!(report.passed, "{:?}", report.issues);
+        assert!(report.structural_unit_count >= 2);
+    }
+
+    #[test]
+    fn docx_preview_is_bounded_and_emits_only_owned_html() {
+        let bytes = build_docx(&manifest(), "# PRD\n\n## 目标\n\n<script>x</script>中文").unwrap();
+        let preview = crate::docx_preview::preview_docx(&bytes, 2_000_000, 100_000).unwrap();
+        assert!(preview.html.contains("<h2>目标</h2>"));
+        assert!(!preview.html.contains("<script"));
+        assert!(!preview.html.contains("http://"));
     }
 
     #[test]
