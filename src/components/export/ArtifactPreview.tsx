@@ -1,3 +1,4 @@
+import { Button } from "../ui";
 import type { ExportArtifactContent } from "../../types";
 import { SafeMarkdown } from "../workspace/SafeMarkdown";
 
@@ -5,30 +6,105 @@ export type ArtifactPreviewProps = {
   content: ExportArtifactContent | null;
   loading: boolean;
   label: string | null;
+  canEdit: boolean;
+  editing: boolean;
+  editBuffer: string;
+  editError: string | null;
+  onEditBufferChange: (value: string) => void;
+  onEditStart: () => void;
+  onEditSave: () => void;
+  onEditCancel: () => void;
 };
 
-export function ArtifactPreview({ content, loading, label }: ArtifactPreviewProps) {
+export function ArtifactPreview({
+  content,
+  loading,
+  label,
+  canEdit,
+  editing,
+  editBuffer,
+  editError,
+  onEditBufferChange,
+  onEditStart,
+  onEditSave,
+  onEditCancel,
+}: ArtifactPreviewProps) {
+  if (editing) {
+    return (
+      <div className="export-preview-editor">
+        <textarea
+          className="export-preview-textarea"
+          value={editBuffer}
+          onChange={(event) => onEditBufferChange(event.target.value)}
+          rows={24}
+        />
+        {editError ? <p className="export-preview-error">{editError}</p> : null}
+        <div className="export-preview-editor-actions">
+          <Button variant="primary" onClick={onEditSave}>
+            保存
+          </Button>
+          <Button variant="ghost" onClick={onEditCancel}>
+            取消
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const editButton = canEdit ? (
+    <div className="export-preview-toolbar">
+      <Button variant="ghost" onClick={onEditStart}>
+        编辑
+      </Button>
+    </div>
+  ) : null;
+
   if (loading) {
-    return <div className="export-preview-empty">正在加载{label ? `「${label}」` : ""}内容…</div>;
+    return (
+      <>
+        {editButton}
+        <div className="export-preview-empty">
+          正在加载{label ? `「${label}」` : ""}内容…
+        </div>
+      </>
+    );
   }
   if (!content) {
-    return <div className="export-preview-empty">选择左侧产物查看内容预览。</div>;
+    return (
+      <>
+        {editButton}
+        <div className="export-preview-empty">选择左侧产物查看内容预览。</div>
+      </>
+    );
   }
   if (content.kind === "empty") {
-    return <div className="export-preview-empty">该产物尚未生成，暂无内容。</div>;
+    return (
+      <>
+        {editButton}
+        <div className="export-preview-empty">该产物尚未生成，暂无内容。</div>
+      </>
+    );
   }
   if (content.kind === "error") {
-    return <div className="export-preview-error">{content.message}</div>;
+    return (
+      <>
+        {editButton}
+        <div className="export-preview-error">{content.message}</div>
+      </>
+    );
   }
-  if (content.kind === "markdown") {
-    return <SafeMarkdown markdown={content.markdown} variant="document" />;
-  }
-  if (content.kind === "source") {
-    return <SafeMarkdown markdown={content.markdown} variant="document" />;
+  if (content.kind === "markdown" || content.kind === "source") {
+    return (
+      <>
+        {editButton}
+        <SafeMarkdown markdown={content.markdown} variant="document" />
+      </>
+    );
   }
   // docx_html: the only HTML accepted here is the sanitized backend response.
   return (
     <>
+      {editButton}
       <div className="export-preview-warning">
         当前为内容预览。封面、目录、页眉页脚和分页请另存后在 Word 或 WPS 中查看。
       </div>

@@ -411,3 +411,20 @@ test("export center separates blueprint and previews seven delivery artifacts", 
   assert.match(preview, /当前为内容预览/);
   assert.match(css, /grid-template-columns/);
 });
+
+test("export review is a task ledger with explicit diff application, not chat", async () => {
+  const [center, ledger, diff, action] = await Promise.all([
+    readFile("src/components/app/ExportCenter.tsx", "utf8"),
+    readFile("src/components/export/ReviewLedger.tsx", "utf8"),
+    readFile("src/components/export/ArtifactDiff.tsx", "utf8"),
+    readFile("src/components/export/ExportActionBar.tsx", "utf8"),
+  ]);
+  assert.match(ledger, /评审任务/);
+  assert.match(ledger, /生成修改建议/);
+  assert.match(ledger, /应用修改/);
+  assert.doesNotMatch(ledger, /ChatSession|消息|conversation/);
+  assert.match(diff, /selectedChangeIds/);
+  assert.match(center, /expectedRevision/);
+  assert.match(center, /expectedDigest/);
+  assert.match(action, /取消/);
+});
