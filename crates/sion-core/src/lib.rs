@@ -781,13 +781,13 @@ fn contains_structural_heading(markdown: &str) -> bool {
     false
 }
 
-struct DeliveryBlock<'a> {
-    body: &'a str,
-    visible_end: usize,
-    block_end: usize,
+pub(crate) struct DeliveryBlock<'a> {
+    pub(crate) body: &'a str,
+    pub(crate) visible_end: usize,
+    pub(crate) block_end: usize,
 }
 
-fn extract_delivery_block(response: &str) -> Result<DeliveryBlock<'_>, DeliveryError> {
+pub(crate) fn extract_delivery_block(response: &str) -> Result<DeliveryBlock<'_>, DeliveryError> {
     let mut found: Option<DeliveryBlock<'_>> = None;
     let mut search_start = 0;
     while let Some(relative_start) = response[search_start..].find("```") {
