@@ -762,6 +762,31 @@ fn io_error(message: impl Into<String>) -> ExportCommandError {
     }
 }
 
+fn require_cas_saved(result: Result<ExportCasResult, StorageError>) -> Result<(), ExportCommandError> {
+    match result {
+        Ok(ExportCasResult::Saved(_)) => Ok(()),
+        Ok(ExportCasResult::Conflict {
+            latest_revision,
+            latest_digest,
+        }) => Err(ExportCommandError {
+            kind: ExportCommandErrorKind::RevisionConflict,
+            message: "export artifact changed while the model was running".into(),
+            latest_revision: Some(latest_revision),
+            latest_digest: Some(latest_digest),
+        }),
+        Err(error) => Err(map_storage_error(error)),
+    }
+}
+
+fn progress_summary_for_target(target: ExportModelTarget) -> &'static str {
+    match target {
+        ExportModelTarget::GenerateBlueprint => "正在生成导出蓝图…",
+        ExportModelTarget::RegenerateBlueprint => "正在重新生成导出蓝图…",
+        ExportModelTarget::GenerateDraft => "正在生成正式正文…",
+        ExportModelTarget::RegenerateDraft => "正在重新生成正式正文…",
+    }
+}
+
 /// Completes an export model run by parsing the agent's delivery and persisting
 /// either a new artifact (first generation) or a regeneration candidate (never
 /// replacing the current artifact). This is the production completion function.
@@ -785,19 +810,17 @@ pub fn complete_export_model_run(
         (ExportModelTarget::GenerateBlueprint, ExportDelivery::ExportBlueprint { blueprint }) => {
             let markdown = serialize_blueprint(&blueprint);
             let (revision, digest) = current_record(&state, ExportArtifactKind::Blueprint);
-            store
-                .save_export_markdown_if_revision(
-                    ExportArtifactKind::Blueprint,
-                    revision,
-                    &digest,
-                    markdown,
-                    now.to_string(),
-                    ExportMarkdownLineage {
-                        source_snapshot: Some(source_snapshot),
-                        based_on_blueprint_digest: None,
-                    },
-                )
-                .map_err(map_storage_error)?;
+            require_cas_saved(store.save_export_markdown_if_revision(
+                ExportArtifactKind::Blueprint,
+                revision,
+                &digest,
+                markdown,
+                now.to_string(),
+                ExportMarkdownLineage {
+                    source_snapshot: Some(source_snapshot),
+                    based_on_blueprint_digest: None,
+                },
+            ))?;
         }
         (ExportModelTarget::RegenerateBlueprint, ExportDelivery::ExportBlueprint { blueprint }) => {
             let markdown = serialize_blueprint(&blueprint);
@@ -832,19 +855,17 @@ pub fn complete_export_model_run(
                         .find(|record| record.kind == ExportArtifactKind::Blueprint)
                         .map(|record| record.digest.clone())
                 });
-            store
-                .save_export_markdown_if_revision(
-                    ExportArtifactKind::FormalDraft,
-                    revision,
-                    &digest,
-                    validated,
-                    now.to_string(),
-                    ExportMarkdownLineage {
-                        source_snapshot: Some(source_snapshot),
-                        based_on_blueprint_digest: based_on_blueprint,
-                    },
-                )
-                .map_err(map_storage_error)?;
+            require_cas_saved(store.save_export_markdown_if_revision(
+                ExportArtifactKind::FormalDraft,
+                revision,
+                &digest,
+                validated,
+                now.to_string(),
+                ExportMarkdownLineage {
+                    source_snapshot: Some(source_snapshot),
+                    based_on_blueprint_digest: based_on_blueprint,
+                },
+            ))?;
         }
         (ExportModelTarget::RegenerateDraft, ExportDelivery::ExportDraft { markdown, .. }) => {
             let validated =
@@ -1107,21 +1128,27 @@ fn spawn_export_model_run(
     target: ExportModelTarget,
     prompt: String,
     model_selection: ChatModelSelection,
-    now: String,
+    _started_at: String,
 ) {
     tauri::async_runtime::spawn(async move {
         let store = ProjectStore::at(&project_root);
+        let finish = |app: &tauri::AppHandle,
+                      store: &ProjectStore,
+                      status: AgentRunStatus,
+                      summary: Option<String>| {
+            // Always stamp finish with wall-clock time so long model runs are
+            // not recorded with the start-time `now` snapshot.
+            let finished_at = super::utc_now();
+            finish_export_run(app, store, &project_id, &run_id, status, summary, &finished_at);
+        };
         let root = match sion_root(&app) {
             Ok(root) => root,
             Err(error) => {
-                finish_export_run(
+                finish(
                     &app,
                     &store,
-                    &project_id,
-                    &run_id,
                     AgentRunStatus::Failed,
                     Some(error.to_string()),
-                    &now,
                 );
                 return;
             }
@@ -1133,15 +1160,7 @@ fn spawn_export_model_run(
         ) {
             Ok(resolved) => resolved,
             Err(error) => {
-                finish_export_run(
-                    &app,
-                    &store,
-                    &project_id,
-                    &run_id,
-                    AgentRunStatus::Failed,
-                    Some(error),
-                    &now,
-                );
+                finish(&app, &store, AgentRunStatus::Failed, Some(error));
                 return;
             }
         };
@@ -1149,14 +1168,11 @@ fn spawn_export_model_run(
             "chat_completions" => ProviderProtocol::ChatCompletions,
             "openai_responses" => ProviderProtocol::OpenaiResponses,
             _ => {
-                finish_export_run(
+                finish(
                     &app,
                     &store,
-                    &project_id,
-                    &run_id,
                     AgentRunStatus::Failed,
                     Some("unsupported provider protocol".into()),
-                    &now,
                 );
                 return;
             }
@@ -1179,39 +1195,50 @@ fn spawn_export_model_run(
             request_public_reasoning_summary: true,
         };
         let result = model_stream::stream_text(&client, &request, cancellation).await;
+        let finished_at = super::utc_now();
         match result {
             Ok(StreamOutcome::Completed(content)) => {
                 let output = content.output.join("");
-                let completion = complete_export_model_run(&store, target, &output, &run_id, &now);
+                let completion =
+                    complete_export_model_run(&store, target, &output, &run_id, &finished_at);
                 let (status, summary) = match completion {
                     Ok(()) => (
                         AgentRunStatus::Completed,
-                        Some("已完成导出生成".to_string()),
+                        Some(match target {
+                            ExportModelTarget::GenerateBlueprint
+                            | ExportModelTarget::RegenerateBlueprint => {
+                                "导出蓝图已生成".to_string()
+                            }
+                            ExportModelTarget::GenerateDraft
+                            | ExportModelTarget::RegenerateDraft => "正式正文已生成".to_string(),
+                        }),
                     ),
                     Err(error) => (AgentRunStatus::Failed, Some(error.message)),
                 };
-                finish_export_run(&app, &store, &project_id, &run_id, status, summary, &now);
-            }
-            Ok(StreamOutcome::Cancelled(_)) => {
                 finish_export_run(
                     &app,
                     &store,
                     &project_id,
                     &run_id,
+                    status,
+                    summary,
+                    &finished_at,
+                );
+            }
+            Ok(StreamOutcome::Cancelled(_)) => {
+                finish(
+                    &app,
+                    &store,
                     AgentRunStatus::Cancelled,
                     Some("用户取消".into()),
-                    &now,
                 );
             }
             Err(failure) => {
-                finish_export_run(
+                finish(
                     &app,
                     &store,
-                    &project_id,
-                    &run_id,
                     AgentRunStatus::Failed,
                     Some(format!("provider 失败：{failure:?}")),
-                    &now,
                 );
             }
         }
@@ -1250,7 +1277,8 @@ fn start_export_model_run(
         turn_id: None,
         context_snapshot: None,
     };
-    let run = {
+    let progress = progress_summary_for_target(target);
+    let mut run = {
         let state = agent_state(app);
         let mut scheduler = state.scheduler.lock().map_err(|_| ExportCommandError {
             kind: ExportCommandErrorKind::IoFailed,
@@ -1273,6 +1301,7 @@ fn start_export_model_run(
             },
         })?
     };
+    run.summary = Some(progress.to_string());
     store.save_run(&run).map_err(map_storage_error)?;
     store
         .set_export_active_run(Some(&run.id), now.to_string())
@@ -1282,12 +1311,13 @@ fn start_export_model_run(
         ExportRunEvent {
             project_id: project_id.to_string(),
             run_id: run.id.clone(),
-            status: run.status,
-            public_summary: None,
+            status: run.status.clone(),
+            public_summary: Some(progress.to_string()),
             updated_at: now.to_string(),
         },
     );
     let run_id = run.id.clone();
+    let run_status = run.status.clone();
     spawn_export_model_run(
         app.clone(),
         project_root,
@@ -1300,8 +1330,8 @@ fn start_export_model_run(
     );
     Ok(ExportRunSummary {
         run_id,
-        status: AgentRunStatus::Running,
-        public_summary: None,
+        status: run_status,
+        public_summary: Some(progress.to_string()),
         updated_at: now.to_string(),
     })
 }

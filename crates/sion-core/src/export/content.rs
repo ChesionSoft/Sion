@@ -362,7 +362,9 @@ pub fn parse_blueprint(markdown: &str) -> Result<ExportBlueprint, ExportContentE
                     "expected a metadata line, found: {metadata_trimmed}"
                 ))
             })?;
-            let (key, value) = stripped.split_once(": ").ok_or_else(|| {
+            // Accept both "- key: value" and "- key:" (empty after trim). Empty
+            // values are rejected later with field-specific errors.
+            let (key, value) = stripped.split_once(':').ok_or_else(|| {
                 ExportContentError::InvalidBlueprint(format!(
                     "metadata line is missing a value: {metadata_trimmed}"
                 ))
@@ -418,16 +420,123 @@ pub fn parse_blueprint(markdown: &str) -> Result<ExportBlueprint, ExportContentE
     Ok(ExportBlueprint { title, sections })
 }
 
-const DRAFT_PLACEHOLDERS: [&str; 8] = [
-    "tbd",
-    "todo",
-    "待确认",
-    "待补充",
+/// Chinese unfinished-stub phrases. Prefer explicit markers over bare
+/// 「待确认」so headings like「待确认问题」from source nodes are allowed.
+const DRAFT_PHRASE_PLACEHOLDERS: [&str; 6] = [
+    "待确认：",
+    "待补充：",
     "后续补充",
     "agent 建议",
     "agent 分析",
     "历史结论",
 ];
+
+fn strip_list_prefix(line: &str) -> &str {
+    let mut body = line.trim();
+    for _ in 0..3 {
+        if let Some(rest) = body.strip_prefix("- ").or_else(|| body.strip_prefix("* ")).or_else(|| body.strip_prefix("> ")) {
+            body = rest.trim_start();
+            continue;
+        }
+        // ordered list: "1. " / "12) "
+        let bytes = body.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i > 0 {
+            if body[i..].starts_with(". ") {
+                body = body[i + 2..].trim_start();
+                continue;
+            }
+            if body[i..].starts_with(") ") {
+                body = body[i + 2..].trim_start();
+                continue;
+            }
+        }
+        break;
+    }
+    body
+}
+
+/// Detect unfinished draft stubs without false-positiving product copy such as
+/// `/todos` routes or feature names. ASCII `todo`/`tbd` only count as stubs when
+/// they are clearly unfinished markers (whole line, `TODO:`, `[TODO]`, …).
+fn find_draft_placeholder(markdown: &str) -> Option<(String, String)> {
+    let lower = markdown.to_lowercase();
+
+    for phrase in DRAFT_PHRASE_PLACEHOLDERS {
+        if let Some(idx) = lower.find(phrase) {
+            return Some((phrase.to_string(), context_snippet(markdown, idx, phrase.len())));
+        }
+    }
+
+    // Bracket / bold forms anywhere: [todo], 【todo】, **todo**, *todo*
+    for (label, patterns) in [
+        (
+            "todo",
+            [
+                "[todo]",
+                "【todo】",
+                "**todo**",
+                "*todo*",
+                "`todo`",
+                "todo:",
+                "todo：",
+            ]
+            .as_slice(),
+        ),
+        (
+            "tbd",
+            [
+                "[tbd]",
+                "【tbd】",
+                "**tbd**",
+                "*tbd*",
+                "`tbd`",
+                "tbd:",
+                "tbd：",
+            ]
+            .as_slice(),
+        ),
+    ] {
+        for pattern in patterns {
+            if let Some(idx) = lower.find(pattern) {
+                return Some((
+                    label.to_string(),
+                    context_snippet(markdown, idx, pattern.len()),
+                ));
+            }
+        }
+    }
+
+    // Whole-line stubs: "TODO", "TBD.", "- TODO", "1. TBD"
+    for (line_idx, line) in lower.lines().enumerate() {
+        let body = strip_list_prefix(line);
+        let body = body.trim_end_matches(|c: char| matches!(c, '.' | '。' | '!' | '！'));
+        if body == "todo" || body == "tbd" {
+            let original = markdown.lines().nth(line_idx).unwrap_or(line);
+            return Some((body.to_string(), original.trim().to_string()));
+        }
+    }
+
+    None
+}
+
+fn context_snippet(source: &str, idx: usize, len: usize) -> String {
+    let start = source
+        .char_indices()
+        .rev()
+        .find(|(i, _)| *i <= idx.saturating_sub(24))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let end = source
+        .char_indices()
+        .find(|(i, _)| *i >= idx + len + 24)
+        .map(|(i, _)| i)
+        .unwrap_or(source.len());
+    source[start..end].replace('\n', " ").trim().to_string()
+}
 
 fn heading_level(line: &str) -> Option<usize> {
     let trimmed = line.trim_start();
@@ -446,27 +555,55 @@ fn heading_level(line: &str) -> Option<usize> {
     Some(hashes)
 }
 
+fn heading_title(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let hashes = trimmed
+        .chars()
+        .take_while(|&character| character == '#')
+        .count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let rest = trimmed.get(hashes..)?;
+    let text = rest.strip_prefix(' ')?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+fn empty_section_error(title: Option<&str>) -> ExportContentError {
+    match title {
+        Some(title) if !title.is_empty() => ExportContentError::InvalidDraft(format!(
+            "draft has an empty section body under ## {title}"
+        )),
+        _ => ExportContentError::InvalidDraft("draft has an empty section body".into()),
+    }
+}
+
 /// Validates formal draft Markdown: exactly one H1, at least one H2, a
 /// non-empty body under every H2, no heading-level skips among H1-H3, and no
 /// placeholder text. Returns the trimmed Markdown on success.
+///
+/// H3–H6 under an H2 count as body content. A structure like
+/// `## 功能\n### 模块 A\n正文` is valid; only a bare H2 with no following
+/// prose or subsections is rejected.
 pub fn validate_draft(markdown: &str) -> Result<String, ExportContentError> {
     let trimmed = markdown.trim().to_string();
     if trimmed.is_empty() {
         return Err(ExportContentError::InvalidDraft("draft is empty".into()));
     }
-    let lower = trimmed.to_lowercase();
-    for needle in DRAFT_PLACEHOLDERS {
-        if lower.contains(needle) {
-            return Err(ExportContentError::InvalidDraft(format!(
-                "draft contains placeholder {needle:?}"
-            )));
-        }
+    if let Some((needle, snippet)) = find_draft_placeholder(&trimmed) {
+        return Err(ExportContentError::InvalidDraft(format!(
+            "draft contains placeholder {needle:?} near: {snippet}"
+        )));
     }
     let mut h1_count = 0usize;
     let mut h2_count = 0usize;
     let mut previous_level = 0usize;
     let mut current_body = String::new();
     let mut section_open = false;
+    let mut current_h2_title: Option<String> = None;
     let mut in_fence = false;
     for line in trimmed.lines() {
         let line_trimmed = line.trim_start();
@@ -479,23 +616,33 @@ pub fn validate_draft(markdown: &str) -> Result<String, ExportContentError> {
             continue;
         }
         if !in_fence && let Some(level) = heading_level(line) {
-            if section_open && current_body.trim().is_empty() {
-                return Err(ExportContentError::InvalidDraft(
-                    "draft has an empty section body".into(),
-                ));
-            }
-            current_body.clear();
-            section_open = false;
-            if level == 1 {
-                h1_count += 1;
-            } else if level == 2 {
-                h2_count += 1;
-                section_open = true;
-            }
             if level <= 3 && level > previous_level + 1 {
                 return Err(ExportContentError::InvalidDraft(
                     "draft heading level skips a level".into(),
                 ));
+            }
+            if level <= 2 {
+                // Only H1/H2 close an H2 section. H3+ belong to the open H2 body.
+                if section_open && current_body.trim().is_empty() {
+                    return Err(empty_section_error(current_h2_title.as_deref()));
+                }
+                current_body.clear();
+                section_open = false;
+                current_h2_title = None;
+                if level == 1 {
+                    h1_count += 1;
+                } else {
+                    h2_count += 1;
+                    section_open = true;
+                    current_h2_title = heading_title(line);
+                }
+                previous_level = level;
+                continue;
+            }
+            // H3–H6: keep the H2 open and count the heading as body structure.
+            if section_open {
+                current_body.push_str(line);
+                current_body.push('\n');
             }
             previous_level = level;
             continue;
@@ -506,9 +653,7 @@ pub fn validate_draft(markdown: &str) -> Result<String, ExportContentError> {
         }
     }
     if section_open && current_body.trim().is_empty() {
-        return Err(ExportContentError::InvalidDraft(
-            "draft has an empty section body".into(),
-        ));
+        return Err(empty_section_error(current_h2_title.as_deref()));
     }
     if h1_count != 1 {
         return Err(ExportContentError::InvalidDraft(format!(
@@ -782,7 +927,45 @@ mod tests {
     fn draft_rejects_placeholders_and_requires_a_body_below_every_h2() {
         assert!(validate_draft("# PRD\n\n## 目标\n\n可度量目标").is_ok());
         assert!(validate_draft("# PRD\n\n## 目标\n\nTBD").is_err());
+        assert!(validate_draft("# PRD\n\n## 目标\n\nTODO: 待写").is_err());
+        assert!(validate_draft("# PRD\n\n## 目标\n\n- TODO").is_err());
+        assert!(validate_draft("# PRD\n\n## 目标\n\n[TODO] 后续补充细节").is_err());
         assert!(validate_draft("# PRD\n\n## 空章节\n\n## 下一章\n\n正文").is_err());
+        // H2 with only nested H3+ content is a normal PRD shape and must pass.
+        assert!(validate_draft(
+            "# PRD\n\n## 功能模块\n\n### 模块 A\n\n职责说明\n\n### 模块 B\n\n输入输出"
+        )
+        .is_ok());
+        let empty_named = validate_draft("# PRD\n\n## 空章节\n\n## 下一章\n\n正文").unwrap_err();
+        assert!(
+            matches!(
+                &empty_named,
+                ExportContentError::InvalidDraft(message)
+                    if message.contains("空章节")
+            ),
+            "unexpected error: {empty_named:?}"
+        );
+    }
+
+    #[test]
+    fn draft_allows_product_paths_and_domain_words_with_todo() {
+        // Contract-check product copy uses /todos routes and 待办中心.
+        // Only unfinished stubs should fail, not product vocabulary.
+        assert!(validate_draft(
+            "# PRD\n\n## 待办中心\n\n集中视图路由为 `/todos`，展示待复核任务。"
+        )
+        .is_ok());
+        assert!(validate_draft(
+            "# PRD\n\n## 功能\n\n系统提供 Todos 列表与归档能力。"
+        )
+        .is_ok());
+        assert!(validate_draft(
+            "# PRD\n\n## 待确认问题清单\n\n本节记录已确认的开放问题处理策略，不含未完成占位。"
+        )
+        .is_ok());
+        // Bare "TODO" mid-sentence is product-adjacent; only stub forms fail.
+        assert!(validate_draft("# PRD\n\n## 功能\n\n用户可从 Todo 入口进入待办。").is_ok());
+        assert!(validate_draft("# PRD\n\n## 功能\n\nTODO: 此处未写完").is_err());
     }
 
     #[test]
@@ -793,6 +976,31 @@ mod tests {
             ExportDelivery::ExportDraft { .. }
         ));
         assert!(parse_export_delivery("解释").is_err());
+    }
+
+    #[test]
+    fn blueprint_rejects_empty_headings_with_field_error() {
+        let markdown = "\
+# 标题
+
+## 目标
+
+- id: goal
+- inclusion: confirmed
+- presentation: paragraphs
+- source: basic-info
+- headings:
+- rationale: 对外交付
+";
+        let err = parse_blueprint(markdown).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ExportContentError::InvalidBlueprint(message)
+                    if message.contains("headings and rationale are required")
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     fn fixture_blueprint() -> ExportBlueprint {
