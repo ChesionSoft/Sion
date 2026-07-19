@@ -24,6 +24,13 @@
   flex-wrap: wrap;
 }
 
+.export-center-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
 .export-center-header h1 {
   margin: 0;
   font-size: 22px;
@@ -32,8 +39,23 @@
   color: var(--text-strong);
 }
 
-.export-center-header .ui-field {
-  max-width: 280px;
+.export-center-project-name {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.export-project-list-page {
+  /* Reuse project-home list chrome; keep export-center padding. */
+  padding-top: 40px;
+}
+
+.export-project-list-page > .project-home-header,
+.export-project-list-page > .project-home-toolbar,
+.export-project-list-page > .project-list,
+.export-project-list-page > .ui-empty-state {
+  max-width: min(1100px, 100%);
 }
 
 .export-header-actions {
@@ -284,6 +306,67 @@
 .export-action-status {
   color: var(--text-muted);
   font-size: 12px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-run-banner {
+  width: min(1100px, 100%);
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-subtle);
+}
+
+.export-run-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.export-run-banner-text strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.export-run-banner-text span {
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.export-run-banner-text small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.export-run-banner.is-running {
+  border-color: color-mix(in srgb, var(--accent, #3b82f6) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent, #3b82f6) 8%, var(--bg-subtle));
+}
+
+.export-run-banner.is-completed {
+  border-color: color-mix(in srgb, var(--success, #2f8f4e) 45%, var(--border));
+  background: color-mix(in srgb, var(--success, #2f8f4e) 8%, var(--bg-subtle));
+}
+
+.export-run-banner.is-failed,
+.export-run-banner.is-interrupted {
+  border-color: color-mix(in srgb, var(--danger, #c0392b) 45%, var(--border));
+  background: color-mix(in srgb, var(--danger, #c0392b) 8%, var(--bg-subtle));
+}
+
+.export-run-banner.is-cancelled {
+  border-color: var(--border);
 }
 
 @media (max-width: 1100px) {

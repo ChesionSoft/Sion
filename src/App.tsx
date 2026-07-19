@@ -50,7 +50,7 @@ import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
 import { RunDetailDialog } from "./components/workspace/RunDetailDialog";
 import { NODES, type AgentFinishedEvent, type AgentReasoningSummaryEvent, type AgentRun, type AgentRunDetail, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type ExportRunEvent, type ExportWorkspaceInvalidatedEvent, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
-import { resolveExportProjectId } from "./export-state.ts";
+
 import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
 import { mergeTurnSnapshot } from "./conversation-turns.ts";
 import { isCurrentGenerationEvent, reconcileGeneratedNode, reconcileSavedNode } from "./delivery-generation.ts";
@@ -359,17 +359,6 @@ export function App() {
     ]);
     return () => { void subscriptions.then((unlisten) => unlisten.forEach((stop) => stop())); };
   }, []);
-
-  // Prefill export project once when entering exports. After the user picks a
-  // project in the export dropdown, that choice wins (remembered-first resolve).
-  useEffect(() => {
-    if (destination !== "exports") return;
-    if (exportProjectId && projects.some((item) => item.id === exportProjectId)) return;
-    const next = resolveExportProjectId(projects, project?.id ?? null, exportProjectId);
-    if (next && next !== exportProjectId) {
-      setExportProjectId(next);
-    }
-  }, [destination, projects, project?.id, exportProjectId]);
 
   useEffect(() => {
     function saveWithShortcut(event: KeyboardEvent) {
@@ -1137,6 +1126,10 @@ export function App() {
     fileImportScopeRef.current = null;
     setImportingFile(false);
     setDestination(nextDestination);
+    // Always list-first for Export Center, including re-click while mid-workbench.
+    if (nextDestination === "exports") {
+      setExportProjectId(null);
+    }
     updateUi({ ...ui, lastDestination: nextDestination });
   }
 
@@ -1320,20 +1313,18 @@ export function App() {
       notice={null}
     />
   ) : destination === "exports" ? (
-    (() => {
-      const resolvedExportProjectId = resolveExportProjectId(projects, project?.id ?? null, exportProjectId);
-      return (
-        <ExportCenter
-          projects={projects}
-          activeProjectId={project?.id ?? null}
-          rememberedProjectId={exportProjectId}
-          providers={providers}
-          refreshToken={exportRefreshByProject[resolvedExportProjectId ?? ""] ?? 0}
-          onSelectProject={setExportProjectId}
-          onNotice={setNotice}
-        />
-      );
-    })()
+    <ExportCenter
+      projects={projects}
+      projectId={exportProjectId}
+      projectsDirectory={settings.projectsDirectory}
+      providers={providers}
+      refreshToken={exportRefreshByProject[exportProjectId ?? ""] ?? 0}
+      onOpenProject={setExportProjectId}
+      onBackToList={() => setExportProjectId(null)}
+      onOpenSettings={() => setSettingsOpen(true)}
+      onGoToProjects={() => requestNavigation({ kind: "destination", destination: "projects" })}
+      onNotice={setNotice}
+    />
   ) : !project ? (
     <ProjectHome
       projects={projects}

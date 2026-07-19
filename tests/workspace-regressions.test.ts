@@ -435,6 +435,57 @@ test("export center uses bottom model menu and review without right aside", asyn
   assert.match(css, /export-header-actions/);
 });
 
+test("export center opens with a project list then workbench, no auto-pick", async () => {
+  const [center, list, app] = await Promise.all([
+    readFile("src/components/app/ExportCenter.tsx", "utf8"),
+    readFile("src/components/export/ExportProjectList.tsx", "utf8"),
+    readFile("src/App.tsx", "utf8"),
+  ]);
+  assert.match(center, /ExportProjectList/);
+  assert.match(center, /onBackToList|所有导出项目/);
+  assert.match(center, /onOpenProject/);
+  assert.doesNotMatch(center, /resolveExportProjectId/);
+  assert.doesNotMatch(center, /SelectField/);
+  assert.match(list, /选择要导出的项目/);
+  assert.match(list, /filterAndSortProjects/);
+  assert.match(list, /打开导出文件夹/);
+  assert.match(app, /setExportProjectId\(null\)/);
+  assert.doesNotMatch(app, /resolveExportProjectId/);
+  assert.match(app, /onOpenProject=\{setExportProjectId\}/);
+  assert.match(app, /onBackToList=\{\(\) => setExportProjectId\(null\)\}/);
+});
+
+test("export center can open the project exports folder", async () => {
+  const [center, list, api, tauri] = await Promise.all([
+    readFile("src/components/app/ExportCenter.tsx", "utf8"),
+    readFile("src/components/export/ExportProjectList.tsx", "utf8"),
+    readFile("src/api.ts", "utf8"),
+    readFile("src-tauri/src/lib.rs", "utf8"),
+  ]);
+  assert.match(center, /打开导出文件夹/);
+  assert.match(center, /revealExportFolder|handleRevealExportFolder/);
+  assert.match(list, /打开导出文件夹/);
+  assert.match(api, /export_folder_reveal/);
+  assert.match(tauri, /fn export_folder_reveal/);
+  assert.match(tauri, /exports/);
+});
+
+test("export center surfaces run progress and terminal outcomes", async () => {
+  const [center, css, runtime] = await Promise.all([
+    readFile("src/components/app/ExportCenter.tsx", "utf8"),
+    readFile("src/styles/export.css", "utf8"),
+    readFile("src-tauri/src/export_runtime.rs", "utf8"),
+  ]);
+  assert.match(center, /export-run-updated/);
+  assert.match(center, /export-run-banner/);
+  assert.match(center, /runOutcome/);
+  assert.match(center, /formatElapsed|已用时/);
+  assert.match(center, /导出失败/);
+  assert.match(css, /export-run-banner/);
+  assert.match(runtime, /正在生成导出蓝图/);
+  assert.match(runtime, /progress_summary_for_target|require_cas_saved/);
+});
+
 test("export review is a task ledger with explicit diff application, not chat", async () => {
   const [center, ledger, diff, action] = await Promise.all([
     readFile("src/components/app/ExportCenter.tsx", "utf8"),

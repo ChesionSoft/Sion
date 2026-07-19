@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import {
   ExportClientError,
@@ -9,6 +10,7 @@ import {
   exportDocxSaveAs,
   getExportArtifact,
   getExportWorkspace,
+  revealExportFolder,
   saveExportArtifact,
   saveExportModelSelection,
   startExportAction,
@@ -17,33 +19,62 @@ import {
 import {
   nextExportAction,
   resolveDefaultExportModelSelection,
-  resolveExportProjectId,
 } from "../../export-state";
 import { lineDiff } from "../../export-diff";
 import { isLatestRequest, requestScope } from "../../ui-state";
-import { Button, EmptyState, SelectField } from "../ui";
+import { Button } from "../ui";
 import { ArtifactNavigator, EXPORT_ARTIFACT_LABELS } from "../export/ArtifactNavigator";
 import { ArtifactPreview } from "../export/ArtifactPreview";
 import { BlueprintPreparationBar } from "../export/BlueprintPreparationBar";
 import { ExportActionBar } from "../export/ExportActionBar";
+import { ExportProjectList } from "../export/ExportProjectList";
 import type {
   ChatModelSelection,
   ExportAction,
   ExportArtifactContent,
   ExportArtifactKind,
   ExportCandidate,
+  ExportRunEvent,
   ExportWorkspaceSnapshot,
   Provider,
   RecentProject,
 } from "../../types";
 
+type ExportRunOutcome = {
+  status: "completed" | "failed" | "cancelled" | "interrupted";
+  summary: string;
+};
+
+const formatElapsed = (seconds: number): string => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return mins > 0 ? `${mins} 分 ${secs} 秒` : `${secs} 秒`;
+};
+
+const outcomeLabel = (status: ExportRunOutcome["status"]): string => {
+  switch (status) {
+    case "completed":
+      return "已完成";
+    case "failed":
+      return "生成失败";
+    case "cancelled":
+      return "已取消";
+    case "interrupted":
+      return "已中断";
+  }
+};
+
 export type ExportCenterProps = {
   projects: RecentProject[];
-  activeProjectId: string | null;
-  rememberedProjectId: string | null;
+  /** null = project list; set = export workbench for that project. */
+  projectId: string | null;
+  projectsDirectory: string | null;
   providers: Provider[];
   refreshToken: number;
-  onSelectProject: (projectId: string | null) => void;
+  onOpenProject: (projectId: string) => void;
+  onBackToList: () => void;
+  onOpenSettings: () => void;
+  onGoToProjects: () => void;
   onNotice: (message: string) => void;
 };
 
@@ -83,18 +114,20 @@ const currentMarkdownFromContent = (content: ExportArtifactContent | null): stri
 
 export function ExportCenter({
   projects,
-  activeProjectId,
-  rememberedProjectId,
+  projectId,
+  projectsDirectory,
   providers,
   refreshToken,
-  onSelectProject,
+  onOpenProject,
+  onBackToList,
+  onOpenSettings,
+  onGoToProjects,
   onNotice,
 }: ExportCenterProps) {
-  const resolvedProjectId = resolveExportProjectId(
-    projects,
-    activeProjectId,
-    rememberedProjectId,
-  );
+  const resolvedProjectId =
+    projectId && projects.some((item) => item.id === projectId) ? projectId : null;
+  const projectName =
+    projects.find((item) => item.id === resolvedProjectId)?.name ?? null;
 
   const [snapshot, setSnapshot] = useState<ExportWorkspaceSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
@@ -108,6 +141,8 @@ export function ExportCenter({
   const [editLoading, setEditLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState<ExportAction | null>(null);
   const [busy, setBusy] = useState(false);
+  const [runOutcome, setRunOutcome] = useState<ExportRunOutcome | null>(null);
+  const [elapsedSec, setElapsedSec] = useState(0);
   const workspaceScope = useRef<string | null>(null);
   const contentScope = useRef<string | null>(null);
 
@@ -127,10 +162,22 @@ export function ExportCenter({
       });
   };
 
+  // Parent selected a project that no longer exists in discovery — return to list.
+  useEffect(() => {
+    if (projectId && !resolvedProjectId) {
+      onNotice("所选项目已不可用，已返回导出项目列表。");
+      onBackToList();
+    }
+  }, [projectId, resolvedProjectId, onBackToList, onNotice]);
+
   useEffect(() => {
     if (!resolvedProjectId) {
       setSnapshot(null);
       setError(null);
+      setSelectedKind(null);
+      setContent(null);
+      setEditing(false);
+      setRunOutcome(null);
       return;
     }
     const scope = requestScope(resolvedProjectId, String(refreshToken));
@@ -164,6 +211,8 @@ export function ExportCenter({
       .catch((loadError) => {
         if (isLatestRequest(scope, workspaceScope.current)) {
           setError(String(loadError));
+          onNotice(`无法加载导出工作区：${String(loadError)}`);
+          onBackToList();
         }
       })
       .finally(() => {
@@ -171,13 +220,61 @@ export function ExportCenter({
           setLoading(false);
         }
       });
-  }, [resolvedProjectId, refreshToken, providers]);
+  }, [resolvedProjectId, refreshToken, providers, onBackToList, onNotice]);
 
   useEffect(() => {
     if (snapshot && selectedKind === null) {
       setSelectedKind("blueprint");
     }
   }, [snapshot, selectedKind]);
+
+  // Surface terminal export outcomes in-page. App only bumps refreshToken and
+  // never shows a notice, so a failed blueprint run used to look like a no-op.
+  useEffect(() => {
+    if (!resolvedProjectId) {
+      return;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<ExportRunEvent>("export-run-updated", (event) => {
+      const payload = event.payload;
+      if (payload.projectId !== resolvedProjectId) {
+        return;
+      }
+      const terminal =
+        payload.status === "completed" ||
+        payload.status === "failed" ||
+        payload.status === "cancelled" ||
+        payload.status === "interrupted";
+      if (!terminal) {
+        return;
+      }
+      const summary =
+        payload.publicSummary?.trim() ||
+        (payload.status === "completed" ? "导出生成已完成" : "导出运行已结束");
+      setRunOutcome({
+        status: payload.status as ExportRunOutcome["status"],
+        summary,
+      });
+      if (payload.status === "failed" || payload.status === "interrupted") {
+        onNotice(`导出失败：${summary}`);
+      } else if (payload.status === "completed") {
+        onNotice(summary);
+      } else if (payload.status === "cancelled") {
+        onNotice("已取消导出生成");
+      }
+    }).then((stop) => {
+      if (disposed) {
+        stop();
+      } else {
+        unlisten = stop;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [resolvedProjectId, onNotice]);
 
   useEffect(() => {
     if (editing) {
@@ -208,14 +305,45 @@ export function ExportCenter({
       });
   }, [resolvedProjectId, selectedKind, refreshToken, editing]);
 
-  if (projects.length === 0) {
+  const activeRun = snapshot?.activeRun ?? null;
+  const runInProgress =
+    activeRun?.status === "running" || activeRun?.status === "queued";
+
+  useEffect(() => {
+    if (!runInProgress) {
+      setElapsedSec(0);
+      return;
+    }
+    const started = Date.now();
+    setElapsedSec(0);
+    const timer = window.setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [runInProgress, activeRun?.runId]);
+
+  if (!resolvedProjectId) {
     return (
-      <section className="export-center">
-        <EmptyState
-          title="还没有可导出的项目"
-          description="先在项目页创建或发现一个本地项目，然后回到这里生成导出蓝图与正式交付物。"
-        />
-      </section>
+      <ExportProjectList
+        projects={projects}
+        projectsDirectory={projectsDirectory}
+        onOpenProject={onOpenProject}
+        onRevealExportFolder={(id) => {
+          revealExportFolder(id)
+            .then((result) => {
+              onNotice(
+                result.revealed
+                  ? "已在文件管理器中打开导出文件夹"
+                  : "未能打开导出文件夹",
+              );
+            })
+            .catch((failure: unknown) =>
+              onNotice(`打开导出文件夹失败：${String(failure)}`),
+            );
+        }}
+        onOpenSettings={onOpenSettings}
+        onGoToProjects={onGoToProjects}
+      />
     );
   }
 
@@ -232,10 +360,7 @@ export function ExportCenter({
     snapshot?.pendingCandidates.find((item) => item.targetKind === selectedKind) ?? null;
   const reviewTasks =
     snapshot?.reviewTasks.filter((task) => task.targetKind === selectedKind) ?? [];
-  const activeRun = snapshot?.activeRun ?? null;
   const next = snapshot ? nextExportAction(snapshot) : { action: "generate_blueprint" as const };
-  const runInProgress =
-    activeRun?.status === "running" || activeRun?.status === "queued";
   const sourceWarnings = snapshot?.sourceWarnings ?? [];
   const formalDraft = snapshot?.deliveryArtifacts.find((item) => item.kind === "formal_draft");
   const formalDocx = snapshot?.deliveryArtifacts.find((item) => item.kind === "formal_docx");
@@ -379,6 +504,7 @@ export function ExportCenter({
       return;
     }
     setBusy(true);
+    setRunOutcome(null);
     startExportAction(
       resolvedProjectId,
       action,
@@ -470,6 +596,21 @@ export function ExportCenter({
       .catch((failure: unknown) => onNotice(`取消失败：${String(failure)}`));
   };
 
+  const handleRevealExportFolder = () => {
+    if (!resolvedProjectId) {
+      return;
+    }
+    revealExportFolder(resolvedProjectId)
+      .then((result) => {
+        onNotice(
+          result.revealed
+            ? "已在文件管理器中打开导出文件夹"
+            : "未能打开导出文件夹",
+        );
+      })
+      .catch((failure: unknown) => onNotice(`打开导出文件夹失败：${String(failure)}`));
+  };
+
   const handleModelChange = async (selection: ChatModelSelection) => {
     if (!resolvedProjectId) {
       return;
@@ -518,24 +659,28 @@ export function ExportCenter({
   return (
     <section className="export-center">
       <header className="export-center-header">
-        <h1>导出中心</h1>
-        <SelectField
-          label="项目"
-          value={resolvedProjectId ?? ""}
-          onChange={(event) => onSelectProject(event.target.value || null)}
+        <div className="export-center-title">
+          <Button variant="ghost" onClick={onBackToList} disabled={editing}>
+            ← 所有导出项目
+          </Button>
+          <div>
+            <h1>导出中心</h1>
+            {projectName ? <small className="export-center-project-name">{projectName}</small> : null}
+          </div>
+        </div>
+        <Button
+          variant="ghost"
+          onClick={handleRevealExportFolder}
           disabled={loading || editing}
         >
-          {projects.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </SelectField>
+          打开导出文件夹
+        </Button>
         {snapshot ? (
           <div className="export-header-actions">
             {runInProgress ? (
-              <span className="export-action-status">
+              <span className="export-action-status" aria-live="polite">
                 {activeRun?.publicSummary ?? "运行中…"}
+                {elapsedSec > 0 ? ` · ${formatElapsed(elapsedSec)}` : null}
               </span>
             ) : null}
             <Button
@@ -555,6 +700,35 @@ export function ExportCenter({
       </header>
 
       {error ? <div className="export-preview-error">{error}</div> : null}
+
+      {runInProgress ? (
+        <div className="export-run-banner is-running" role="status" aria-live="polite">
+          <div className="export-run-banner-text">
+            <strong>运行中</strong>
+            <span>{activeRun?.publicSummary ?? "正在调用模型生成…"}</span>
+            <small>已用时 {formatElapsed(elapsedSec)} · 完成后会自动刷新产物</small>
+          </div>
+          <Button variant="ghost" onClick={handleCancelRun} disabled={busy}>
+            取消
+          </Button>
+        </div>
+      ) : null}
+
+      {runOutcome && !runInProgress ? (
+        <div
+          className={`export-run-banner is-${runOutcome.status}`}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="export-run-banner-text">
+            <strong>{outcomeLabel(runOutcome.status)}</strong>
+            <span>{runOutcome.summary}</span>
+          </div>
+          <Button variant="ghost" onClick={() => setRunOutcome(null)}>
+            关闭
+          </Button>
+        </div>
+      ) : null}
 
       {blueprint ? (
         <BlueprintPreparationBar
