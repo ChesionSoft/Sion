@@ -66,7 +66,7 @@ git push origin v1.0.0
 
 当前 workflow **不注入** Apple / Windows 签名机密，产出为未签名开发验证包：
 
-- macOS：首次打开可能被 Gatekeeper 拦截，可用右键 → 打开；
+- macOS：首次打开可能被 Gatekeeper 拦截；用户侧步骤见 README「下载与安装」（右键打开 / 系统设置放行 / `xattr -cr` 清除隔离属性）；
 - Windows：浏览器下载可能触发 SmartScreen，可在“更多信息”中选择仍要运行。
 
 不要把未签名包表述为已公证或已代码签名的正式分发包。

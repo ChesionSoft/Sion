@@ -20,6 +20,7 @@ Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x6
 
 - [When to use Sion](#when-to-use-sion)
 - [Core capabilities](#core-capabilities)
+- [Download and install](#download-and-install)
 - [Quick start](#quick-start)
 - [Workflow](#workflow)
 - [Design nodes](#design-nodes)
@@ -59,9 +60,51 @@ Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x6
 | **File preview** | The attachments tab previews extracted file text (text only); only checked files become Agent context. |
 | **Structured Word export** | The Export Center runs a recoverable four-stage workflow (blueprint, formal draft, Word and QA, engineering attachments) that turns node content into a DOCX with heading levels, a table of contents, lists, and tables, plus structured review and native Save As. |
 
+## Download and install
+
+Prebuilt installers are on [GitHub Releases](https://github.com/ChesionSoft/Sion/releases).
+
+Public builds are **unsigned development verification packages** (no Apple notarization / Windows code signing yet). After a browser download, macOS attaches a quarantine flag; Gatekeeper may block the first launch with “cannot verify the developer”, “is damaged and can’t be opened”, or a failed install prompt. That usually means the system rejected an unnotarized app, not a corrupt download.
+
+### macOS: bypass Gatekeeper for unsigned builds
+
+1. Download `Sion_*_universal.dmg`, open it, and drag **Sion** into Applications.
+2. If it will not open, use any one of the methods below.
+
+**Option 1 (recommended): Open from the context menu**
+
+1. In Applications, select **Sion**.
+2. **Control-click** (or right-click / two-finger click) → **Open**.
+3. Confirm **Open** in the system dialog.
+
+After that, normal double-click launches work.
+
+**Option 2: Allow in System Settings**
+
+1. Double-click Sion once (it may fail, but records the block).
+2. Open **System Settings → Privacy & Security**.
+3. Under **Security**, if you see that Sion was blocked, click **Open Anyway**.
+4. Confirm **Open** again.
+
+**Option 3: Clear quarantine in Terminal** (best when macOS says the app is “damaged”)
+
+```bash
+# DMG before opening
+xattr -cr ~/Downloads/Sion_*.dmg
+
+# Or the installed app
+xattr -cr /Applications/Sion.app
+```
+
+Then reopen the DMG / Sion. Do this once; do not disable SIP or turn Gatekeeper off globally.
+
+### Windows
+
+Run the NSIS installer (`.exe`). If SmartScreen shows “Windows protected your PC”, choose **More info** → **Run anyway**.
+
 ## Quick start
 
-Developing Sion requires Node.js, Rust stable, and Tauri system prerequisites for the host platform. Run macOS builds on macOS and Windows installers on Windows.
+Developing Sion from source requires Node.js, Rust stable, and Tauri system prerequisites for the host platform. Run macOS builds on macOS and Windows installers on Windows.
 
 ```bash
 # 1. Install dependencies
