@@ -442,3 +442,15 @@ test("app scopes export events and removes the obsolete one-shot command", async
   assert.doesNotMatch(api, /project_export_docx/);
   assert.doesNotMatch(tauri, /project_export_docx,/);
 });
+
+test("export center advertises only implemented local capabilities", async () => {
+  const sources = await Promise.all([
+    readFile("src/components/app/ExportCenter.tsx", "utf8"),
+    readFile("README.md", "utf8"),
+    readFile("README.en.md", "utf8"),
+  ]);
+  const joined = sources.join("\n");
+  assert.match(joined, /导出蓝图|Export blueprint/);
+  assert.match(joined, /DOCX/);
+  assert.doesNotMatch(joined, /云端导出|计划任务|scheduled export|cloud export/i);
+});

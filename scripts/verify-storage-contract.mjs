@@ -16,6 +16,7 @@ const files = [
   "src/conversation-turns.ts",
   "crates/sion-storage/src/lib.rs",
   "crates/sion-storage/src/export_store.rs",
+  "src-tauri/src/export_runtime.rs",
 ];
 const forbidden = [
   ["project-level .sion", /\.sion\/(?:chat|files|nodes|runs)|写入 \.sion|项目.*\.sion/],

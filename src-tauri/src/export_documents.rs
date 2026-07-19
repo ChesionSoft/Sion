@@ -137,7 +137,7 @@ fn build_agents(manifest: &ProjectManifest) -> String {
     out.push_str("\n## 交付与校验规则\n\n");
     out.push_str("- Agent 修改必须以一个完整、闭合的 ```delivery JSON 块返回，不得返回过程描述或部分流式内容。\n");
     out.push_str("- 对现有蓝图或正文的修改必须经过结构校验和差异预览，确认后才可写入。\n");
-    out.push_str("- 桌面运行时不包含浏览器搜索、浏览器自动化、Playwright 或任何新的 Web 出口。\n");
+    out.push_str("- 桌面运行时不包含浏览器、搜索、自动化或任何新的 Web 出口。\n");
     out
 }
 

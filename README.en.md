@@ -25,7 +25,7 @@ Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x6
 - [Design nodes](#design-nodes)
 - [Model configuration](#model-configuration)
 - [Attachments and Agent deliveries](#attachments-and-agent-deliveries)
-- [Word export](#word-export)
+- [Export Center](#export-center)
 - [Local data and privacy](#local-data-and-privacy)
 - [Build and release](#build-and-release)
 
@@ -57,7 +57,7 @@ Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x6
 | **Right-side work tabs** | Draft, attachments, file previews, and Agent change previews use closable tabs. The pane is resizable and durable tabs restore after restart. |
 | **Settings in one place** | Project-directory and model configuration live under Settings at bottom-left; there are no account, version, dark-theme, or browser controls. |
 | **File preview** | The attachments tab previews extracted file text (text only); only checked files become Agent context. |
-| **Structured Word export** | Export Markdown nodes as DOCX from the draft or the dedicated Export Center. |
+| **Structured Word export** | The Export Center runs a recoverable four-stage workflow (blueprint, formal draft, Word and QA, engineering attachments) that turns node content into a DOCX with heading levels, a table of contents, lists, and tables, plus structured review and native Save As. |
 
 ## Quick start
 
@@ -88,7 +88,7 @@ npm run test:no-browser-runtime
 2. Configure a provider and default model under **Settings → Models**. Offline editing works without one.
 3. Open a project, then add or switch design nodes in the sidebar. The center pane is the current-node Agent conversation; the right-side **Draft**, **Attachments**, and file-preview tabs hold editable and reference material.
 4. Chat with the current-node Agent, review its delivery patch, then explicitly apply it to the Markdown working paper.
-5. Export DOCX from the draft or select any project in the **Export Center**, then choose a destination through the native save dialog.
+5. In the **Export Center**, generate the blueprint, formal draft, and formal Word, run structured review and approvals, then export engineering attachments or Save As the Word after QA passes.
 
 ## Design nodes
 
@@ -182,11 +182,22 @@ Imported files are copied into the project's `files/` directory alongside extrac
 
 Writeable Agent output must be fenced `delivery` JSON. By default it patches existing second-level sections only; a full rewrite requires an explicit user request. Sion validates the node structure, previews changes, and saves with the current revision, so a partial streaming response cannot become project content.
 
-## Word export
+## Export Center
 
-Export DOCX from the right-side draft or choose a project in the dedicated Export Center, then select the destination through the native save dialog. The center exposes only the currently supported DOCX format—no cloud, history, or scheduled-export placeholders. The document preserves Markdown heading levels, project title and metadata, a table of contents, ordered and unordered lists, and pipe tables for continued review in Word.
+The Export Center is a recoverable four-stage local workflow that turns confirmed project nodes into final deliverables. Every artifact is persisted inside the project's `exports/` directory. There is no cloud sync, timed jobs, or export history.
 
-The chosen destination receives the export. Sion does not automatically write it into the project directory or upload it.
+- **Export blueprint**: a structured blueprint generated from the first eleven content nodes. It is preparation material, not a delivery artifact, and is shown separately at the top of the page. The blueprint must be approved before the formal draft can be generated.
+- **Formal draft**: a deliverable PRD generated from the approved blueprint, validated structurally (one H1, a non-empty body under every H2, no TBD/TODO placeholders). The draft must be approved before the formal Word can be generated.
+- **Formal Word and QA**: a DOCX generated deterministically from the approved draft, preserving heading levels, cover, table of contents, lists, and tables. It is structurally and content-QA'd before publishing; a failed QA deletes the candidate, keeps the previous passing Word, and marks it as based on an older draft. The formal Word can be copied externally through a native Save As.
+- **Engineering attachments and completion**: after QA passes, `PROJECT_DESIGN.md`, `SPEC.md`, `TASKS.md`, and `AGENTS.md` are generated deterministically; the batch is complete only when all four are written.
+
+The seven delivery artifacts are: the formal draft, the Word QA report, the formal Word, and the four engineering attachments. Regenerating an existing blueprint or draft never overwrites it directly: a candidate is generated and diffed first, then applied only after confirmation with revision-and-digest verification. Review is not chat: each instruction becomes a task whose result is a structured patch that must be selected and diffed before it is applied.
+
+Markdown is previewed directly in app; DOCX is converted to sanitized content HTML with a notice that cover, TOC, headers, footers, and pagination must be checked in Word or WPS.
+
+Source-node changes are advisory only: they never revoke approval or block generation, preview, or Save As. Editing the blueprint or draft, or applying a review patch, changes that artifact's digest and immediately revokes its approval; downstream files are kept and marked as based on an older version.
+
+A model is used only to generate the blueprint, draft, and review proposals; approval, Word generation, QA, engineering attachments, and Save As never call a model. API keys are read only from `~/.sion/providers.json` and never enter project data, exports, logs, or run records; the model only receives the nodes, blueprint, or draft of the current project.
 
 ## Local data and privacy
 
