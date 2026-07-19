@@ -360,6 +360,17 @@ export function App() {
     return () => { void subscriptions.then((unlisten) => unlisten.forEach((stop) => stop())); };
   }, []);
 
+  // Prefill export project once when entering exports. After the user picks a
+  // project in the export dropdown, that choice wins (remembered-first resolve).
+  useEffect(() => {
+    if (destination !== "exports") return;
+    if (exportProjectId && projects.some((item) => item.id === exportProjectId)) return;
+    const next = resolveExportProjectId(projects, project?.id ?? null, exportProjectId);
+    if (next && next !== exportProjectId) {
+      setExportProjectId(next);
+    }
+  }, [destination, projects, project?.id, exportProjectId]);
+
   useEffect(() => {
     function saveWithShortcut(event: KeyboardEvent) {
       if (event.key.toLowerCase() !== "s" || (!event.metaKey && !event.ctrlKey)) return;

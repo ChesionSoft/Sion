@@ -97,10 +97,6 @@ export function ExportCenter({
     rememberedProjectId,
   );
 
-  useEffect(() => {
-    onSelectProject(resolvedProjectId);
-  }, [resolvedProjectId, onSelectProject]);
-
   const [snapshot, setSnapshot] = useState<ExportWorkspaceSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -516,7 +512,7 @@ export function ExportCenter({
         <SelectField
           label="项目"
           value={resolvedProjectId ?? ""}
-          onChange={(event) => onSelectProject(event.target.value)}
+          onChange={(event) => onSelectProject(event.target.value || null)}
           disabled={loading || editing}
         >
           {projects.map((project) => (

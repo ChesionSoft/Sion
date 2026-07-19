@@ -17,19 +17,20 @@ import type {
 } from "./types";
 
 /**
- * Resolves the export project id with current-project-first, remembered-second,
- * most-recent-third priority. Returns null only when there are no projects.
+ * Resolves the export project id with export-selection-first, then workbench
+ * active, then most-recent. Returns null only when there are no projects.
+ * Explicit Export Center dropdown choices must win over the workbench project.
  */
 export const resolveExportProjectId = (
   projects: RecentProject[],
   activeProjectId: string | null,
   rememberedProjectId: string | null,
 ): string | null => {
-  if (activeProjectId && projects.some((project) => project.id === activeProjectId)) {
-    return activeProjectId;
-  }
   if (rememberedProjectId && projects.some((project) => project.id === rememberedProjectId)) {
     return rememberedProjectId;
+  }
+  if (activeProjectId && projects.some((project) => project.id === activeProjectId)) {
+    return activeProjectId;
   }
   const sorted = [...projects].sort((left, right) =>
     (right.openedAt ?? "").localeCompare(left.openedAt ?? ""),

@@ -57,10 +57,16 @@ const artifact = (kind: ExportArtifactKind): ExportArtifactSummary => ({
   byteSize: 0,
 });
 
-test("defaults export project to active then remembered then most recent", () => {
-  assert.equal(resolveExportProjectId(projects(), "old", "new"), "old");
-  assert.equal(resolveExportProjectId(projects(), null, "old"), "old");
+test("defaults export project to remembered then active then most recent", () => {
+  // Explicit export selection wins over workbench active project
+  assert.equal(resolveExportProjectId(projects(), "old", "new"), "new");
+  assert.equal(resolveExportProjectId(projects(), "old", "old"), "old");
+  // No memory → active
+  assert.equal(resolveExportProjectId(projects(), "old", null), "old");
+  // No memory, no active → most recent openedAt
   assert.equal(resolveExportProjectId(projects(), null, null), "new");
+  // Stale memory falls back to active
+  assert.equal(resolveExportProjectId(projects(), "old", "missing"), "old");
 });
 
 test("default model selection uses the default provider and model", () => {
