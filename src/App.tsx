@@ -120,6 +120,12 @@ export function App() {
   const uiChangeGeneration = useRef(0);
   const uiPersistedGeneration = useRef(0);
   const uiSaveQueue = useRef(createSerialTaskQueue());
+  /** When true, the next CloseRequested is allowed through (user-confirmed or flush finished). */
+  const allowWindowCloseRef = useRef(false);
+  const dirtyRef = useRef(false);
+  const uiHydratedRef = useRef(false);
+  const requestCloseNavigationRef = useRef<() => void>(() => undefined);
+  const flushAndCloseWindowRef = useRef<() => Promise<void>>(async () => undefined);
   const workspaceScopeRef = useRef<string | null>(null);
   const messageScopeRef = useRef<string | null>(null);
   const projectScopeRef = useRef<string | null>(null);
@@ -142,6 +148,8 @@ export function App() {
   const markdownDirty = node !== null && draft !== node.markdown;
   const agentRulesDirty = agentRules !== null && isAgentRulesDirty(agentOverrideDraft, agentRules.customMarkdown);
   const dirty = markdownDirty || agentRulesDirty;
+  dirtyRef.current = dirty;
+  uiHydratedRef.current = uiHydrated;
   const activeRunId = activeRunIdForContext(runs, project?.id ?? null, activeNodeId);
   const deliveryLocked = Boolean(activeRunId) || regenerating;
   const dismissNotice = useCallback(() => setNoticeState(null), []);
@@ -374,12 +382,17 @@ export function App() {
     let unlisten: (() => void) | undefined;
     let disposed = false;
     try {
+      // Register once. Read latest dirty/UI state from refs so re-renders do not
+      // stack listeners or capture a stale close handler (which left the window
+      // stuck after preventDefault without a successful destroy).
       void getCurrentWindow().onCloseRequested((event) => {
-        const pendingUiSave = uiHydrated && uiPersistedGeneration.current < uiChangeGeneration.current;
-        if (!dirty && !pendingUiSave) return;
+        if (allowWindowCloseRef.current) return;
+        const pendingUiSave = uiHydratedRef.current
+          && uiPersistedGeneration.current < uiChangeGeneration.current;
+        if (!dirtyRef.current && !pendingUiSave) return;
         event.preventDefault();
-        if (dirty) requestNavigation({ kind: "close-window" });
-        else void closeWindowSafely();
+        if (dirtyRef.current) requestCloseNavigationRef.current();
+        else void flushAndCloseWindowRef.current();
       }).then((stop) => {
         if (disposed) stop();
         else unlisten = stop;
@@ -393,7 +406,7 @@ export function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [dirty, uiHydrated]);
+  }, []);
 
   async function loadProjects(): Promise<RecentProject[]> {
     const scope = requestScope("projects", crypto.randomUUID());
@@ -1152,12 +1165,35 @@ export function App() {
   }
 
   async function closeWindowSafely() {
-    const generation = uiChangeGeneration.current;
-    if (uiHydrated && uiPersistedGeneration.current < generation) {
-      await persistUiSnapshot(uiRef.current, generation, false);
+    // Mark first so a re-entrant CloseRequested from close() is not cancelled.
+    allowWindowCloseRef.current = true;
+    try {
+      const generation = uiChangeGeneration.current;
+      if (uiHydratedRef.current && uiPersistedGeneration.current < generation) {
+        // Never block quit forever on a hung settings write.
+        await Promise.race([
+          persistUiSnapshot(uiRef.current, generation, false),
+          new Promise<boolean>((resolve) => { globalThis.setTimeout(() => resolve(false), 1500); }),
+        ]);
+      }
+      const appWindow = getCurrentWindow();
+      try {
+        await appWindow.destroy();
+      } catch {
+        // destroy can fail after preventDefault on some platforms; close() retries
+        // and is allowed through via allowWindowCloseRef.
+        await appWindow.close();
+      }
+    } catch {
+      allowWindowCloseRef.current = false;
     }
-    await getCurrentWindow().destroy();
   }
+
+  // Keep close-path callbacks stable for the once-registered window listener.
+  requestCloseNavigationRef.current = () => {
+    requestNavigation({ kind: "close-window" });
+  };
+  flushAndCloseWindowRef.current = () => closeWindowSafely();
 
   function requestNavigation(intent: NavigationIntent) {
     const threatensDraft = intent.kind === "close-window"
