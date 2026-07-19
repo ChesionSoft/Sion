@@ -26,9 +26,6 @@
   .export-workbench {
     grid-template-columns: 220px minmax(0, 1fr);
   }
-  .export-workbench .export-review {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (max-width: 760px) {

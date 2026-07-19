@@ -26,7 +26,6 @@ import { ArtifactNavigator, EXPORT_ARTIFACT_LABELS } from "../export/ArtifactNav
 import { ArtifactPreview } from "../export/ArtifactPreview";
 import { BlueprintPreparationBar } from "../export/BlueprintPreparationBar";
 import { ExportActionBar } from "../export/ExportActionBar";
-import { ReviewLedger } from "../export/ReviewLedger";
 import type {
   ChatModelSelection,
   ExportAction,
@@ -471,13 +470,20 @@ export function ExportCenter({
       .catch((failure: unknown) => onNotice(`取消失败：${String(failure)}`));
   };
 
-  const handleModelChange = (selection: ChatModelSelection) => {
+  const handleModelChange = async (selection: ChatModelSelection) => {
     if (!resolvedProjectId) {
       return;
     }
-    saveExportModelSelection(resolvedProjectId, selection, utcNow())
-      .then((nextSnapshot) => setSnapshot(nextSnapshot))
-      .catch((failure: unknown) => onNotice(`保存模型失败：${String(failure)}`));
+    try {
+      const nextSnapshot = await saveExportModelSelection(
+        resolvedProjectId,
+        selection,
+        utcNow(),
+      );
+      setSnapshot(nextSnapshot);
+    } catch (failure: unknown) {
+      onNotice(`保存模型失败：${String(failure)}`);
+    }
   };
 
   const handleSaveAs = () => {
@@ -650,20 +656,6 @@ export function ExportCenter({
             />
           )}
         </div>
-        <aside className="export-review">
-          {selectedKind === "blueprint" || selectedKind === "formal_draft" ? (
-            <ReviewLedger
-              tasks={reviewTasks}
-              busy={actionsLocked}
-              onCreateTask={handleCreateReview}
-              onApplyTask={handleApplyReview}
-            />
-          ) : (
-            <p className="export-review-placeholder">
-              该产物只读。评审任务账本仅用于蓝图与正式正文。
-            </p>
-          )}
-        </aside>
       </div>
 
       {snapshot ? (
@@ -679,6 +671,13 @@ export function ExportCenter({
           activeRun={activeRun}
           onCancel={handleCancelRun}
           requiresModel={requiresModel}
+          reviewTasks={reviewTasks}
+          reviewEnabled={
+            selectedKind === "blueprint" || selectedKind === "formal_draft"
+          }
+          reviewBusy={actionsLocked}
+          onCreateReview={handleCreateReview}
+          onApplyReview={handleApplyReview}
         />
       ) : null}
     </section>

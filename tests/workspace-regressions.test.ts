@@ -405,11 +405,30 @@ test("export center separates blueprint and previews seven delivery artifacts", 
   assert.match(center, /BlueprintPreparationBar/);
   assert.match(center, /ArtifactNavigator/);
   assert.match(center, /ArtifactPreview/);
+  assert.match(center, /exportDocxSaveAs/);
+  assert.match(center, /handleApprove\("formal_draft"\)/);
+  assert.match(center, /regenerate_blueprint|regenerate_draft/);
   assert.match(blueprint, /准备材料/);
   assert.doesNotMatch(navigator, /export-blueprint\.md/);
   assert.match(navigator, /工程附件/);
   assert.match(preview, /当前为内容预览/);
+  assert.match(preview, /另存为/);
   assert.match(css, /grid-template-columns/);
+});
+
+test("export center uses bottom model menu and review without right aside", async () => {
+  const [center, action, css] = await Promise.all([
+    readFile("src/components/app/ExportCenter.tsx", "utf8"),
+    readFile("src/components/export/ExportActionBar.tsx", "utf8"),
+    readFile("src/styles/export.css", "utf8"),
+  ]);
+  assert.match(action, /ConversationModelMenu/);
+  assert.match(action, /ReviewLedger/);
+  assert.doesNotMatch(action, /SelectField/);
+  assert.doesNotMatch(center, /aside className="export-review"/);
+  assert.match(center, /ExportActionBar/);
+  assert.match(css, /export-action-bar/);
+  assert.match(css, /export-action-review/);
 });
 
 test("export review is a task ledger with explicit diff application, not chat", async () => {

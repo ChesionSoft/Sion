@@ -1,108 +1,78 @@
-import { Button, SelectField } from "../ui";
+import { ConversationModelMenu } from "../workspace/ConversationModelMenu";
+import { Button } from "../ui";
+import { ReviewLedger } from "./ReviewLedger";
 import type {
   ChatModelSelection,
+  ExportReviewTask,
   ExportRunSummary,
   Provider,
-  ReasoningEffort,
 } from "../../types";
 
 export type ExportActionBarProps = {
   providers: Provider[];
   modelSelection: ChatModelSelection | null;
-  onModelChange: (selection: ChatModelSelection) => void;
+  onModelChange: (selection: ChatModelSelection) => Promise<void> | void;
+  savingModel?: boolean;
   primaryLabel: string;
   onPrimary: () => void;
   primaryDisabled: boolean;
   activeRun: ExportRunSummary | null;
   onCancel: () => void;
   requiresModel: boolean;
+  reviewTasks: ExportReviewTask[];
+  reviewEnabled: boolean;
+  reviewBusy: boolean;
+  onCreateReview: (instruction: string) => void;
+  onApplyReview: (taskId: string, selectedChangeIds: string[]) => void;
 };
-
-const REASONING_OPTIONS: { value: ReasoningEffort; label: string }[] = [
-  { value: "off", label: "关闭" },
-  { value: "low", label: "低" },
-  { value: "medium", label: "中" },
-  { value: "high", label: "高" },
-];
 
 export function ExportActionBar({
   providers,
   modelSelection,
   onModelChange,
+  savingModel,
   primaryLabel,
   onPrimary,
   primaryDisabled,
   activeRun,
   onCancel,
   requiresModel,
+  reviewTasks,
+  reviewEnabled,
+  reviewBusy,
+  onCreateReview,
+  onApplyReview,
 }: ExportActionBarProps) {
-  const activeProvider = providers.find((p) => p.id === modelSelection?.providerId) ?? null;
-  const modelOptions = activeProvider?.models ?? [];
   const runInProgress = activeRun
     ? activeRun.status === "running" || activeRun.status === "queued"
     : false;
   const modelUnavailable = requiresModel && !modelSelection;
   return (
     <footer className="export-action-bar">
-      <div className="export-action-models">
-        <SelectField
-          label="模型供应商"
-          value={modelSelection?.providerId ?? ""}
+      <div className="export-action-model">
+        <ConversationModelMenu
+          providers={providers}
+          selection={modelSelection}
           disabled={runInProgress}
-          onChange={(event) => {
-            const provider = providers.find((p) => p.id === event.target.value);
-            const model = provider?.models.find((m) => m.isDefault) ?? provider?.models[0];
-            if (provider && model) {
-              onModelChange({
-                providerId: provider.id,
-                model: model.name,
-                reasoningEffort: modelSelection?.reasoningEffort ?? "medium",
-              });
-            }
+          saving={Boolean(savingModel)}
+          onSelection={async (selection) => {
+            await onModelChange(selection);
           }}
-        >
-          {providers.length === 0 ? <option value="">未配置供应商</option> : null}
-          {providers.map((provider) => (
-            <option key={provider.id} value={provider.id}>
-              {provider.name}
-            </option>
-          ))}
-        </SelectField>
-        <SelectField
-          label="模型"
-          value={modelSelection?.model ?? ""}
-          disabled={runInProgress || !activeProvider}
-          onChange={(event) => {
-            if (modelSelection) {
-              onModelChange({ ...modelSelection, model: event.target.value });
-            }
-          }}
-        >
-          {modelOptions.map((model) => (
-            <option key={model.name} value={model.name}>
-              {model.name}
-            </option>
-          ))}
-        </SelectField>
-        <SelectField
-          label="推理强度"
-          value={modelSelection?.reasoningEffort ?? "medium"}
-          disabled={runInProgress}
-          onChange={(event) => {
-            if (modelSelection) {
-              onModelChange({
-                ...modelSelection,
-                reasoningEffort: event.target.value as ReasoningEffort,
-              });
-            }
-          }}
-        >
-          {REASONING_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </SelectField>
+        />
+      </div>
+      <div className="export-action-review">
+        {reviewEnabled ? (
+          <ReviewLedger
+            tasks={reviewTasks}
+            busy={reviewBusy}
+            onCreateTask={onCreateReview}
+            onApplyTask={onApplyReview}
+          />
+        ) : (
+          <p className="export-review-placeholder">
+            评审任务账本仅用于蓝图与正式正文。
+          </p>
+        )}
       </div>
       <div className="export-action-run">
         {runInProgress ? (
