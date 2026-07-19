@@ -3,6 +3,25 @@
 本文区分“开发验证包”和“可面向普通用户分发的正式包”。证书、私钥、App
 专用密码和 PFX 文件均不得提交到仓库、构建日志或项目数据中。
 
+## 版本与产物
+
+应用版本以以下文件保持一致（semver，例如 `1.0.0`）：
+
+- `package.json`
+- `src-tauri/tauri.conf.json`
+- `src-tauri/Cargo.toml`
+- 根 `Cargo.toml` 的 `[workspace.package].version`（工作区 crate 通过
+  `version.workspace = true` 继承）
+
+对应 Git tag 为 `v1.0.0`。
+
+未签名开发验证包产物：
+
+| 平台 | 产物 | 构建方式 |
+| --- | --- | --- |
+| macOS Universal | `Sion_<version>_universal.dmg` | CI `macos-latest` 或 `npm run bundle:mac-universal` |
+| Windows x64 | NSIS `.exe`、WiX `.msi` | CI `windows-latest` 或 `npm run bundle:windows` |
+
 ## 发布前验证
 
 在发布分支的干净工作树中执行：
@@ -15,14 +34,42 @@ cargo test --workspace
 cargo clippy --workspace -- -D warnings
 npm run test:rust
 npm run test:no-browser-runtime
+npm run test:no-legacy-migration-runtime
+npm run test:storage-contract
 ```
 
-随后在 macOS Apple Silicon runner 构建通用包，并在 Windows runner 构建两个
-安装器。`.github/workflows/desktop.yml` 上传的产物应包括：
+## CI 自动发布（推荐）
 
-- Universal macOS DMG（Apple Silicon 与 Intel）；
-- Intel macOS DMG；
-- Windows NSIS `.exe` 与 WiX `.msi`。
+`.github/workflows/release.yml` 在推送 `v*` tag 时：
+
+1. 在 `macos-latest` 构建 Universal DMG（Apple Silicon + Intel）；
+2. 在 `windows-latest` 构建 NSIS 与 MSI；
+3. 使用 `tauri-apps/tauri-action` 创建/更新同名 GitHub Release，并上传安装包。
+
+发布步骤：
+
+```bash
+# 1. 确认版本号已改为目标 semver，且工作树干净
+# 2. 合并到 main 并推送
+git push origin main
+
+# 3. 打 tag 并推送（触发 Release workflow）
+git tag v1.0.0
+git push origin v1.0.0
+
+# 4. 在 GitHub Actions 中确认 Release 任务成功，并检查
+#    https://github.com/ChesionSoft/Sion/releases
+```
+
+也可在 Actions 页对 `Release` 工作流执行 `workflow_dispatch`，并填入已有 tag
+（例如 `v1.0.0`）以重建产物。
+
+当前 workflow **不注入** Apple / Windows 签名机密，产出为未签名开发验证包：
+
+- macOS：首次打开可能被 Gatekeeper 拦截，可用右键 → 打开；
+- Windows：浏览器下载可能触发 SmartScreen，可在“更多信息”中选择仍要运行。
+
+不要把未签名包表述为已公证或已代码签名的正式分发包。
 
 ## macOS 正式分发
 
@@ -49,9 +96,8 @@ hdiutil verify \
 ```
 
 若改为 CI 签名，使用 GitHub Secrets 注入 `APPLE_CERTIFICATE`（base64 `.p12`）、
-`APPLE_CERTIFICATE_PASSWORD` 和临时钥匙串密码；还需要上述公证凭据。当前
-`desktop.yml` 是不接触机密的构建验证工作流，正式发布工作流应与它分离，且只在
-受保护的 tag 或环境上运行。
+`APPLE_CERTIFICATE_PASSWORD` 和临时钥匙串密码；还需要上述公证凭据。正式签名
+发布工作流应与未签名验证流分离，且只在受保护的 tag 或 environment 上运行。
 
 没有 Apple 证书时可以生成开发验证 DMG，但它不等同于正式分发包；不要将 ad-hoc
 签名当成公证替代品。

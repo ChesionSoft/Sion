@@ -231,4 +231,4 @@ npm run bundle:mac-universal # macOS：生成 Apple Silicon + Intel Universal Ap
 npm run bundle:windows       # Windows：生成 NSIS 和 MSI 安装器
 ```
 
-GitHub Actions 会在 Apple Silicon、Intel macOS 与 Windows x64 runner 上执行验证与打包。面向普通用户的安装包还需要平台代码签名；macOS 直链分发还需要 Apple 公证。具体步骤见 [RELEASE.md](RELEASE.md)。
+推送 `v*` tag（例如 `v1.0.0`）会触发 GitHub Actions：在 macOS 上构建 Universal DMG，在 Windows x64 上构建 NSIS/MSI，并上传到 GitHub Releases。当前默认为未签名开发验证包；面向普通用户的正式安装包还需要平台代码签名，macOS 直链分发还需要 Apple 公证。具体步骤见 [RELEASE.md](RELEASE.md)。

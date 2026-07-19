@@ -3884,7 +3884,7 @@ dependencies = [
 
 [[package]]
 name = "sion-agent"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "futures-util",
  "reqwest 0.12.28",
@@ -3899,7 +3899,7 @@ dependencies = [
 
 [[package]]
 name = "sion-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3909,7 +3909,7 @@ dependencies = [
 
 [[package]]
 name = "sion-desktop"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "docx-rs",
  "image",
@@ -3933,7 +3933,7 @@ dependencies = [
 
 [[package]]
 name = "sion-storage"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "calamine",
  "pdf-extract",

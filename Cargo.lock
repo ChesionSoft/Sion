@@ -1211,7 +1211,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "sion-agent"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "futures-util",
  "reqwest",
@@ -1226,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "sion-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1236,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "sion-storage"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "calamine",
  "pdf-extract",
