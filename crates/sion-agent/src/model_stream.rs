@@ -24,6 +24,7 @@ pub struct StreamRequest {
     pub model: String,
     pub prompt: String,
     pub reasoning_effort: ReasoningEffort,
+    pub request_public_reasoning_summary: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,7 +207,11 @@ pub fn request_body(request: &StreamRequest) -> serde_json::Value {
                 body["reasoning_effort"] = json!(effort);
             }
             ProviderProtocol::OpenaiResponses => {
-                body["reasoning"] = json!({ "effort": effort, "summary": "auto" });
+                body["reasoning"] = if request.request_public_reasoning_summary {
+                    json!({ "effort": effort, "summary": "auto" })
+                } else {
+                    json!({ "effort": effort })
+                };
             }
         }
     }
@@ -410,6 +415,7 @@ mod tests {
             model: "test".to_string(),
             prompt: "hello".to_string(),
             reasoning_effort: ReasoningEffort::Medium,
+            request_public_reasoning_summary: true,
         }
     }
 
@@ -738,6 +744,8 @@ mod tests {
         );
         responses_request.reasoning_effort = ReasoningEffort::Low;
         let responses_low = request_body(&responses_request);
+        responses_request.request_public_reasoning_summary = false;
+        let responses_without_summary = request_body(&responses_request);
         responses_request.reasoning_effort = ReasoningEffort::Off;
         let responses_off = request_body(&responses_request);
         assert_eq!(chat_high["reasoning_effort"], "high");
@@ -746,6 +754,10 @@ mod tests {
         assert_eq!(
             responses_low["reasoning"],
             json!({ "effort": "low", "summary": "auto" })
+        );
+        assert_eq!(
+            responses_without_summary["reasoning"],
+            json!({ "effort": "low" })
         );
         assert!(responses_off.get("reasoning").is_none());
         for body in [chat_high, chat_off, responses_low, responses_off] {

@@ -2186,6 +2186,7 @@ fn spawn_agent_run(
                 model: job.model.model.clone(),
                 prompt: job.prompt.clone(),
                 reasoning_effort: job.reasoning_effort,
+                request_public_reasoning_summary: true,
             },
             job.cancellation.clone(),
             move |delta| match delta {
@@ -2446,6 +2447,7 @@ fn spawn_regeneration_run(
                 model: job.model.model.clone(),
                 prompt: job.prompt.clone(),
                 reasoning_effort: job.reasoning_effort,
+                request_public_reasoning_summary: false,
             },
             job.cancellation.clone(),
             move |delta| match delta {
