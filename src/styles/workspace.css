@@ -148,23 +148,31 @@
 .delivery-generation-detail p { margin: 0; }
 .delivery-generation-stop { justify-self: start; border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 3px 8px; background: var(--bg-main); font-size: 11px; cursor: pointer; }
 
-.markdown-preview { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 22px; color: var(--text); font-size: 13px; line-height: 1.72; }
-.markdown-preview h1, .markdown-preview h2, .markdown-preview h3 { margin: 1.2em 0 .5em; font-weight: 600; letter-spacing: -.01em; }
-.markdown-preview h1 { font-size: 20px; }
-.markdown-preview h2 { font-size: 16px; }
-.markdown-preview h3 { font-size: 14px; }
-.markdown-preview p { margin: .6em 0; overflow-wrap: anywhere; }
-.markdown-preview ul, .markdown-preview ol { margin: .5em 0; padding-left: 1.4em; }
-.markdown-preview li { margin: .25em 0; }
-.markdown-preview table { width: 100%; margin: .8em 0; border-collapse: collapse; font-size: 12px; }
-.markdown-preview th, .markdown-preview td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; }
-.markdown-preview th { background: var(--bg-subtle); font-weight: 600; }
-.markdown-preview pre { margin: .8em 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); overflow-x: auto; background: var(--bg-subtle); font: 12px/1.6 "SFMono-Regular", Consolas, monospace; }
-.markdown-preview code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .92em; }
-.markdown-preview pre code { font-size: 12px; background: none; padding: 0; }
-.markdown-preview :not(pre) > code { padding: 1px 4px; border-radius: 4px; background: var(--bg-subtle); }
-.markdown-preview blockquote { margin: .8em 0; padding: .2em 0 .2em 14px; border-left: 3px solid var(--border); color: var(--text-muted); }
-.markdown-preview hr { margin: 1.2em 0; border: 0; border-top: 1px solid var(--border); }
+.markdown-preview { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 22px; }
+.safe-markdown { min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.safe-markdown.is-document, .safe-markdown.is-chat { font-size: 13px; line-height: 1.72; }
+.safe-markdown.is-reasoning { color: var(--text-muted); font-size: 11px; line-height: 1.65; }
+.safe-markdown h1, .safe-markdown h2, .safe-markdown h3 { margin: 1.2em 0 .5em; font-weight: 600; letter-spacing: -.01em; }
+.safe-markdown h1 { font-size: 20px; }
+.safe-markdown h2 { font-size: 16px; }
+.safe-markdown h3 { font-size: 14px; }
+.safe-markdown.is-reasoning h1 { font-size: 15px; }
+.safe-markdown.is-reasoning h2 { font-size: 13px; }
+.safe-markdown.is-reasoning h3 { font-size: 12px; }
+.safe-markdown p { margin: .6em 0; }
+.safe-markdown ul, .safe-markdown ol { margin: .5em 0; padding-left: 1.4em; }
+.safe-markdown li { margin: .25em 0; }
+.safe-markdown-table-scroll, .safe-markdown-code-scroll { max-width: 100%; overflow-x: auto; }
+.safe-markdown table { box-sizing: border-box; width: max-content; min-width: 100%; margin: .8em 0; border-collapse: collapse; font-size: 12px; }
+.safe-markdown th, .safe-markdown td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; }
+.safe-markdown th { background: var(--bg-subtle); font-weight: 600; }
+.safe-markdown pre { box-sizing: border-box; width: max-content; min-width: 100%; margin: .8em 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-subtle); font: 12px/1.6 "SFMono-Regular", Consolas, monospace; }
+.safe-markdown code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .92em; }
+.safe-markdown pre code { font-size: 12px; background: none; padding: 0; }
+.safe-markdown :not(pre) > code { padding: 1px 4px; border-radius: 4px; background: var(--bg-subtle); }
+.safe-markdown blockquote { margin: .8em 0; padding: .2em 0 .2em 14px; border-left: 3px solid var(--border); color: var(--text-muted); }
+.safe-markdown hr { margin: 1.2em 0; border: 0; border-top: 1px solid var(--border); }
+.safe-markdown-fallback { white-space: pre-wrap; overflow-wrap: anywhere; }
 .markdown-link-text { color: var(--text-muted); }
 .markdown-image-placeholder { display: inline-block; margin: 2px 0; padding: 2px 8px; border: 1px dashed var(--border-strong); border-radius: var(--radius-md); color: var(--text-muted); font-size: 11px; }
 

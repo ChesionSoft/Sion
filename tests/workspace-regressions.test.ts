@@ -17,9 +17,25 @@ test("compact workspace keeps every primary action available and labelled", asyn
   assert.match(workspaceSource, /title="聊天记录"/);
 });
 
-test("markdown preview preserves raw HTML as escaped text", async () => {
-  const source = await readFile("src/components/workspace/MarkdownPreview.tsx", "utf8");
-  assert.doesNotMatch(source, /\bskipHtml\b/);
+test("shared Markdown renderer centralizes safe GFM for every visual variant", async () => {
+  const [safeMarkdown, preview] = await Promise.all([
+    readFile("src/components/workspace/SafeMarkdown.tsx", "utf8"),
+    readFile("src/components/workspace/MarkdownPreview.tsx", "utf8"),
+  ]);
+
+  assert.match(safeMarkdown, /type SafeMarkdownVariant = "document" \| "chat" \| "reasoning"/);
+  assert.match(safeMarkdown, /remarkPlugins=\{\[remarkGfm\]\}/);
+  assert.match(safeMarkdown, /urlTransform=\{blockedMarkdownUrl\}/);
+  assert.match(safeMarkdown, /className="safe-markdown-table-scroll"/);
+  assert.match(safeMarkdown, /className="safe-markdown-code-scroll"/);
+  assert.match(safeMarkdown, /MarkdownErrorBoundary/);
+  assert.match(safeMarkdown, /static getDerivedStateFromError/);
+  assert.match(safeMarkdown, /className="safe-markdown-fallback"/);
+  assert.match(safeMarkdown, /\{this\.props\.markdown\}/);
+  assert.match(safeMarkdown, /markdown-link-text/);
+  assert.match(safeMarkdown, /markdown-image-placeholder/);
+  assert.doesNotMatch(safeMarkdown, /rehypeRaw|skipHtml|dangerouslySetInnerHTML/);
+  assert.match(preview, /<SafeMarkdown markdown=\{markdown\} variant="document" \/>/);
 });
 
 test("storage contract verifier references only current source files", async () => {
