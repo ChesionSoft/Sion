@@ -17,6 +17,9 @@ use crate::{ChatModelSelection, WorkflowNode, WorkflowNodeId};
 mod content;
 pub use content::*;
 
+mod prompts;
+pub use prompts::*;
+
 /// The eight fixed export files. Blueprint is preparation material; the other
 /// seven are delivery artifacts. Filenames are fixed so IPC never accepts an
 /// arbitrary path or filename.
