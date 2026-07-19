@@ -279,7 +279,7 @@ pub fn public_reasoning_summary(chunks: &[String]) -> Option<String> {
     if joined.is_empty() {
         return None;
     }
-    Some(joined.chars().take(2_000).collect())
+    Some(joined)
 }
 
 pub fn prepare_retry_turn(
@@ -467,12 +467,14 @@ mod tests {
     }
 
     #[test]
-    fn public_reasoning_summary_is_trimmed_and_bounded() {
-        let chunks = vec!["  公开摘要  ".to_string(), "x".repeat(3_000)];
+    fn public_reasoning_summary_trims_edges_without_truncating() {
+        let long_tail = "x".repeat(3_000);
+        let chunks = vec!["  公开摘要  ".to_string(), long_tail.clone()];
+
         let summary = public_reasoning_summary(&chunks).unwrap();
-        assert!(summary.starts_with("公开摘要"));
-        assert!(summary.chars().count() <= 2_000);
-        assert!(!summary.contains("  公开摘要  "));
+
+        assert_eq!(summary, format!("公开摘要{long_tail}"));
+        assert_eq!(summary.chars().count(), 3_004);
     }
 
     #[test]
