@@ -8,6 +8,7 @@ import {
   createProject,
   createSession as createSessionApi,
   deleteProvider,
+  exitApp,
   getConversationContext,
   getAgentRunDetail,
   deleteSession as deleteSessionApi,
@@ -125,7 +126,6 @@ export function App() {
   const dirtyRef = useRef(false);
   const uiHydratedRef = useRef(false);
   const requestCloseNavigationRef = useRef<() => void>(() => undefined);
-  const flushAndCloseWindowRef = useRef<() => Promise<void>>(async () => undefined);
   const workspaceScopeRef = useRef<string | null>(null);
   const messageScopeRef = useRef<string | null>(null);
   const projectScopeRef = useRef<string | null>(null);
@@ -382,17 +382,20 @@ export function App() {
     let unlisten: (() => void) | undefined;
     let disposed = false;
     try {
-      // Register once. Read latest dirty/UI state from refs so re-renders do not
-      // stack listeners or capture a stale close handler (which left the window
-      // stuck after preventDefault without a successful destroy).
+      // Register once. Only intercept when a draft is dirty. Do not preventDefault
+      // for pending UI settings flushes — Tauri destroys the window after the
+      // handler returns if we leave the event alone (requires window destroy ACL).
       void getCurrentWindow().onCloseRequested((event) => {
         if (allowWindowCloseRef.current) return;
-        const pendingUiSave = uiHydratedRef.current
-          && uiPersistedGeneration.current < uiChangeGeneration.current;
-        if (!dirtyRef.current && !pendingUiSave) return;
+        if (!dirtyRef.current) {
+          // Best-effort UI flush without blocking quit.
+          if (uiHydratedRef.current && uiPersistedGeneration.current < uiChangeGeneration.current) {
+            void persistUiSnapshot(uiRef.current, uiChangeGeneration.current, false);
+          }
+          return;
+        }
         event.preventDefault();
-        if (dirtyRef.current) requestCloseNavigationRef.current();
-        else void flushAndCloseWindowRef.current();
+        requestCloseNavigationRef.current();
       }).then((stop) => {
         if (disposed) stop();
         else unlisten = stop;
@@ -1165,35 +1168,42 @@ export function App() {
   }
 
   async function closeWindowSafely() {
-    // Mark first so a re-entrant CloseRequested from close() is not cancelled.
+    // Mark first so a re-entrant CloseRequested from close()/destroy is allowed.
     allowWindowCloseRef.current = true;
     try {
       const generation = uiChangeGeneration.current;
       if (uiHydratedRef.current && uiPersistedGeneration.current < generation) {
-        // Never block quit forever on a hung settings write.
         await Promise.race([
           persistUiSnapshot(uiRef.current, generation, false),
-          new Promise<boolean>((resolve) => { globalThis.setTimeout(() => resolve(false), 1500); }),
+          new Promise<boolean>((resolve) => { globalThis.setTimeout(() => resolve(false), 800); }),
         ]);
       }
       const appWindow = getCurrentWindow();
       try {
         await appWindow.destroy();
+        return;
       } catch {
-        // destroy can fail after preventDefault on some platforms; close() retries
-        // and is allowed through via allowWindowCloseRef.
-        await appWindow.close();
+        try {
+          await appWindow.close();
+          return;
+        } catch {
+          // Fall through to process exit.
+        }
       }
+      await exitApp();
     } catch {
-      allowWindowCloseRef.current = false;
+      try {
+        await exitApp();
+      } catch {
+        allowWindowCloseRef.current = false;
+      }
     }
   }
 
-  // Keep close-path callbacks stable for the once-registered window listener.
+  // Keep close-path callback stable for the once-registered window listener.
   requestCloseNavigationRef.current = () => {
     requestNavigation({ kind: "close-window" });
   };
-  flushAndCloseWindowRef.current = () => closeWindowSafely();
 
   function requestNavigation(intent: NavigationIntent) {
     const threatensDraft = intent.kind === "close-window"

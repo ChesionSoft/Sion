@@ -55,6 +55,9 @@ const invokePayload = async <T>(
   return payload as T;
 };
 
+/** Force-quit the desktop process (bypasses window destroy ACL edge cases). */
+export const exitApp = () => invoke<void>("app_exit");
+
 export const getSettings = () => invokePayload<AppSettings>("settings_get", {});
 export const pickProjectsDirectory = () =>
   invokePayload<AppSettings>("settings_pick_projects_directory", {});

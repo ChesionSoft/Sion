@@ -692,6 +692,13 @@ fn app_get_version(
     })
 }
 
+/// Force-quit the process. Used when the window close path is intercepted for
+/// dirty-state prompts and must still exit after the user confirms.
+#[tauri::command]
+fn app_exit(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[tauri::command]
 fn spike_docx_check(request: VersionedRequest) -> Result<VersionedResponse<SpikeCheck>, ApiError> {
     assert_api_version(&request)?;
@@ -3027,6 +3034,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_get_version,
+            app_exit,
             spike_docx_check,
             settings_get,
             settings_save_ui,
