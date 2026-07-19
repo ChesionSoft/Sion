@@ -1803,6 +1803,34 @@ fn project_reveal(
     })
 }
 
+/// Opens the project's fixed `exports/` directory in the OS file manager.
+/// Creates the directory when it is missing so first-time export projects still
+/// get a browsable folder.
+#[tauri::command]
+fn export_folder_reveal(
+    request: ProjectRevealRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ProjectRevealResult>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let exports_dir = project_root.join("exports");
+    std::fs::create_dir_all(&exports_dir).map_err(|error| {
+        ApiError::CheckFailed(format!(
+            "cannot create export folder {}: {error}",
+            exports_dir.display()
+        ))
+    })?;
+    let command = file_manager_command(&exports_dir)?;
+    Command::new(command.program)
+        .args(command.arguments)
+        .spawn()
+        .map_err(|error| ApiError::CheckFailed(format!("cannot reveal export folder: {error}")))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: ProjectRevealResult { revealed: true },
+    })
+}
+
 #[tauri::command]
 fn project_get_node(
     request: ProjectNodeRequest,
@@ -3019,6 +3047,7 @@ pub fn run() {
             project_create,
             project_list,
             project_reveal,
+            export_folder_reveal,
             project_get_node,
             project_get_agent_rules,
             project_get_agent_override,

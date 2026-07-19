@@ -67,6 +67,8 @@ export const getProjects = () =>
   invokePayload<{ projects: RecentProject[]; warnings: string[] }>("project_list", {});
 export const revealProject = (projectId: string) =>
   invokePayload<{ revealed: boolean }>("project_reveal", { projectId });
+export const revealExportFolder = (projectId: string) =>
+  invokePayload<{ revealed: boolean }>("export_folder_reveal", { projectId });
 export const createProject = (
   id: string,
   name: string,
