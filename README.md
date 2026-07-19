@@ -68,35 +68,58 @@ Sion 现为 macOS（Apple Silicon、Intel）与 Windows x64 桌面应用。Rust 
 
 ### macOS：跳过未签名应用拦截
 
-1. 下载 `Sion_*_universal.dmg`，双击打开，将 **Sion** 拖到“应用程序”。
-2. 若无法打开，按下面任一方式放行（任选其一即可）。
+当前 Release 为**未公证**包，系统提示  
+「Apple 无法验证 “Sion” 是否包含恶意软件」是预期行为，不是安装包损坏。
 
-**方法一（推荐）：右键打开**
+先完成安装：下载 `Sion_*_universal.dmg` → 打开 → 将 **Sion** 拖到 **应用程序**。  
+然后按顺序尝试下面方法（多数情况做到方法二即可）。
 
-1. 打开“应用程序”文件夹，找到 **Sion**。
-2. **按住 Control 再单击**图标（或右键 / 双指点按）→ 选择 **打开**。
-3. 在系统弹窗中再次点 **打开**。
+**方法一：清隔离属性（必须对 App，只清 DMG 通常无效）**
 
-之后可像普通应用一样双击启动。
-
-**方法二：系统设置放行**
-
-1. 先双击 Sion 一次（会失败，但会留下拦截记录）。
-2. 打开 **系统设置 → 隐私与安全性**。
-3. 滚动到 **安全性** 区域；若出现“已阻止使用 Sion…”或类似提示，点 **仍要打开**。
-4. 在确认框中再选 **打开**。
-
-**方法三：终端清除隔离属性**（提示“已损坏”或拖入应用程序后仍打不开时最有效）
+浏览器下载会给文件打上 `com.apple.quarantine`。只对 `.dmg` 执行 `xattr` 往往不够，要对**已拖入应用程序的 Sion.app**：
 
 ```bash
-# 对下载的 DMG（打开前）
-xattr -cr ~/Downloads/Sion_*.dmg
+# 推荐：只移除隔离标记
+xattr -dr com.apple.quarantine /Applications/Sion.app
 
-# 或对已安装的应用
+# 或清除全部扩展属性
 xattr -cr /Applications/Sion.app
 ```
 
-然后重新打开 DMG / 双击 Sion。只需执行一次；不要关闭 SIP，也不必全局关闭 Gatekeeper。
+若 App 不在「应用程序」里，改成实际路径，例如：
+
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/Sion.app
+```
+
+**方法二（推荐）：系统设置 → 仍要打开**
+
+新版 macOS 对未公证应用很严，右键有时也不给“打开”，需要设置里放行：
+
+1. 先双击一次 **Sion**（会弹出无法验证，点 **完成** / **取消** 即可；这一步是为了留下拦截记录）。
+2. 打开 **系统设置 → 隐私与安全性**。
+3. 向下滚动到 **安全性** 区域。
+4. 应看到类似「已阻止使用 Sion，因为无法检查是否包含恶意软件」→ 点 **仍要打开**。
+5. 输入本机密码 / 使用 Apple Watch / 触控 ID 确认。
+6. 再点一次 **打开**。
+
+若看不到「仍要打开」：再双击一次 Sion，回到该页面刷新；或先执行方法一后再试步骤 1–6。
+
+**方法三：按住 Control 打开**
+
+1. 打开「应用程序」，选中 **Sion**。
+2. **按住 Control 再单击**（或右键 / 双指点按）→ **打开**（不要双击）。
+3. 若弹窗底部有 **打开**，再点一次。
+
+**方法四：终端启动（确认能跑时）**
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Sion.app
+open /Applications/Sion.app
+```
+
+不要关闭 SIP，也不要执行 `spctl --master-disable` 全局关闭 Gatekeeper。  
+要彻底消除此提示，需要 Apple Developer 证书签名并公证（见 `RELEASE.md`）。
 
 ### Windows
 

@@ -68,35 +68,54 @@ Public builds are **unsigned development verification packages** (no Apple notar
 
 ### macOS: bypass Gatekeeper for unsigned builds
 
-1. Download `Sion_*_universal.dmg`, open it, and drag **Sion** into Applications.
-2. If it will not open, use any one of the methods below.
+Public Release builds are **not notarized**. The dialog  
+“Apple could not verify ‘Sion’ is free of malware” is expected, not a corrupt download.
 
-**Option 1 (recommended): Open from the context menu**
+Install first: download `Sion_*_universal.dmg` → open → drag **Sion** into **Applications**.  
+Then try the methods below in order (most people succeed at option 2).
 
-1. In Applications, select **Sion**.
-2. **Control-click** (or right-click / two-finger click) → **Open**.
-3. Confirm **Open** in the system dialog.
+**Option 1: Clear quarantine on the app (DMG-only `xattr` is usually not enough)**
 
-After that, normal double-click launches work.
-
-**Option 2: Allow in System Settings**
-
-1. Double-click Sion once (it may fail, but records the block).
-2. Open **System Settings → Privacy & Security**.
-3. Under **Security**, if you see that Sion was blocked, click **Open Anyway**.
-4. Confirm **Open** again.
-
-**Option 3: Clear quarantine in Terminal** (best when macOS says the app is “damaged”)
+Browser downloads set `com.apple.quarantine`. Clearing it on the `.dmg` alone often does nothing; clear it on the installed **Sion.app**:
 
 ```bash
-# DMG before opening
-xattr -cr ~/Downloads/Sion_*.dmg
+# Preferred: remove quarantine only
+xattr -dr com.apple.quarantine /Applications/Sion.app
 
-# Or the installed app
+# Or strip all extended attributes
 xattr -cr /Applications/Sion.app
 ```
 
-Then reopen the DMG / Sion. Do this once; do not disable SIP or turn Gatekeeper off globally.
+If the app is not in Applications, use the real path, e.g. `~/Downloads/Sion.app`.
+
+**Option 2 (recommended): System Settings → Open Anyway**
+
+On recent macOS, Control-click may not offer Open for unnotarized apps:
+
+1. Double-click **Sion** once (dismiss **Done** / **Cancel**; this records the block).
+2. Open **System Settings → Privacy & Security**.
+3. Scroll to **Security**.
+4. You should see that Sion was blocked because it could not be checked for malware → **Open Anyway**.
+5. Confirm with password / Watch / Touch ID.
+6. Click **Open** again.
+
+If **Open Anyway** is missing: double-click Sion once more, return to that page, or run option 1 first and repeat steps 1–6.
+
+**Option 3: Control-click Open**
+
+1. In Applications, select **Sion**.
+2. **Control-click** (right-click / two-finger click) → **Open** (do not double-click).
+3. If the dialog shows **Open**, confirm it.
+
+**Option 4: Launch from Terminal**
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Sion.app
+open /Applications/Sion.app
+```
+
+Do not disable SIP or run `spctl --master-disable`.  
+Removing this warning for all users requires Developer ID signing and notarization (see `RELEASE.md`).
 
 ### Windows
 
