@@ -137,7 +137,7 @@ where
                     usage,
                 }));
             }
-            if let Some(delta) = frame_delta(request.protocol, &frame)? {
+            for delta in frame_deltas(request.protocol, &frame)? {
                 match &delta {
                     StreamDelta::OutputText(text) => output.push(text.clone()),
                     StreamDelta::ReasoningSummary(text) => reasoning_summary.push(text.clone()),
@@ -206,7 +206,7 @@ pub fn request_body(request: &StreamRequest) -> serde_json::Value {
                 body["reasoning_effort"] = json!(effort);
             }
             ProviderProtocol::OpenaiResponses => {
-                body["reasoning"] = json!({ "effort": effort });
+                body["reasoning"] = json!({ "effort": effort, "summary": "auto" });
             }
         }
     }
@@ -302,44 +302,48 @@ fn take_frames(buffer: &mut String) -> Vec<SseFrame> {
     frames
 }
 
-fn frame_delta(
+fn frame_deltas(
     protocol: ProviderProtocol,
     frame: &SseFrame,
-) -> Result<Option<StreamDelta>, StreamFailure> {
+) -> Result<Vec<StreamDelta>, StreamFailure> {
     let body: serde_json::Value =
         serde_json::from_str(&frame.data).map_err(|_| StreamFailure::InvalidFrame)?;
     match protocol {
         ProviderProtocol::ChatCompletions => {
             let Some(delta) = body.pointer("/choices/0/delta") else {
-                return Ok(None);
+                return Ok(Vec::new());
             };
-            if let Some(content) = delta.get("content").and_then(|value| value.as_str())
-                && !content.is_empty()
-            {
-                return Ok(Some(StreamDelta::OutputText(content.to_string())));
-            }
+            let mut deltas = Vec::with_capacity(2);
             if let Some(summary) = delta
                 .get("reasoning_summary")
                 .and_then(|value| value.as_str())
                 && !summary.is_empty()
             {
-                return Ok(Some(StreamDelta::ReasoningSummary(summary.to_string())));
+                deltas.push(StreamDelta::ReasoningSummary(summary.to_string()));
             }
-            Ok(None)
+            if let Some(content) = delta.get("content").and_then(|value| value.as_str())
+                && !content.is_empty()
+            {
+                deltas.push(StreamDelta::OutputText(content.to_string()));
+            }
+            Ok(deltas)
         }
-        ProviderProtocol::OpenaiResponses => match frame.event.as_deref() {
-            Some("response.output_text.delta") => Ok(body
-                .get("delta")
-                .and_then(|value| value.as_str())
-                .filter(|text| !text.is_empty())
-                .map(|text| StreamDelta::OutputText(text.to_string()))),
-            Some("response.reasoning_summary_text.delta") => Ok(body
-                .get("delta")
-                .and_then(|value| value.as_str())
-                .filter(|text| !text.is_empty())
-                .map(|text| StreamDelta::ReasoningSummary(text.to_string()))),
-            _ => Ok(None),
-        },
+        ProviderProtocol::OpenaiResponses => {
+            let delta = match frame.event.as_deref() {
+                Some("response.output_text.delta") => body
+                    .get("delta")
+                    .and_then(|value| value.as_str())
+                    .filter(|text| !text.is_empty())
+                    .map(|text| StreamDelta::OutputText(text.to_string())),
+                Some("response.reasoning_summary_text.delta") => body
+                    .get("delta")
+                    .and_then(|value| value.as_str())
+                    .filter(|text| !text.is_empty())
+                    .map(|text| StreamDelta::ReasoningSummary(text.to_string())),
+                _ => None,
+            };
+            Ok(delta.into_iter().collect())
+        }
     }
 }
 
@@ -436,7 +440,7 @@ mod tests {
 
     #[test]
     fn parser_emits_summary_but_ignores_hidden_reasoning_content() {
-        let summary = frame_delta(
+        let summary = frame_deltas(
             ProviderProtocol::ChatCompletions,
             &SseFrame {
                 event: None,
@@ -447,9 +451,30 @@ mod tests {
         .unwrap();
         assert_eq!(
             summary,
-            Some(StreamDelta::ReasoningSummary("公开摘要".to_string()))
+            vec![StreamDelta::ReasoningSummary("公开摘要".to_string())]
         );
         assert!(!format!("{summary:?}").contains("秘密思维链"));
+    }
+
+    #[test]
+    fn parser_preserves_summary_and_content_from_the_same_chat_frame() {
+        let deltas = frame_deltas(
+            ProviderProtocol::ChatCompletions,
+            &SseFrame {
+                event: None,
+                data: r#"{"choices":[{"delta":{"reasoning_summary":"公开摘要","content":"可见正文"}}]}"#
+                    .to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            deltas,
+            vec![
+                StreamDelta::ReasoningSummary("公开摘要".to_string()),
+                StreamDelta::OutputText("可见正文".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -698,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn request_body_maps_reasoning_effort_without_output_limits() {
+    fn request_body_maps_reasoning_effort_and_requests_public_summary() {
         let mut chat_request = request(
             "https://example.invalid/chat".into(),
             ProviderProtocol::ChatCompletions,
@@ -718,7 +743,10 @@ mod tests {
         assert_eq!(chat_high["reasoning_effort"], "high");
         assert_eq!(chat_high["stream_options"]["include_usage"], true);
         assert!(chat_off.get("reasoning_effort").is_none());
-        assert_eq!(responses_low["reasoning"]["effort"], "low");
+        assert_eq!(
+            responses_low["reasoning"],
+            json!({ "effort": "low", "summary": "auto" })
+        );
         assert!(responses_off.get("reasoning").is_none());
         for body in [chat_high, chat_off, responses_low, responses_off] {
             assert!(body.get("max_tokens").is_none());

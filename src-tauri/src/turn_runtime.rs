@@ -270,13 +270,8 @@ pub fn completed_activities(outcome: &DeliveryOutcome, now: &str) -> Vec<TurnAct
 }
 
 pub fn public_reasoning_summary(chunks: &[String]) -> Option<String> {
-    let joined = chunks
-        .iter()
-        .map(|chunk| chunk.trim())
-        .filter(|chunk| !chunk.is_empty())
-        .collect::<Vec<_>>()
-        .join("");
-    if joined.is_empty() {
+    let joined = chunks.concat();
+    if joined.trim().is_empty() {
         return None;
     }
     Some(joined)
@@ -467,14 +462,22 @@ mod tests {
     }
 
     #[test]
-    fn public_reasoning_summary_trims_edges_without_truncating() {
-        let long_tail = "x".repeat(3_000);
-        let chunks = vec!["  公开摘要  ".to_string(), long_tail.clone()];
+    fn public_reasoning_summary_preserves_exact_stream_text_without_truncating() {
+        let chunks = vec![
+            "## 核对计划\n\n".to_string(),
+            "- 检查范围\n".to_string(),
+            format!("- 补充异常路径\n{}", "x".repeat(3_000)),
+        ];
+        let expected = chunks.concat();
 
         let summary = public_reasoning_summary(&chunks).unwrap();
 
-        assert_eq!(summary, format!("公开摘要{long_tail}"));
-        assert_eq!(summary.chars().count(), 3_004);
+        assert_eq!(summary, expected);
+        assert!(summary.chars().count() > 3_000);
+        assert_eq!(
+            summary.lines().take(4).collect::<Vec<_>>(),
+            ["## 核对计划", "", "- 检查范围", "- 补充异常路径",]
+        );
     }
 
     #[test]
