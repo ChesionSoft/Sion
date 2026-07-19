@@ -88,6 +88,26 @@ test("leaving the file-pool context invalidates pending import presentation", as
   }
 });
 
+test("file pool uses the approved single-action empty state", async () => {
+  const [source, css] = await Promise.all([
+    readFile("src/components/workspace/FilePoolWorkspace.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+
+  assert.match(source, /className="file-pool-empty"/);
+  assert.match(source, /className="file-pool-empty-folder"/);
+  assert.match(source, /把项目资料放在这里/);
+  assert.match(source, /本地保存 · 受限文本读取/);
+  for (const format of ["PDF", "DOCX", "XLSX", "MD", "TXT"]) {
+    assert.match(source, new RegExp(`>${format}<`));
+  }
+  assert.match(source, /files\.length > 0 \? <Button[^>]+onClick=\{onImport\}>导入文件<\/Button> : null/);
+  assert.match(css, /\.file-pool-empty-panel/);
+  assert.match(css, /radial-gradient/);
+  assert.doesNotMatch(source, /<EmptyState/);
+  assert.doesNotMatch(source, /name="file-pool"/);
+});
+
 test("provider editor preserves a multi-model draft with context windows", async () => {
   const source = await readFile("src/components/settings/ProviderEditorDialog.tsx", "utf8");
   assert.match(source, /models\.map/);
