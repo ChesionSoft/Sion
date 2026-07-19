@@ -27,6 +27,8 @@ use std::{
     time::Instant,
 };
 use tauri::{Emitter, Manager};
+#[cfg(target_os = "macos")]
+use tauri::RunEvent;
 use tauri_plugin_dialog::DialogExt;
 use tokio_util::sync::CancellationToken;
 
@@ -3084,8 +3086,29 @@ pub fn run() {
             file_import,
             file_preview
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to start Sion desktop spike");
+        .build(tauri::generate_context!())
+        .expect("failed to build Sion desktop")
+        .run(|app, event| {
+            // macOS only: red close hides the window; Dock click reopens it.
+            // Windows/Linux never emit Reopen; their close button still quits.
+            #[cfg(target_os = "macos")]
+            if let RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
+                if !has_visible_windows {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app, event);
+            }
+        });
 }
 
 #[cfg(test)]

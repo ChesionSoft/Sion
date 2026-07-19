@@ -8,7 +8,6 @@ import {
   createProject,
   createSession as createSessionApi,
   deleteProvider,
-  exitApp,
   getConversationContext,
   getAgentRunDetail,
   deleteSession as deleteSessionApi,
@@ -58,6 +57,14 @@ import { isCurrentGenerationEvent, reconcileGeneratedNode, reconcileSavedNode } 
 import { appendLiveReasoning, clearLiveReasoning, removeLiveReasoning, type LiveReasoningByRun } from "./reasoning-stream.ts";
 
 const now = () => new Date().toISOString();
+
+/** macOS Dock apps hide on red close; Windows/Linux quit when the window closes. */
+function isMacOSDesktop(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const platform = navigator.platform?.toLowerCase() ?? "";
+  return platform.includes("mac") || /Macintosh|Mac OS X/i.test(navigator.userAgent);
+}
+
 const contextSectionLabel: Record<string, string> = {
   protocol: "协议提示",
   rules: "Agent 规则",
@@ -121,11 +128,7 @@ export function App() {
   const uiChangeGeneration = useRef(0);
   const uiPersistedGeneration = useRef(0);
   const uiSaveQueue = useRef(createSerialTaskQueue());
-  /** When true, the next CloseRequested is allowed through (user-confirmed or flush finished). */
-  const allowWindowCloseRef = useRef(false);
-  const dirtyRef = useRef(false);
   const uiHydratedRef = useRef(false);
-  const requestCloseNavigationRef = useRef<() => void>(() => undefined);
   const workspaceScopeRef = useRef<string | null>(null);
   const messageScopeRef = useRef<string | null>(null);
   const projectScopeRef = useRef<string | null>(null);
@@ -148,7 +151,6 @@ export function App() {
   const markdownDirty = node !== null && draft !== node.markdown;
   const agentRulesDirty = agentRules !== null && isAgentRulesDirty(agentOverrideDraft, agentRules.customMarkdown);
   const dirty = markdownDirty || agentRulesDirty;
-  dirtyRef.current = dirty;
   uiHydratedRef.current = uiHydrated;
   const activeRunId = activeRunIdForContext(runs, project?.id ?? null, activeNodeId);
   const deliveryLocked = Boolean(activeRunId) || regenerating;
@@ -379,23 +381,19 @@ export function App() {
   }, [project, node, draft, markdownDirty, saving, deliveryLocked]);
 
   useEffect(() => {
+    // Windows/Linux: leave the native close path alone so the X button quits.
+    // macOS only: red traffic-light hides; Dock reopens via RunEvent::Reopen.
+    if (!isMacOSDesktop()) return;
+
     let unlisten: (() => void) | undefined;
     let disposed = false;
     try {
-      // Register once. Only intercept when a draft is dirty. Do not preventDefault
-      // for pending UI settings flushes — Tauri destroys the window after the
-      // handler returns if we leave the event alone (requires window destroy ACL).
       void getCurrentWindow().onCloseRequested((event) => {
-        if (allowWindowCloseRef.current) return;
-        if (!dirtyRef.current) {
-          // Best-effort UI flush without blocking quit.
-          if (uiHydratedRef.current && uiPersistedGeneration.current < uiChangeGeneration.current) {
-            void persistUiSnapshot(uiRef.current, uiChangeGeneration.current, false);
-          }
-          return;
-        }
         event.preventDefault();
-        requestCloseNavigationRef.current();
+        if (uiHydratedRef.current && uiPersistedGeneration.current < uiChangeGeneration.current) {
+          void persistUiSnapshot(uiRef.current, uiChangeGeneration.current, false);
+        }
+        void getCurrentWindow().hide();
       }).then((stop) => {
         if (disposed) stop();
         else unlisten = stop;
@@ -1164,50 +1162,28 @@ export function App() {
       selectNodeImmediate(intent.nodeId);
       return;
     }
-    void closeWindowSafely();
+    void dismissMainWindow();
   }
 
-  async function closeWindowSafely() {
-    // Mark first so a re-entrant CloseRequested from close()/destroy is allowed.
-    allowWindowCloseRef.current = true;
+  async function dismissMainWindow() {
+    if (uiHydratedRef.current && uiPersistedGeneration.current < uiChangeGeneration.current) {
+      void persistUiSnapshot(uiRef.current, uiChangeGeneration.current, false);
+    }
     try {
-      const generation = uiChangeGeneration.current;
-      if (uiHydratedRef.current && uiPersistedGeneration.current < generation) {
-        await Promise.race([
-          persistUiSnapshot(uiRef.current, generation, false),
-          new Promise<boolean>((resolve) => { globalThis.setTimeout(() => resolve(false), 800); }),
-        ]);
+      if (isMacOSDesktop()) {
+        await getCurrentWindow().hide();
+      } else {
+        await getCurrentWindow().destroy();
       }
-      const appWindow = getCurrentWindow();
-      try {
-        await appWindow.destroy();
-        return;
-      } catch {
-        try {
-          await appWindow.close();
-          return;
-        } catch {
-          // Fall through to process exit.
-        }
-      }
-      await exitApp();
     } catch {
-      try {
-        await exitApp();
-      } catch {
-        allowWindowCloseRef.current = false;
-      }
+      // Browser preview has no native window.
     }
   }
 
-  // Keep close-path callback stable for the once-registered window listener.
-  requestCloseNavigationRef.current = () => {
-    requestNavigation({ kind: "close-window" });
-  };
-
   function requestNavigation(intent: NavigationIntent) {
-    const threatensDraft = intent.kind === "close-window"
-      || (intent.kind === "project" && intent.projectId !== project?.id)
+    // macOS close only hides (Dock); Windows X quits via native path. Neither
+    // should block navigation prompts for dirty drafts when leaving a project.
+    const threatensDraft = (intent.kind === "project" && intent.projectId !== project?.id)
       || (intent.kind === "node" && intent.nodeId !== activeNodeId)
       || (intent.kind === "destination" && intent.destination !== destination);
     const decision = requestNavigationDecision(dirty && threatensDraft, intent);
