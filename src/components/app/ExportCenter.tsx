@@ -6,6 +6,7 @@ import {
   approveExportArtifact,
   cancelExportAction,
   discardExportCandidate,
+  exportDocxSaveAs,
   getExportArtifact,
   getExportWorkspace,
   saveExportArtifact,
@@ -49,7 +50,10 @@ export type ExportCenterProps = {
 
 const utcNow = () => new Date().toISOString();
 
-const PRIMARY_LABELS: Record<ExportAction | "approve_blueprint" | "approve_draft" | "complete", string> = {
+const PRIMARY_LABELS: Record<
+  ExportAction | "approve_blueprint" | "approve_draft" | "complete",
+  string
+> = {
   generate_blueprint: "生成导出蓝图",
   regenerate_blueprint: "重新生成蓝图",
   generate_draft: "生成正式正文",
@@ -67,6 +71,16 @@ const GENERATION_ACTIONS: ExportAction[] = [
   "generate_draft",
   "regenerate_draft",
 ];
+
+const currentMarkdownFromContent = (content: ExportArtifactContent | null): string => {
+  if (!content) {
+    return "";
+  }
+  if (content.kind === "markdown" || content.kind === "source") {
+    return content.markdown;
+  }
+  return "";
+};
 
 export function ExportCenter({
   projects,
@@ -215,11 +229,10 @@ export function ExportCenter({
   const selectedArtifact =
     selectedKind === "blueprint"
       ? snapshot?.blueprint
-      : snapshot?.deliveryArtifacts.find((item) => item.kind === selectedKind) ?? null;
+      : (snapshot?.deliveryArtifacts.find((item) => item.kind === selectedKind) ?? null);
   const expectedRevision = selectedArtifact?.revision ?? 0;
   const expectedDigest = selectedArtifact?.digest ?? "";
-  const canEdit =
-    selectedKind === "blueprint" || selectedKind === "formal_draft";
+  const canEdit = selectedKind === "blueprint" || selectedKind === "formal_draft";
   const candidate =
     snapshot?.pendingCandidates.find((item) => item.targetKind === selectedKind) ?? null;
   const reviewTasks =
@@ -229,6 +242,19 @@ export function ExportCenter({
   const runInProgress =
     activeRun?.status === "running" || activeRun?.status === "queued";
   const sourceWarnings = snapshot?.sourceWarnings ?? [];
+  const formalDraft = snapshot?.deliveryArtifacts.find((item) => item.kind === "formal_draft");
+  const formalDocx = snapshot?.deliveryArtifacts.find((item) => item.kind === "formal_docx");
+  const actionsLocked = busy || runInProgress || editLoading;
+
+  const artifactForKind = (kind: ExportArtifactKind) => {
+    if (!snapshot) {
+      return null;
+    }
+    if (kind === "blueprint") {
+      return snapshot.blueprint;
+    }
+    return snapshot.deliveryArtifacts.find((item) => item.kind === kind) ?? null;
+  };
 
   const handleEditStart = () => {
     if (!resolvedProjectId || !selectedKind) {
@@ -353,23 +379,8 @@ export function ExportCenter({
       .finally(() => setBusy(false));
   };
 
-  const handlePrimary = () => {
+  const executeExportAction = (action: ExportAction, acknowledgeSourceWarnings: boolean) => {
     if (!resolvedProjectId || !snapshot) {
-      return;
-    }
-    const action = next.action;
-    if (action === "approve_blueprint" || action === "approve_draft") {
-      return;
-    }
-    if (action === "complete") {
-      return;
-    }
-    if (
-      GENERATION_ACTIONS.includes(action) &&
-      sourceWarnings.length > 0 &&
-      pendingAction !== action
-    ) {
-      setPendingAction(action);
       return;
     }
     setBusy(true);
@@ -377,25 +388,76 @@ export function ExportCenter({
       resolvedProjectId,
       action,
       snapshot.modelSelection,
-      expectedRevision || null,
-      expectedDigest || null,
-      pendingAction === action,
+      null,
+      null,
+      acknowledgeSourceWarnings,
       utcNow(),
     )
       .then((nextSnapshot) => {
         setSnapshot(nextSnapshot);
         setPendingAction(null);
       })
-      .catch((failure: unknown) => onNotice(`操作失败：${String(failure)}`))
+      .catch((failure: unknown) => {
+        onNotice(`操作失败：${String(failure)}`);
+        setPendingAction(null);
+      })
       .finally(() => setBusy(false));
   };
 
+  const requestExportAction = (action: ExportAction) => {
+    if (!resolvedProjectId || !snapshot) {
+      return;
+    }
+    if (GENERATION_ACTIONS.includes(action) && sourceWarnings.length > 0) {
+      setPendingAction(action);
+      return;
+    }
+    executeExportAction(action, false);
+  };
+
+  const handlePrimary = () => {
+    if (!resolvedProjectId || !snapshot) {
+      return;
+    }
+    const action = next.action;
+    if (action === "approve_blueprint") {
+      handleApprove("blueprint");
+      return;
+    }
+    if (action === "approve_draft") {
+      handleApprove("formal_draft");
+      return;
+    }
+    if (action === "complete") {
+      return;
+    }
+    requestExportAction(action);
+  };
+
+  const handleConfirmWarnings = () => {
+    if (!pendingAction) {
+      return;
+    }
+    executeExportAction(pendingAction, true);
+  };
+
   const handleApprove = (kind: ExportArtifactKind) => {
-    if (!resolvedProjectId) {
+    if (!resolvedProjectId || !snapshot) {
+      return;
+    }
+    const artifact = artifactForKind(kind);
+    if (!artifact || !artifact.available) {
+      onNotice("产物尚未生成，无法批准。");
       return;
     }
     setBusy(true);
-    approveExportArtifact(resolvedProjectId, kind, expectedRevision, expectedDigest, utcNow())
+    approveExportArtifact(
+      resolvedProjectId,
+      kind,
+      artifact.revision,
+      artifact.digest,
+      utcNow(),
+    )
       .then((nextSnapshot) => {
         setSnapshot(nextSnapshot);
         onNotice("已批准。");
@@ -422,13 +484,30 @@ export function ExportCenter({
       .catch((failure: unknown) => onNotice(`保存模型失败：${String(failure)}`));
   };
 
-  const requiresModel = GENERATION_ACTIONS.includes(
-    next.action as ExportAction,
-  );
+  const handleSaveAs = () => {
+    if (!resolvedProjectId) {
+      return;
+    }
+    setBusy(true);
+    exportDocxSaveAs(resolvedProjectId)
+      .then((result) => {
+        if (!result.exported) {
+          onNotice("已取消另存为。");
+          return;
+        }
+        onNotice(result.path ? `已另存为：${result.path}` : "已另存为正式 Word。");
+      })
+      .catch((failure: unknown) => onNotice(`另存为失败：${String(failure)}`))
+      .finally(() => setBusy(false));
+  };
 
-  const candidateDiff = candidate
-    ? lineDiff(editBuffer && editing ? editBuffer : "", candidate.markdown)
-    : [];
+  const requiresModel = GENERATION_ACTIONS.includes(next.action as ExportAction);
+
+  const beforeMarkdown =
+    editing && editBuffer
+      ? editBuffer
+      : currentMarkdownFromContent(content);
+  const candidateDiff = candidate ? lineDiff(beforeMarkdown, candidate.markdown) : [];
 
   return (
     <section className="export-center">
@@ -456,25 +535,37 @@ export function ExportCenter({
           approval={snapshot?.approvals.blueprint ?? null}
           selected={selectedKind === "blueprint"}
           onSelect={() => !editing && setSelectedKind("blueprint")}
-          onEdit={canEdit && selectedKind === "blueprint" ? handleEditStart : undefined}
-          onApprove={selectedKind === "blueprint" ? () => handleApprove("blueprint") : undefined}
-          canApprove={blueprint.available && !snapshot?.approvals.blueprint}
+          onEdit={
+            canEdit && selectedKind === "blueprint" && !runInProgress
+              ? handleEditStart
+              : undefined
+          }
+          onRegenerate={
+            blueprint.available && !editing
+              ? () => requestExportAction("regenerate_blueprint")
+              : undefined
+          }
+          onApprove={
+            selectedKind === "blueprint" ? () => handleApprove("blueprint") : undefined
+          }
+          canApprove={Boolean(blueprint.available && !snapshot?.approvals.blueprint)}
+          actionsDisabled={actionsLocked}
         />
       ) : null}
 
       {pendingAction && sourceWarnings.length > 0 ? (
         <div className="export-warning-confirm">
-          <strong>来源节点已变化</strong>
+          <strong>来源节点已变化或不完整</strong>
           <ul>
             {sourceWarnings.map((nodeId) => (
               <li key={nodeId}>{nodeId}</li>
             ))}
           </ul>
           <div className="export-warning-confirm-actions">
-            <Button variant="primary" onClick={handlePrimary}>
+            <Button variant="primary" onClick={handleConfirmWarnings} disabled={busy}>
               仍按当前已批准内容继续
             </Button>
-            <Button variant="ghost" onClick={() => setPendingAction(null)}>
+            <Button variant="ghost" onClick={() => setPendingAction(null)} disabled={busy}>
               取消
             </Button>
           </div>
@@ -522,7 +613,7 @@ export function ExportCenter({
               <div className="export-candidate-actions">
                 <Button
                   variant="primary"
-                  disabled={busy || runInProgress}
+                  disabled={actionsLocked}
                   onClick={() => handleApplyCandidate(candidate)}
                 >
                   应用候选
@@ -541,7 +632,7 @@ export function ExportCenter({
               content={content}
               loading={contentLoading}
               label={selectedLabel}
-              canEdit={canEdit}
+              canEdit={canEdit && !runInProgress}
               editing={false}
               editBuffer=""
               editError={null}
@@ -549,6 +640,17 @@ export function ExportCenter({
               onEditStart={handleEditStart}
               onEditSave={handleEditSave}
               onEditCancel={() => setEditing(false)}
+              onRegenerate={
+                selectedKind === "formal_draft" && formalDraft?.available
+                  ? () => requestExportAction("regenerate_draft")
+                  : undefined
+              }
+              onSaveAs={
+                selectedKind === "formal_docx" && formalDocx?.available
+                  ? handleSaveAs
+                  : undefined
+              }
+              actionsDisabled={actionsLocked}
             />
           )}
         </div>
@@ -556,7 +658,7 @@ export function ExportCenter({
           {selectedKind === "blueprint" || selectedKind === "formal_draft" ? (
             <ReviewLedger
               tasks={reviewTasks}
-              busy={busy || runInProgress || editLoading}
+              busy={actionsLocked}
               onCreateTask={handleCreateReview}
               onApplyTask={handleApplyReview}
             />
@@ -575,7 +677,9 @@ export function ExportCenter({
           onModelChange={handleModelChange}
           primaryLabel={PRIMARY_LABELS[next.action]}
           onPrimary={handlePrimary}
-          primaryDisabled={busy || loading}
+          primaryDisabled={
+            busy || loading || next.action === "complete" || runInProgress
+          }
           activeRun={activeRun}
           onCancel={handleCancelRun}
           requiresModel={requiresModel}

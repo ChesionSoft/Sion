@@ -17,11 +17,13 @@ use sion_core::{
     ChatModelSelection, ExportApproval, ExportArtifactKind, ExportArtifactRecord,
     ExportAttachmentBatchStatus, ExportBlueprint, ExportCandidate, ExportDelivery,
     ExportProposedChange, ExportProposedOp, ExportQaState, ExportReviewStatus, ExportReviewTask,
-    ExportWorkspaceState, WorkflowNode, WorkflowNodeId, apply_blueprint_patch, apply_draft_patch,
-    build_blueprint_prompt, build_draft_prompt, build_review_prompt, capture_export_source,
-    export_digest, parse_export_delivery, serialize_blueprint, stale_source_nodes, validate_draft,
+    ExportWorkspaceState, NodeStatus, WorkflowNode, WorkflowNodeId, apply_blueprint_patch,
+    apply_draft_patch, build_blueprint_prompt, build_draft_prompt, build_review_prompt,
+    capture_export_source, export_digest, parse_export_delivery, serialize_blueprint,
+    stale_source_nodes, validate_draft,
 };
-use sion_storage::{ExportCasResult, ProjectStore, StorageError};
+use sion_storage::{ExportCasResult, ExportMarkdownLineage, ProjectStore, StorageError};
+use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
@@ -29,6 +31,13 @@ use super::{
     API_VERSION, AgentState, ApiError, VersionedRequest, VersionedResponse, assert_api_version,
     resolve_registered_project_root, sion_root,
 };
+
+/// AgentState is managed as `Arc<AgentState>` in the Tauri builder. Looking up
+/// the bare type panics at runtime and was the cause of the acknowledge-start
+/// crash (first path that touches the scheduler).
+fn agent_state(app: &tauri::AppHandle) -> Arc<AgentState> {
+    app.state::<Arc<AgentState>>().inner().clone()
+}
 
 const MARKDOWN_PREVIEW_MAX_CHARS: usize = 100_000;
 const DOCX_PREVIEW_MAX_BYTES: usize = 2_000_000;
@@ -207,7 +216,7 @@ fn artifact_summary(
 
 /// Builds the workspace snapshot: blueprint summary, seven delivery artifact
 /// summaries, approvals, QA state, candidates, review tasks, advisory source
-/// warnings, and the active run (None until Task 8 wires run tracking).
+/// and incomplete-node warnings, and the active export run when one is set.
 pub fn export_workspace_snapshot(
     store: &ProjectStore,
     nodes: &[WorkflowNode],
@@ -238,10 +247,8 @@ pub fn export_workspace_snapshot(
             artifact_summary(kind, record, current_blueprint_digest, current_draft_digest)
         })
         .collect();
-    let source_warnings = blueprint_record
-        .and_then(|record| record.source_snapshot.as_ref())
-        .map(|snapshot| stale_source_nodes(snapshot, nodes))
-        .unwrap_or_default();
+    let source_warnings = advisory_export_warnings(&state, nodes);
+    let active_run = resolve_active_export_run(store, &state);
     Ok(ExportWorkspaceSnapshot {
         project_id: manifest.id,
         model_selection: state.model_selection.clone(),
@@ -254,9 +261,26 @@ pub fn export_workspace_snapshot(
         qa_state: state.qa_state.clone(),
         pending_candidates: state.pending_candidates.clone(),
         review_tasks: reviews,
-        active_run: None,
+        active_run,
         source_warnings,
         attachment_batch_status: state.attachment_batch_status.clone(),
+    })
+}
+
+fn resolve_active_export_run(
+    store: &ProjectStore,
+    state: &ExportWorkspaceState,
+) -> Option<ExportRunSummary> {
+    let run_id = state.active_run_id.as_ref()?;
+    let run = store.run(run_id).ok()?;
+    Some(ExportRunSummary {
+        run_id: run.id,
+        status: run.status,
+        public_summary: run.summary,
+        updated_at: run
+            .finished_at
+            .or(run.started_at)
+            .unwrap_or(run.created_at),
     })
 }
 
@@ -532,6 +556,7 @@ pub fn export_artifact_save(
         &request.expected_digest,
         request.markdown,
         request.now,
+        ExportMarkdownLineage::default(),
     );
     let snapshot = cas_outcome(&store, &nodes, result);
     Ok(VersionedResponse {
@@ -754,6 +779,8 @@ pub fn complete_export_model_run(
         latest_digest: None,
     })?;
     let state = store.export_workspace().map_err(map_storage_error)?;
+    let nodes = store.list_nodes().map_err(map_storage_error)?;
+    let source_snapshot = capture_export_source(&nodes);
     match (target, delivery) {
         (ExportModelTarget::GenerateBlueprint, ExportDelivery::ExportBlueprint { blueprint }) => {
             let markdown = serialize_blueprint(&blueprint);
@@ -765,6 +792,10 @@ pub fn complete_export_model_run(
                     &digest,
                     markdown,
                     now.to_string(),
+                    ExportMarkdownLineage {
+                        source_snapshot: Some(source_snapshot),
+                        based_on_blueprint_digest: None,
+                    },
                 )
                 .map_err(map_storage_error)?;
         }
@@ -790,6 +821,17 @@ pub fn complete_export_model_run(
             let validated =
                 validate_draft(&markdown).map_err(|error| validation_error(error.to_string()))?;
             let (revision, digest) = current_record(&state, ExportArtifactKind::FormalDraft);
+            let based_on_blueprint = state
+                .blueprint_approval
+                .as_ref()
+                .map(|approval| approval.approved_digest.clone())
+                .or_else(|| {
+                    state
+                        .artifacts
+                        .iter()
+                        .find(|record| record.kind == ExportArtifactKind::Blueprint)
+                        .map(|record| record.digest.clone())
+                });
             store
                 .save_export_markdown_if_revision(
                     ExportArtifactKind::FormalDraft,
@@ -797,6 +839,10 @@ pub fn complete_export_model_run(
                     &digest,
                     validated,
                     now.to_string(),
+                    ExportMarkdownLineage {
+                        source_snapshot: Some(source_snapshot),
+                        based_on_blueprint_digest: based_on_blueprint,
+                    },
                 )
                 .map_err(map_storage_error)?;
         }
@@ -1008,23 +1054,24 @@ fn finish_export_run(
     now: &str,
 ) {
     {
-        let state = app.state::<AgentState>();
-        let mut scheduler = state.scheduler.lock().expect("scheduler mutex");
-        let _ = match &status {
-            AgentRunStatus::Completed => {
-                scheduler.complete(run_id, now.to_string(), summary.clone())
-            }
-            AgentRunStatus::Failed => {
-                scheduler.fail(run_id, now.to_string(), summary.clone().unwrap_or_default())
-            }
-            AgentRunStatus::Cancelled => scheduler.cancel(run_id, now.to_string(), summary.clone()),
-            _ => Ok(Vec::new()),
-        };
-        state
-            .export_jobs
-            .lock()
-            .expect("export jobs mutex")
-            .remove(run_id);
+        let state = agent_state(app);
+        if let Ok(mut scheduler) = state.scheduler.lock() {
+            let _ = match &status {
+                AgentRunStatus::Completed => {
+                    scheduler.complete(run_id, now.to_string(), summary.clone())
+                }
+                AgentRunStatus::Failed => {
+                    scheduler.fail(run_id, now.to_string(), summary.clone().unwrap_or_default())
+                }
+                AgentRunStatus::Cancelled => {
+                    scheduler.cancel(run_id, now.to_string(), summary.clone())
+                }
+                _ => Ok(Vec::new()),
+            };
+        }
+        if let Ok(mut jobs) = state.export_jobs.lock() {
+            jobs.remove(run_id);
+        }
     }
     if let Ok(mut run) = store.run(run_id) {
         run.status = status.clone();
@@ -1115,15 +1162,13 @@ fn spawn_export_model_run(
             }
         };
         let cancellation = CancellationToken::new();
-        {
-            let state = app.state::<AgentState>();
-            state
-                .export_jobs
-                .lock()
-                .expect("export jobs mutex")
-                .insert(run_id.clone(), cancellation.clone());
-        }
-        let client = app.state::<AgentState>().client.clone();
+        let client = {
+            let state = agent_state(&app);
+            if let Ok(mut jobs) = state.export_jobs.lock() {
+                jobs.insert(run_id.clone(), cancellation.clone());
+            }
+            state.client.clone()
+        };
         let request = StreamRequest {
             endpoint: resolved.endpoint,
             api_key: resolved.api_key,
@@ -1206,8 +1251,13 @@ fn start_export_model_run(
         context_snapshot: None,
     };
     let run = {
-        let state = app.state::<AgentState>();
-        let mut scheduler = state.scheduler.lock().expect("scheduler mutex");
+        let state = agent_state(app);
+        let mut scheduler = state.scheduler.lock().map_err(|_| ExportCommandError {
+            kind: ExportCommandErrorKind::IoFailed,
+            message: "export scheduler lock poisoned".into(),
+            latest_revision: None,
+            latest_digest: None,
+        })?;
         scheduler.enqueue(request).map_err(|error| match error {
             SchedulerError::NodeBusy { .. } => ExportCommandError {
                 kind: ExportCommandErrorKind::RunBusy,
@@ -1282,7 +1332,7 @@ pub fn export_action_start(
     let manifest = store
         .manifest()
         .map_err(|e| ApiError::CheckFailed(e.to_string()))?;
-    // Advisory source warnings block generation unless acknowledged.
+    // Advisory source / incomplete-node warnings block generation unless acknowledged.
     if matches!(
         request.action,
         ExportAction::GenerateBlueprint
@@ -1294,14 +1344,14 @@ pub fn export_action_start(
         let state = store
             .export_workspace()
             .map_err(|e| ApiError::CheckFailed(e.to_string()))?;
-        let warnings = advisory_source_warnings(&state, &nodes);
+        let warnings = advisory_export_warnings(&state, &nodes);
         if !warnings.is_empty() {
             return Ok(VersionedResponse {
                 api_version: API_VERSION,
                 payload: outcome(Err(ExportCommandError {
                     kind: ExportCommandErrorKind::ValidationFailed,
                     message: format!(
-                        "source nodes changed: {}。请确认按当前已批准内容继续。",
+                        "source nodes changed or incomplete: {}。请确认按当前已批准内容继续。",
                         warnings
                             .iter()
                             .map(|node| node.as_str())
@@ -1423,27 +1473,27 @@ pub fn export_action_cancel(
     assert_api_version(&request.version)?;
     let (store, nodes) = store_nodes(&app, &request.project_id)?;
     let cancelled = {
-        let state = app.state::<AgentState>();
-        if let Some(token) = state
-            .export_jobs
-            .lock()
-            .expect("export jobs mutex")
-            .get(&request.run_id)
-        {
-            token.cancel();
-            true
+        let state = agent_state(&app);
+        if let Ok(jobs) = state.export_jobs.lock() {
+            if let Some(token) = jobs.get(&request.run_id) {
+                token.cancel();
+                true
+            } else {
+                false
+            }
         } else {
             false
         }
     };
     if !cancelled {
-        let state = app.state::<AgentState>();
-        let mut scheduler = state.scheduler.lock().expect("scheduler mutex");
-        let _ = scheduler.cancel(
-            &request.run_id,
-            request.now.clone(),
-            Some("用户取消".into()),
-        );
+        let state = agent_state(&app);
+        if let Ok(mut scheduler) = state.scheduler.lock() {
+            let _ = scheduler.cancel(
+                &request.run_id,
+                request.now.clone(),
+                Some("用户取消".into()),
+            );
+        }
     }
     let _ = store.set_export_active_run(None, request.now.clone());
     let _ = app.emit(
@@ -1528,8 +1578,11 @@ pub fn export_review_start(
         context_snapshot: None,
     };
     let run = {
-        let state = app.state::<AgentState>();
-        let mut scheduler = state.scheduler.lock().expect("scheduler mutex");
+        let state = agent_state(&app);
+        let mut scheduler = state
+            .scheduler
+            .lock()
+            .map_err(|_| ApiError::CheckFailed("export scheduler lock poisoned".into()))?;
         scheduler
             .enqueue(run_request)
             .map_err(|e| ApiError::CheckFailed(e.to_string()))?
@@ -1650,15 +1703,13 @@ fn spawn_export_review_run(
             }
         };
         let cancellation = CancellationToken::new();
-        {
-            let state = app.state::<AgentState>();
-            state
-                .export_jobs
-                .lock()
-                .expect("export jobs mutex")
-                .insert(run_id.clone(), cancellation.clone());
-        }
-        let client = app.state::<AgentState>().client.clone();
+        let client = {
+            let state = agent_state(&app);
+            if let Ok(mut jobs) = state.export_jobs.lock() {
+                jobs.insert(run_id.clone(), cancellation.clone());
+            }
+            state.client.clone()
+        };
         let request = StreamRequest {
             endpoint: resolved.endpoint,
             api_key: resolved.api_key,
@@ -1762,31 +1813,30 @@ fn finish_review_run_status(
     now: &str,
 ) -> Result<(), ExportCommandError> {
     {
-        let state = app.state::<AgentState>();
-        let mut scheduler = state.scheduler.lock().expect("scheduler mutex");
+        let state = agent_state(app);
         let terminal = match status {
             ExportReviewStatus::Ready => AgentRunStatus::Completed,
             ExportReviewStatus::Failed => AgentRunStatus::Failed,
             ExportReviewStatus::Cancelled => AgentRunStatus::Cancelled,
             _ => AgentRunStatus::Completed,
         };
-        let _ = match terminal {
-            AgentRunStatus::Completed => {
-                scheduler.complete(run_id, now.to_string(), Some(format!("review {task_id}")))
-            }
-            AgentRunStatus::Failed => {
-                scheduler.fail(run_id, now.to_string(), format!("review {task_id} failed"))
-            }
-            AgentRunStatus::Cancelled => {
-                scheduler.cancel(run_id, now.to_string(), Some("cancelled".into()))
-            }
-            _ => Ok(Vec::new()),
-        };
-        state
-            .export_jobs
-            .lock()
-            .expect("export jobs mutex")
-            .remove(run_id);
+        if let Ok(mut scheduler) = state.scheduler.lock() {
+            let _ = match terminal {
+                AgentRunStatus::Completed => {
+                    scheduler.complete(run_id, now.to_string(), Some(format!("review {task_id}")))
+                }
+                AgentRunStatus::Failed => {
+                    scheduler.fail(run_id, now.to_string(), format!("review {task_id} failed"))
+                }
+                AgentRunStatus::Cancelled => {
+                    scheduler.cancel(run_id, now.to_string(), Some("cancelled".into()))
+                }
+                _ => Ok(Vec::new()),
+            };
+        }
+        if let Ok(mut jobs) = state.export_jobs.lock() {
+            jobs.remove(run_id);
+        }
     }
     if let Ok(mut run) = store.run(run_id) {
         run.status = AgentRunStatus::Completed;
@@ -1863,17 +1913,51 @@ fn build_proposed_changes_draft(
         .collect()
 }
 
-fn advisory_source_warnings(
+/// Advisory warnings for generation actions: source nodes that changed since
+/// the blueprint/draft was captured, plus content nodes that are still
+/// incomplete. Never revokes approvals and never blocks preview/Save As.
+fn advisory_export_warnings(
     state: &ExportWorkspaceState,
     nodes: &[WorkflowNode],
 ) -> Vec<WorkflowNodeId> {
-    state
+    let mut warnings = Vec::new();
+    let mut push_unique = |id: WorkflowNodeId| {
+        if !warnings.contains(&id) {
+            warnings.push(id);
+        }
+    };
+    if let Some(snapshot) = state
         .artifacts
         .iter()
         .find(|record| record.kind == ExportArtifactKind::Blueprint)
         .and_then(|record| record.source_snapshot.as_ref())
-        .map(|snapshot| stale_source_nodes(snapshot, nodes))
-        .unwrap_or_default()
+    {
+        for id in stale_source_nodes(snapshot, nodes) {
+            push_unique(id);
+        }
+    }
+    if let Some(snapshot) = state
+        .artifacts
+        .iter()
+        .find(|record| record.kind == ExportArtifactKind::FormalDraft)
+        .and_then(|record| record.source_snapshot.as_ref())
+    {
+        for id in stale_source_nodes(snapshot, nodes) {
+            push_unique(id);
+        }
+    }
+    for node in nodes {
+        if node.id == WorkflowNodeId::FinalExport {
+            continue;
+        }
+        if matches!(
+            node.status,
+            NodeStatus::NotStarted | NodeStatus::NeedsConfirmation
+        ) {
+            push_unique(node.id);
+        }
+    }
+    warnings
 }
 
 fn require_model_selection(
@@ -1989,6 +2073,7 @@ mod tests {
 
     fn export_store_with_blueprint() -> (std::path::PathBuf, ProjectStore) {
         let (root, store) = store();
+        let nodes = store.list_nodes().unwrap();
         store
             .save_export_markdown_if_revision(
                 ExportArtifactKind::Blueprint,
@@ -1996,9 +2081,61 @@ mod tests {
                 "",
                 original_blueprint(),
                 "2026-07-19T00:00:00Z".into(),
+                ExportMarkdownLineage {
+                    source_snapshot: Some(capture_export_source(&nodes)),
+                    based_on_blueprint_digest: None,
+                },
             )
             .unwrap();
         (root, store)
+    }
+
+    #[test]
+    fn workspace_snapshot_surfaces_active_run() {
+        let (root, store) = export_store_with_running_export("run-active");
+        let snapshot = export_workspace_snapshot(&store, &nodes(&store)).unwrap();
+        let active = snapshot.active_run.expect("active run should be present");
+        assert_eq!(active.run_id, "run-active");
+        assert_eq!(active.status, AgentRunStatus::Running);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn acknowledge_true_skips_advisory_gate_and_enqueue_does_not_panic() {
+        let (root, store) = store();
+        let nodes = nodes(&store);
+        let state = store.export_workspace().unwrap();
+        let warnings = advisory_export_warnings(&state, &nodes);
+        assert!(
+            !warnings.is_empty(),
+            "default nodes should produce incomplete advisories"
+        );
+        let mut scheduler = sion_agent::RunScheduler::new(2);
+        let run = scheduler
+            .enqueue(sion_agent::RunRequest {
+                project_id: "project-1".into(),
+                node_id: WorkflowNodeId::FinalExport,
+                provider_id: "provider-1".into(),
+                model: "model-1".into(),
+                reasoning_effort: sion_core::ReasoningEffort::Medium,
+                file_ids: vec![],
+                kind: AgentRunKind::ExportBlueprint,
+                created_at: "2026-07-19T00:00:00Z".into(),
+                session_id: None,
+                turn_id: None,
+                context_snapshot: None,
+            })
+            .expect("export enqueue must succeed");
+        store.save_run(&run).unwrap();
+        store
+            .set_export_active_run(Some(&run.id), "2026-07-19T00:00:00Z".into())
+            .unwrap();
+        let snapshot = export_workspace_snapshot(&store, &nodes).unwrap();
+        assert_eq!(
+            snapshot.active_run.as_ref().map(|r| r.run_id.as_str()),
+            Some(run.id.as_str())
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn read_blueprint(store: &ProjectStore) -> String {
