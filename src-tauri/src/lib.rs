@@ -1,6 +1,7 @@
 mod app_paths;
 mod app_settings;
 mod docx_check;
+pub mod export_documents;
 mod project_export;
 mod provider_settings;
 mod run_detail;
