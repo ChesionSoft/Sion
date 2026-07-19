@@ -32,3 +32,4 @@ The Tauri crate is `src-tauri/`; its independent `Cargo.toml` is deliberately ex
 - The desktop runtime has no browser search, browser automation, Playwright, or web egress subsystem.
 - Agent output is a fenced `delivery` JSON block. Default writes are scoped section patches and must be validated and previewed before save.
 - Do not commit generated project data, exports, local `projects/`, `~/.sion/`, or `settings/` content.
+- **Never commit or push `docs/` or `.github/` (including workflows).** These stay local only. Do not `git add` them, do not force-add them, and do not open PRs that include them. Plans/specs under `docs/superpowers/` and CI under `.github/workflows/` are machine-local working material.
