@@ -20,7 +20,7 @@
 | 平台 | 产物 | 构建方式 |
 | --- | --- | --- |
 | macOS Universal | `Sion_<version>_universal.dmg` | CI `macos-latest` 或 `npm run bundle:mac-universal` |
-| Windows x64 | NSIS `.exe`、WiX `.msi` | CI `windows-latest` 或 `npm run bundle:windows` |
+| Windows x64 | NSIS `.exe` | CI `windows-latest`（`--bundles nsis`）或本机 `npm run bundle:windows` |
 
 ## 发布前验证
 
@@ -43,7 +43,7 @@ npm run test:storage-contract
 `.github/workflows/release.yml` 在推送 `v*` tag 时：
 
 1. 在 `macos-latest` 构建 Universal DMG（Apple Silicon + Intel）；
-2. 在 `windows-latest` 构建 NSIS 与 MSI；
+2. 在 `windows-latest` 构建 NSIS 安装器；
 3. 使用 `tauri-apps/tauri-action` 创建/更新同名 GitHub Release，并上传安装包。
 
 发布步骤：

@@ -231,4 +231,4 @@ npm run bundle:mac-universal # macOS: Apple Silicon + Intel universal app and DM
 npm run bundle:windows       # Windows: NSIS and MSI installers
 ```
 
-Pushing a `v*` tag (for example `v1.0.0`) triggers GitHub Actions to build a Universal macOS DMG and Windows x64 NSIS/MSI installers and attach them to the GitHub Release. The default pipeline produces unsigned development verification packages; end-user installers still require platform code signing, and direct macOS distribution also requires Apple notarization. See [RELEASE.md](RELEASE.md) for the release checklist.
+Pushing a `v*` tag (for example `v1.0.0`) triggers GitHub Actions to build a Universal macOS DMG and a Windows x64 NSIS installer and attach them to the GitHub Release. The default pipeline produces unsigned development verification packages; end-user installers still require platform code signing, and direct macOS distribution also requires Apple notarization. See [RELEASE.md](RELEASE.md) for the release checklist.
