@@ -428,3 +428,17 @@ test("export review is a task ledger with explicit diff application, not chat", 
   assert.match(center, /expectedDigest/);
   assert.match(action, /取消/);
 });
+
+test("app scopes export events and removes the obsolete one-shot command", async () => {
+  const [app, api, tauri] = await Promise.all([
+    readFile("src/App.tsx", "utf8"),
+    readFile("src/api.ts", "utf8"),
+    readFile("src-tauri/src/lib.rs", "utf8"),
+  ]);
+  assert.match(app, /export-workspace-invalidated/);
+  assert.match(app, /projectId/);
+  assert.match(app, /exportRefreshByProject/);
+  assert.doesNotMatch(app, /lastExportResult|setExporting|exportDocxApi/);
+  assert.doesNotMatch(api, /project_export_docx/);
+  assert.doesNotMatch(tauri, /project_export_docx,/);
+});

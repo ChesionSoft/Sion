@@ -110,8 +110,6 @@ export const saveNode = (
     status,
     now,
   });
-export const exportDocx = (projectId: string) =>
-  invokePayload<{ exported: boolean; path?: string }>("project_export_docx", { projectId });
 
 export const listSessions = async (projectId: string, nodeId: NodeId): Promise<ChatSession[]> =>
   (await invokePayload<{ sessions: ChatSession[] }>("session_list", { projectId, nodeId })).sessions;

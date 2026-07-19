@@ -48,8 +48,9 @@ import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
 import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
 import { RunDetailDialog } from "./components/workspace/RunDetailDialog";
-import { NODES, type AgentFinishedEvent, type AgentReasoningSummaryEvent, type AgentRun, type AgentRunDetail, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentReasoningSummaryEvent, type AgentRun, type AgentRunDetail, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type ExportRunEvent, type ExportWorkspaceInvalidatedEvent, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
+import { resolveExportProjectId } from "./export-state.ts";
 import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
 import { mergeTurnSnapshot } from "./conversation-turns.ts";
 import { isCurrentGenerationEvent, reconcileGeneratedNode, reconcileSavedNode } from "./delivery-generation.ts";
@@ -103,6 +104,7 @@ export function App() {
   const [runDetailLoading, setRunDetailLoading] = useState(false);
   const [runDetailError, setRunDetailError] = useState<string | null>(null);
   const [exportProjectId, setExportProjectId] = useState<string | null>(null);
+  const [exportRefreshByProject, setExportRefreshByProject] = useState<Record<string, number>>({});
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [liveReasoningByRun, setLiveReasoningByRun] = useState<LiveReasoningByRun>({});
   const [generation, setGeneration] = useState<DeliveryGeneration | null>(null);
@@ -336,6 +338,27 @@ export function App() {
     ]);
     return () => { void subscriptions.then((unlisten) => unlisten.forEach((stop) => stop())); };
   }, [project, nodeId, sessionId, modelSelection, selectedFileIds]);
+
+  // Export events are centralized here. Only terminal run updates and workspace
+  // invalidations bump the project-scoped refresh token; model progress and
+  // review status never produce a global notice.
+  useEffect(() => {
+    const subscriptions = Promise.all([
+      listen<ExportWorkspaceInvalidatedEvent>("export-workspace-invalidated", (event) => {
+        const projectId = event.payload.projectId;
+        if (!projectId) return;
+        setExportRefreshByProject((current) => ({ ...current, [projectId]: (current[projectId] ?? 0) + 1 }));
+      }),
+      listen<ExportRunEvent>("export-run-updated", (event) => {
+        const payload = event.payload;
+        if (!payload.projectId) return;
+        const terminal = payload.status === "completed" || payload.status === "failed" || payload.status === "cancelled" || payload.status === "interrupted";
+        if (!terminal) return;
+        setExportRefreshByProject((current) => ({ ...current, [payload.projectId]: (current[payload.projectId] ?? 0) + 1 }));
+      }),
+    ]);
+    return () => { void subscriptions.then((unlisten) => unlisten.forEach((stop) => stop())); };
+  }, []);
 
   useEffect(() => {
     function saveWithShortcut(event: KeyboardEvent) {
@@ -1286,15 +1309,20 @@ export function App() {
       notice={null}
     />
   ) : destination === "exports" ? (
-    <ExportCenter
-      projects={projects}
-      activeProjectId={project?.id ?? null}
-      rememberedProjectId={exportProjectId}
-      providers={providers}
-      refreshToken={0}
-      onSelectProject={setExportProjectId}
-      onNotice={setNotice}
-    />
+    (() => {
+      const resolvedExportProjectId = resolveExportProjectId(projects, project?.id ?? null, exportProjectId);
+      return (
+        <ExportCenter
+          projects={projects}
+          activeProjectId={project?.id ?? null}
+          rememberedProjectId={exportProjectId}
+          providers={providers}
+          refreshToken={exportRefreshByProject[resolvedExportProjectId ?? ""] ?? 0}
+          onSelectProject={setExportProjectId}
+          onNotice={setNotice}
+        />
+      );
+    })()
   ) : !project ? (
     <ProjectHome
       projects={projects}

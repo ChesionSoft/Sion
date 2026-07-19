@@ -522,21 +522,6 @@ struct ProjectSaveNodeRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectExportRequest {
-    #[serde(flatten)]
-    version: VersionedRequest,
-    project_id: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProjectExportResult {
-    exported: bool,
-    path: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct SessionListRequest {
     #[serde(flatten)]
     version: VersionedRequest,
@@ -1904,58 +1889,6 @@ fn project_save_node(
     })
 }
 
-#[tauri::command]
-async fn project_export_docx(
-    request: ProjectExportRequest,
-    app: tauri::AppHandle,
-) -> Result<VersionedResponse<ProjectExportResult>, ApiError> {
-    assert_api_version(&request.version)?;
-    let Some(target) = app.dialog().file().blocking_save_file() else {
-        return Ok(VersionedResponse {
-            api_version: API_VERSION,
-            payload: ProjectExportResult {
-                exported: false,
-                path: None,
-            },
-        });
-    };
-    let target = target.into_path().map_err(|error| {
-        ApiError::CheckFailed(format!("selected export path is not a local path: {error}"))
-    })?;
-    let target = if target
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("docx"))
-    {
-        target
-    } else {
-        target.with_extension("docx")
-    };
-    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
-    let store = ProjectStore::at(project_root);
-    let manifest = store
-        .manifest()
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let nodes = store
-        .list_nodes()
-        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
-    let markdown = nodes
-        .iter()
-        .map(|node| node.markdown.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let bytes = project_export::build_docx(&manifest, &markdown).map_err(ApiError::CheckFailed)?;
-    std::fs::write(&target, bytes).map_err(|error| {
-        ApiError::CheckFailed(format!("cannot write {}: {error}", target.display()))
-    })?;
-    Ok(VersionedResponse {
-        api_version: API_VERSION,
-        payload: ProjectExportResult {
-            exported: true,
-            path: Some(target.to_string_lossy().into_owned()),
-        },
-    })
-}
-
 fn selection_for_new_session<F>(
     explicit: Option<ChatModelSelection>,
     load_default: F,
@@ -3091,7 +3024,6 @@ pub fn run() {
             project_get_agent_override,
             project_save_agent_override,
             project_save_node,
-            project_export_docx,
             export_runtime::export_workspace_get,
             export_runtime::export_model_selection_save,
             export_runtime::export_artifact_get,
