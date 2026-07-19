@@ -36,7 +36,7 @@ export function Popover({
   return (
     <div className="ui-popover" ref={rootRef}>
       <Button variant="ghost" aria-label={label} aria-expanded={open} aria-controls={panelId} onClick={() => setOpen((value) => !value)}>{trigger}</Button>
-      {open ? <div className={`ui-popover-panel ui-popover-${align}`} id={panelId} onClickCapture={(event) => { if (shouldClosePopoverAfterAction(event.target)) setOpen(false); }}>{children}</div> : null}
+      {open ? <div className={`ui-popover-panel ui-popover-${align}`} id={panelId} onClick={(event) => { if (shouldClosePopoverAfterAction(event.target)) setOpen(false); }}>{children}</div> : null}
     </div>
   );
 }
