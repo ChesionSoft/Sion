@@ -347,7 +347,7 @@ test("delivery regenerates locally while DOCX stays in Export Center", async () 
   ]);
   assert.match(delivery, /重新生成交付稿/);
   assert.doesNotMatch(delivery, /导出 DOCX/);
-  assert.match(exportCenter, /导出 DOCX/);
+  assert.match(exportCenter, /导出中心/);
   assert.match(app, /delivery-generation-token/);
   assert.match(shellCss, /\.notice-viewport\s*\{[^}]*top:\s*16px/s);
   assert.doesNotMatch(shellCss, /\.notice-viewport\s*\{[^}]*bottom:/s);
@@ -392,4 +392,22 @@ test("live reasoning and provider errors preserve the public-only boundary", asy
   assert.doesNotMatch(desktop.slice(eventStart, eventEnd), /reasoning_content/);
   assert.doesNotMatch([app, disclosure].join("\n"), /reasoning_content/);
   assert.doesNotMatch(disclosure, /重新请求/);
+});
+
+test("export center separates blueprint and previews seven delivery artifacts", async () => {
+  const [center, blueprint, navigator, preview, css] = await Promise.all([
+    readFile("src/components/app/ExportCenter.tsx", "utf8"),
+    readFile("src/components/export/BlueprintPreparationBar.tsx", "utf8"),
+    readFile("src/components/export/ArtifactNavigator.tsx", "utf8"),
+    readFile("src/components/export/ArtifactPreview.tsx", "utf8"),
+    readFile("src/styles/export.css", "utf8"),
+  ]);
+  assert.match(center, /BlueprintPreparationBar/);
+  assert.match(center, /ArtifactNavigator/);
+  assert.match(center, /ArtifactPreview/);
+  assert.match(blueprint, /准备材料/);
+  assert.doesNotMatch(navigator, /export-blueprint\.md/);
+  assert.match(navigator, /工程附件/);
+  assert.match(preview, /当前为内容预览/);
+  assert.match(css, /grid-template-columns/);
 });

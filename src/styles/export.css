@@ -1,0 +1,235 @@
+/* Export Center layout and components. The page is a thin container; the
+   workbench is a three-column grid (artifact navigator, preview, review
+   ledger). Blueprint preparation stays above the workbench at every width. */
+
+.export-center {
+  height: 100%;
+  overflow-y: auto;
+  padding: 28px clamp(20px, 4vw, 48px) 72px;
+  background: var(--bg-main);
+}
+
+.export-center > .ui-empty-state {
+  width: min(760px, 100%);
+  min-height: 420px;
+  margin: 0 auto;
+}
+
+.export-center-header {
+  width: min(1100px, 100%);
+  margin: 0 auto 18px;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.export-center-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+}
+
+.export-center-header .ui-field {
+  margin-left: auto;
+  max-width: 280px;
+}
+
+.export-blueprint-bar {
+  width: min(1100px, 100%);
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-subtle);
+}
+
+.export-blueprint-bar-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.export-blueprint-bar-label strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.export-blueprint-bar-label small {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.export-blueprint-bar-tag {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.export-blueprint-bar-tag.is-approved {
+  color: var(--success, #2f8f4e);
+  border-color: var(--success, #2f8f4e);
+}
+
+.export-blueprint-bar-tag.is-stale {
+  color: var(--warning, #b7791f);
+  border-color: var(--warning, #b7791f);
+}
+
+.export-blueprint-bar-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.export-workbench {
+  width: min(1100px, 100%);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: start;
+}
+
+.export-navigator,
+.export-preview,
+.export-review {
+  min-width: 0;
+}
+
+.export-navigator {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.export-navigator-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.export-navigator-group-title {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.export-navigator-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.export-navigator-item:hover {
+  background: var(--bg-subtle);
+}
+
+.export-navigator-item.is-selected {
+  border-color: var(--border-strong);
+  background: var(--bg-subtle);
+}
+
+.export-navigator-item.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-navigator-item strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.export-navigator-item small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.export-navigator-item-tag {
+  align-self: flex-start;
+  margin-top: 2px;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 9px;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+}
+
+.export-navigator-item-tag.is-stale {
+  color: var(--warning, #b7791f);
+}
+
+.export-preview {
+  min-height: 320px;
+  padding: 20px 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card, var(--bg-main));
+  overflow: auto;
+}
+
+.export-preview-empty,
+.export-preview-error {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.export-preview-warning {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.export-docx-preview {
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.export-docx-preview h1,
+.export-docx-preview h2,
+.export-docx-preview h3 {
+  margin: 16px 0 8px;
+}
+
+.export-docx-preview p,
+.export-docx-preview li {
+  margin: 6px 0;
+}
+
+.export-review {
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card, var(--bg-main));
+}
+
+.export-review-placeholder {
+  color: var(--text-muted);
+  font-size: 13px;
+}

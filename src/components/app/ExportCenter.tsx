@@ -1,77 +1,203 @@
-import type { RecentProject } from "../../types";
-import { Button, EmptyState, Icon, SelectField, StatusDot } from "../ui";
+import { useEffect, useRef, useState } from "react";
+import {
+  getExportArtifact,
+  getExportWorkspace,
+  saveExportModelSelection,
+} from "../../api";
+import {
+  resolveDefaultExportModelSelection,
+  resolveExportProjectId,
+} from "../../export-state";
+import { isLatestRequest, requestScope } from "../../ui-state";
+import { EmptyState, SelectField } from "../ui";
+import { ArtifactNavigator, EXPORT_ARTIFACT_LABELS } from "../export/ArtifactNavigator";
+import { ArtifactPreview } from "../export/ArtifactPreview";
+import { BlueprintPreparationBar } from "../export/BlueprintPreparationBar";
+import type {
+  ExportArtifactContent,
+  ExportArtifactKind,
+  ExportWorkspaceSnapshot,
+  Provider,
+  RecentProject,
+} from "../../types";
 
-export type ExportResult =
-  | { status: "success"; projectId: string; path: string }
-  | { status: "cancelled"; projectId: string }
-  | { status: "error"; projectId: string; message: string };
-
-export function ExportCenter({ projects, selectedProjectId, exporting, lastResult, onSelect, onExport }: {
+export type ExportCenterProps = {
   projects: RecentProject[];
-  selectedProjectId: string | null;
-  exporting: boolean;
-  lastResult: ExportResult | null;
-  onSelect: (projectId: string) => void;
-  onExport: (projectId: string) => void;
-}) {
+  activeProjectId: string | null;
+  rememberedProjectId: string | null;
+  providers: Provider[];
+  refreshToken: number;
+  onSelectProject: (projectId: string | null) => void;
+  onNotice: (message: string) => void;
+};
+
+const utcNow = () => new Date().toISOString();
+
+export function ExportCenter({
+  projects,
+  activeProjectId,
+  rememberedProjectId,
+  providers,
+  refreshToken,
+  onSelectProject,
+}: ExportCenterProps) {
+  const resolvedProjectId = resolveExportProjectId(
+    projects,
+    activeProjectId,
+    rememberedProjectId,
+  );
+
+  // Report the resolved id back so App remembers the export selection.
+  useEffect(() => {
+    onSelectProject(resolvedProjectId);
+  }, [resolvedProjectId, onSelectProject]);
+
+  const [snapshot, setSnapshot] = useState<ExportWorkspaceSnapshot | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedKind, setSelectedKind] = useState<ExportArtifactKind | null>(null);
+  const [content, setContent] = useState<ExportArtifactContent | null>(null);
+  const [contentLoading, setContentLoading] = useState(false);
+  const workspaceScope = useRef<string | null>(null);
+  const contentScope = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!resolvedProjectId) {
+      setSnapshot(null);
+      setError(null);
+      return;
+    }
+    const scope = requestScope(resolvedProjectId, String(refreshToken));
+    workspaceScope.current = scope;
+    setLoading(true);
+    setError(null);
+    getExportWorkspace(resolvedProjectId)
+      .then((next) => {
+        if (!isLatestRequest(scope, workspaceScope.current)) {
+          return;
+        }
+        if (!next.modelSelection) {
+          const defaults = resolveDefaultExportModelSelection(providers);
+          if (defaults) {
+            saveExportModelSelection(resolvedProjectId, defaults, utcNow())
+              .then((updated) => {
+                if (isLatestRequest(scope, workspaceScope.current)) {
+                  setSnapshot(updated);
+                }
+              })
+              .catch(() => {
+                if (isLatestRequest(scope, workspaceScope.current)) {
+                  setSnapshot(next);
+                }
+              });
+            return;
+          }
+        }
+        setSnapshot(next);
+      })
+      .catch((loadError) => {
+        if (isLatestRequest(scope, workspaceScope.current)) {
+          setError(String(loadError));
+        }
+      })
+      .finally(() => {
+        if (isLatestRequest(scope, workspaceScope.current)) {
+          setLoading(false);
+        }
+      });
+  }, [resolvedProjectId, refreshToken, providers]);
+
+  useEffect(() => {
+    if (snapshot && selectedKind === null) {
+      setSelectedKind("blueprint");
+    }
+  }, [snapshot, selectedKind]);
+
+  useEffect(() => {
+    if (!resolvedProjectId || !selectedKind) {
+      setContent(null);
+      return;
+    }
+    const scope = requestScope(resolvedProjectId, selectedKind, String(refreshToken));
+    contentScope.current = scope;
+    setContentLoading(true);
+    getExportArtifact(resolvedProjectId, selectedKind, "preview")
+      .then((next) => {
+        if (isLatestRequest(scope, contentScope.current)) {
+          setContent(next);
+        }
+      })
+      .catch((loadError) => {
+        if (isLatestRequest(scope, contentScope.current)) {
+          setContent({ kind: "error", message: String(loadError) });
+        }
+      })
+      .finally(() => {
+        if (isLatestRequest(scope, contentScope.current)) {
+          setContentLoading(false);
+        }
+      });
+  }, [resolvedProjectId, selectedKind, refreshToken]);
+
   if (projects.length === 0) {
     return (
       <section className="export-center">
-        <header className="export-center-header"><p>导出</p><h1>导出中心</h1></header>
-        <EmptyState title="还没有可导出的项目" description="先在项目页创建或发现一个本地项目，然后回到这里导出 DOCX。" />
+        <EmptyState
+          title="还没有可导出的项目"
+          description="先在项目页创建或发现一个本地项目，然后回到这里生成导出蓝图与正式交付物。"
+        />
       </section>
     );
   }
 
-  const selected = projects.some((project) => project.id === selectedProjectId)
-    ? selectedProjectId!
-    : projects[0].id;
-  const selectedProject = projects.find((project) => project.id === selected)!;
-  const visibleResult = lastResult?.projectId === selected ? lastResult : null;
+  const blueprint = snapshot?.blueprint;
+  const selectedLabel = selectedKind ? EXPORT_ARTIFACT_LABELS[selectedKind] : null;
 
   return (
     <section className="export-center">
       <header className="export-center-header">
-        <p>导出</p>
         <h1>导出中心</h1>
-        <span>将本地项目的 12 个设计节点整理为一个 DOCX 文档。</span>
-      </header>
-      <div className="export-center-content">
-        <SelectField label="项目" value={selected} disabled={exporting} onChange={(event) => onSelect(event.target.value)}>
-          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        <SelectField
+          label="项目"
+          value={resolvedProjectId ?? ""}
+          onChange={(event) => onSelectProject(event.target.value)}
+          disabled={loading}
+        >
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
         </SelectField>
+      </header>
 
-        <section className="export-format-row" aria-labelledby="docx-format-title">
-          <div className="export-format-icon" aria-hidden="true">W</div>
-          <div>
-            <strong id="docx-format-title">Microsoft Word 文档</strong>
-            <small>DOCX · 包含项目清单与全部设计节点</small>
-          </div>
-          <span>可用</span>
-        </section>
+      {error ? <div className="export-preview-error">{error}</div> : null}
 
-        <div className="export-center-action">
-          <div className="export-selected-project">
-            <Icon name="project-document" size={18} />
-            <div>
-              <strong>{selectedProject.name}</strong>
-              <small>系统将在导出时询问本机保存位置。</small>
-            </div>
-          </div>
-          <Button variant="primary" loading={exporting} loadingLabel="正在导出…" onClick={() => onExport(selected)}>导出 DOCX</Button>
+      {blueprint ? (
+        <BlueprintPreparationBar
+          blueprint={blueprint}
+          approval={snapshot?.approvals.blueprint ?? null}
+          selected={selectedKind === "blueprint"}
+          onSelect={() => setSelectedKind("blueprint")}
+        />
+      ) : null}
+
+      <div className="export-workbench">
+        <ArtifactNavigator
+          artifacts={snapshot?.deliveryArtifacts ?? []}
+          selectedKind={selectedKind === "blueprint" ? null : selectedKind}
+          onSelect={(kind) => setSelectedKind(kind)}
+        />
+        <div className="export-preview">
+          <ArtifactPreview
+            content={content}
+            loading={contentLoading}
+            label={selectedLabel}
+          />
         </div>
-
-        {exporting ? (
-          <div className="export-result" role="status"><StatusDot kind="running" /><div><strong>正在生成 DOCX</strong><small>请选择保存位置并等待本机写入完成。</small></div></div>
-        ) : visibleResult ? (
-          <div className="export-result" role="status">
-            <StatusDot kind={visibleResult.status === "success" ? "success" : visibleResult.status === "error" ? "error" : "warning"} />
-            <div>
-              <strong>{visibleResult.status === "success" ? "导出完成" : visibleResult.status === "cancelled" ? "已取消导出" : "导出失败"}</strong>
-              <small>{visibleResult.status === "success" ? visibleResult.path : visibleResult.status === "cancelled" ? "没有写入任何文件。" : visibleResult.message}</small>
-            </div>
-          </div>
-        ) : null}
+        <aside className="export-review">
+          <p className="export-review-placeholder">评审任务账本与编辑操作将在后续步骤启用。</p>
+        </aside>
       </div>
     </section>
   );

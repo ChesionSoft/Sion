@@ -21,3 +21,35 @@
     clip: rect(0 0 0 0);
   }
 }
+
+@media (max-width: 1100px) {
+  .export-workbench {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+  .export-workbench .export-review {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .export-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .export-navigator {
+    flex-direction: row;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .export-navigator-group {
+    flex: none;
+    min-width: 160px;
+  }
+  .export-blueprint-bar {
+    flex-wrap: wrap;
+  }
+  .export-blueprint-bar-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+}

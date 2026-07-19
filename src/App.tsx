@@ -11,7 +11,6 @@ import {
   getConversationContext,
   getAgentRunDetail,
   deleteSession as deleteSessionApi,
-  exportDocx as exportDocxApi,
   getAgentRules,
   getFilePreview,
   getNode,
@@ -38,7 +37,7 @@ import {
 } from "./api";
 import { AppShell } from "./components/app/AppShell";
 import { DirtyNavigationDialog } from "./components/app/DirtyNavigationDialog";
-import { ExportCenter, type ExportResult } from "./components/app/ExportCenter";
+import { ExportCenter } from "./components/app/ExportCenter";
 import { ProjectHome } from "./components/app/ProjectHome";
 import { SettingsDialog } from "./components/settings/SettingsDialog";
 import { ProjectWorkspace } from "./components/workspace/ProjectWorkspace";
@@ -103,9 +102,7 @@ export function App() {
   const [runDetail, setRunDetail] = useState<AgentRunDetail | null>(null);
   const [runDetailLoading, setRunDetailLoading] = useState(false);
   const [runDetailError, setRunDetailError] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
   const [exportProjectId, setExportProjectId] = useState<string | null>(null);
-  const [lastExportResult, setLastExportResult] = useState<ExportResult | null>(null);
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [liveReasoningByRun, setLiveReasoningByRun] = useState<LiveReasoningByRun>({});
   const [generation, setGeneration] = useState<DeliveryGeneration | null>(null);
@@ -955,28 +952,6 @@ export function App() {
     }
   }
 
-  async function exportDocx(projectId: string) {
-    setExporting(true);
-    setExportProjectId(projectId);
-    setNotice("请选择 DOCX 保存位置");
-    try {
-      const result = await exportDocxApi(projectId);
-      if (result.exported && result.path) {
-        setLastExportResult({ status: "success", projectId, path: result.path });
-        setNotice(`DOCX 已导出到 ${result.path}`);
-      } else {
-        setLastExportResult({ status: "cancelled", projectId });
-        setNotice("已取消 DOCX 导出");
-      }
-    } catch (error) {
-      const message = String(error);
-      setLastExportResult({ status: "error", projectId, message });
-      setNotice(`DOCX 导出失败：${message}`);
-    } finally {
-      setExporting(false);
-    }
-  }
-
   async function loadFiles(projectId: string) {
     try {
       const loaded = await listFiles(projectId);
@@ -1311,7 +1286,15 @@ export function App() {
       notice={null}
     />
   ) : destination === "exports" ? (
-    <ExportCenter projects={projects} selectedProjectId={exportProjectId} exporting={exporting} lastResult={lastExportResult} onSelect={setExportProjectId} onExport={(projectId) => void exportDocx(projectId)} />
+    <ExportCenter
+      projects={projects}
+      activeProjectId={project?.id ?? null}
+      rememberedProjectId={exportProjectId}
+      providers={providers}
+      refreshToken={0}
+      onSelectProject={setExportProjectId}
+      onNotice={setNotice}
+    />
   ) : !project ? (
     <ProjectHome
       projects={projects}
