@@ -331,6 +331,9 @@ pub struct WorkflowNode {
     pub id: WorkflowNodeId,
     pub status: NodeStatus,
     pub markdown: String,
+    /// Optimistic-concurrency revision. Defaults to 0 so project files written
+    /// before this field existed still deserialize; the next save bumps it.
+    #[serde(default)]
     pub revision: u64,
     pub updated_at: String,
 }
@@ -979,6 +982,14 @@ mod tests {
         let message: ChatMessage = serde_json::from_str(json).unwrap();
         assert!(message.attachments.is_empty());
         assert_eq!(message.model_execution, None);
+    }
+
+    #[test]
+    fn legacy_node_without_revision_deserializes_to_zero() {
+        let json = r##"{"id":"api-design","status":"not_started","markdown":"# 接口设计","assumptions":[],"openQuestions":[],"updatedAt":"2026-06-14T13:44:32.616Z"}"##;
+        let node: WorkflowNode = serde_json::from_str(json).unwrap();
+        assert_eq!(node.id, WorkflowNodeId::ApiDesign);
+        assert_eq!(node.revision, 0);
     }
 
     #[test]
