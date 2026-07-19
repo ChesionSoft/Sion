@@ -511,6 +511,10 @@ export function ExportCenter({
       : currentMarkdownFromContent(content);
   const candidateDiff = candidate ? lineDiff(beforeMarkdown, candidate.markdown) : [];
 
+  const primaryDisabled =
+    busy || loading || next.action === "complete" || runInProgress;
+  const modelUnavailable = requiresModel && !snapshot?.modelSelection;
+
   return (
     <section className="export-center">
       <header className="export-center-header">
@@ -527,6 +531,27 @@ export function ExportCenter({
             </option>
           ))}
         </SelectField>
+        {snapshot ? (
+          <div className="export-header-actions">
+            {runInProgress ? (
+              <span className="export-action-status">
+                {activeRun?.publicSummary ?? "运行中…"}
+              </span>
+            ) : null}
+            <Button
+              variant="primary"
+              onClick={handlePrimary}
+              disabled={primaryDisabled || modelUnavailable}
+            >
+              {PRIMARY_LABELS[next.action]}
+            </Button>
+            {runInProgress ? (
+              <Button variant="ghost" onClick={handleCancelRun}>
+                取消
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </header>
 
       {error ? <div className="export-preview-error">{error}</div> : null}
@@ -663,14 +688,6 @@ export function ExportCenter({
           providers={providers}
           modelSelection={snapshot.modelSelection}
           onModelChange={handleModelChange}
-          primaryLabel={PRIMARY_LABELS[next.action]}
-          onPrimary={handlePrimary}
-          primaryDisabled={
-            busy || loading || next.action === "complete" || runInProgress
-          }
-          activeRun={activeRun}
-          onCancel={handleCancelRun}
-          requiresModel={requiresModel}
           reviewTasks={reviewTasks}
           reviewEnabled={
             selectedKind === "blueprint" || selectedKind === "formal_draft"

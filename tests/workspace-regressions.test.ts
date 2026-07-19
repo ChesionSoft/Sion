@@ -424,11 +424,15 @@ test("export center uses bottom model menu and review without right aside", asyn
   ]);
   assert.match(action, /ConversationModelMenu/);
   assert.match(action, /ReviewLedger/);
+  assert.match(action, /生成修改建议/);
   assert.doesNotMatch(action, /SelectField/);
   assert.doesNotMatch(center, /aside className="export-review"/);
+  assert.match(center, /export-header-actions/);
+  assert.match(center, /PRIMARY_LABELS\[next\.action\]/);
   assert.match(center, /ExportActionBar/);
   assert.match(css, /export-action-bar/);
   assert.match(css, /export-action-review/);
+  assert.match(css, /export-header-actions/);
 });
 
 test("export review is a task ledger with explicit diff application, not chat", async () => {
@@ -445,7 +449,8 @@ test("export review is a task ledger with explicit diff application, not chat", 
   assert.match(diff, /selectedChangeIds/);
   assert.match(center, /expectedRevision/);
   assert.match(center, /expectedDigest/);
-  assert.match(action, /取消/);
+  assert.match(center, /取消/);
+  assert.match(action, /生成修改建议/);
 });
 
 test("app scopes export events and removes the obsolete one-shot command", async () => {

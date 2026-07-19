@@ -8,6 +8,10 @@ export type ReviewLedgerProps = {
   busy: boolean;
   onCreateTask: (instruction: string) => void;
   onApplyTask: (taskId: string, selectedChangeIds: string[]) => void;
+  /** When true, the parent owns the create action (e.g. bottom-right button). */
+  hideCreateButton?: boolean;
+  instruction?: string;
+  onInstructionChange?: (value: string) => void;
 };
 
 const STATUS_LABEL: Record<ExportReviewTask["status"], string> = {
@@ -21,9 +25,19 @@ const STATUS_LABEL: Record<ExportReviewTask["status"], string> = {
   cancelled: "已取消",
 };
 
-export function ReviewLedger({ tasks, busy, onCreateTask, onApplyTask }: ReviewLedgerProps) {
-  const [instruction, setInstruction] = useState("");
+export function ReviewLedger({
+  tasks,
+  busy,
+  onCreateTask,
+  onApplyTask,
+  hideCreateButton = false,
+  instruction: controlledInstruction,
+  onInstructionChange,
+}: ReviewLedgerProps) {
+  const [localInstruction, setLocalInstruction] = useState("");
   const [selectedByTask, setSelectedByTask] = useState<Record<string, string[]>>({});
+  const instruction = controlledInstruction ?? localInstruction;
+  const setInstruction = onInstructionChange ?? setLocalInstruction;
 
   const toggle = (taskId: string, changeId: string) => {
     setSelectedByTask((current) => {
@@ -48,20 +62,24 @@ export function ReviewLedger({ tasks, busy, onCreateTask, onApplyTask }: ReviewL
         rows={3}
         disabled={busy}
       />
-      <Button
-        variant="primary"
-        disabled={busy || instruction.trim().length === 0}
-        onClick={() => {
-          onCreateTask(instruction.trim());
-          setInstruction("");
-        }}
-      >
-        生成修改建议
-      </Button>
+      {!hideCreateButton ? (
+        <Button
+          variant="primary"
+          disabled={busy || instruction.trim().length === 0}
+          onClick={() => {
+            onCreateTask(instruction.trim());
+            setInstruction("");
+          }}
+        >
+          生成修改建议
+        </Button>
+      ) : null}
 
       <div className="export-review-tasks">
         {tasks.length === 0 ? (
-          <p className="export-review-placeholder">暂无评审任务。输入评审意见后生成修改建议。</p>
+          <p className="export-review-placeholder">
+            暂无评审任务。输入评审意见后生成修改建议。
+          </p>
         ) : null}
         {tasks.map((task) => {
           const selected = selectedByTask[task.id] ?? [];

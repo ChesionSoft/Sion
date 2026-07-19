@@ -1,10 +1,10 @@
+import { useState } from "react";
 import { ConversationModelMenu } from "../workspace/ConversationModelMenu";
 import { Button } from "../ui";
 import { ReviewLedger } from "./ReviewLedger";
 import type {
   ChatModelSelection,
   ExportReviewTask,
-  ExportRunSummary,
   Provider,
 } from "../../types";
 
@@ -13,12 +13,6 @@ export type ExportActionBarProps = {
   modelSelection: ChatModelSelection | null;
   onModelChange: (selection: ChatModelSelection) => Promise<void> | void;
   savingModel?: boolean;
-  primaryLabel: string;
-  onPrimary: () => void;
-  primaryDisabled: boolean;
-  activeRun: ExportRunSummary | null;
-  onCancel: () => void;
-  requiresModel: boolean;
   reviewTasks: ExportReviewTask[];
   reviewEnabled: boolean;
   reviewBusy: boolean;
@@ -31,29 +25,23 @@ export function ExportActionBar({
   modelSelection,
   onModelChange,
   savingModel,
-  primaryLabel,
-  onPrimary,
-  primaryDisabled,
-  activeRun,
-  onCancel,
-  requiresModel,
   reviewTasks,
   reviewEnabled,
   reviewBusy,
   onCreateReview,
   onApplyReview,
 }: ExportActionBarProps) {
-  const runInProgress = activeRun
-    ? activeRun.status === "running" || activeRun.status === "queued"
-    : false;
-  const modelUnavailable = requiresModel && !modelSelection;
+  const [instruction, setInstruction] = useState("");
+  const canCreateReview =
+    reviewEnabled && !reviewBusy && instruction.trim().length > 0;
+
   return (
     <footer className="export-action-bar">
       <div className="export-action-model">
         <ConversationModelMenu
           providers={providers}
           selection={modelSelection}
-          disabled={runInProgress}
+          disabled={reviewBusy}
           saving={Boolean(savingModel)}
           onSelection={async (selection) => {
             await onModelChange(selection);
@@ -67,6 +55,9 @@ export function ExportActionBar({
             busy={reviewBusy}
             onCreateTask={onCreateReview}
             onApplyTask={onApplyReview}
+            hideCreateButton
+            instruction={instruction}
+            onInstructionChange={setInstruction}
           />
         ) : (
           <p className="export-review-placeholder">
@@ -75,23 +66,16 @@ export function ExportActionBar({
         )}
       </div>
       <div className="export-action-run">
-        {runInProgress ? (
-          <span className="export-action-status">
-            {activeRun?.publicSummary ?? "运行中…"}
-          </span>
-        ) : null}
         <Button
           variant="primary"
-          onClick={onPrimary}
-          disabled={primaryDisabled || modelUnavailable || runInProgress}
+          disabled={!canCreateReview}
+          onClick={() => {
+            onCreateReview(instruction.trim());
+            setInstruction("");
+          }}
         >
-          {primaryLabel}
+          生成修改建议
         </Button>
-        {runInProgress ? (
-          <Button variant="ghost" onClick={onCancel}>
-            取消
-          </Button>
-        ) : null}
       </div>
     </footer>
   );
