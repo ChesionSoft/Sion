@@ -10,287 +10,218 @@
 
 </div>
 
-> A local-first AI project design-document desktop workspace.
->
-> Built for small client projects, solo builders, and lightweight teams. It turns scattered requirements, reference material, per-node Agent conversations, and Markdown deliverables into a reviewable project-design path.
+# Sion
 
-Sion is a desktop application for macOS (Apple Silicon and Intel) and Windows x64. Rust owns project data, model connectivity, file extraction, and Word export; React/Vite provides the workbench UI.
+A local-first AI project design-document desktop workspace. Built for small client projects, solo developers, and lightweight teams, Sion organizes scattered requirements, reference material, per-node Agent conversations, and Markdown working papers into a reviewable, deliverable project-design path.
+
+Sion is built on Tauri 2: Rust owns project data, model connectivity, file extraction, and Word export; React/Vite provides the workbench UI. Supported platforms: macOS (Apple Silicon / Intel) and Windows x64.
 
 ## Contents
 
-- [When to use Sion](#when-to-use-sion)
-- [Core capabilities](#core-capabilities)
-- [Download and install](#download-and-install)
-- [Quick start](#quick-start)
+- [Core Capabilities](#core-capabilities)
+- [Download and Install](#download-and-install)
+- [Quick Start](#quick-start)
 - [Workflow](#workflow)
-- [Design nodes](#design-nodes)
-- [Model configuration](#model-configuration)
-- [Attachments and Agent deliveries](#attachments-and-agent-deliveries)
+- [Design Nodes](#design-nodes)
+- [Model Configuration](#model-configuration)
+- [Attachments and Agent Deliveries](#attachments-and-agent-deliveries)
 - [Export Center](#export-center)
-- [Local data and privacy](#local-data-and-privacy)
-- [Build and release](#build-and-release)
+- [Local Data and Privacy](#local-data-and-privacy)
+- [Build and Release](#build-and-release)
 
-## When to use Sion
-
-- You need a project design document quickly for a new client project.
-- Notes, client briefs, and existing files need to become structured design sections.
-- You want an Agent to help clarify and draft every phase while a human keeps the final write decision.
-- You need editable Markdown working papers and a structured Word deliverable.
-- You want project material and model credentials to remain on the local machine, without browser search or automation services.
-
-## Core capabilities
+## Core Capabilities
 
 | Capability | Description |
 |---|---|
-| **Persistent project shell** | A light, Codex-style desktop shell keeps project navigation available while the project hub handles search, sorting, creation, and opening. |
-| **Opened nodes** | The sidebar shows only nodes opened for the current project. Add, switch, or close them freely; dirty drafts are protected by Save, Discard, and Cancel choices. |
-| **12-node design path** | Move from project basics to the final document in dependency-aware stages. |
-| **Central per-node Agent chat** | Each node has its own rule set, sessions, and context, with conversations, run state, and the composer in the center pane. |
-| **Reviewable Agent deliveries** | Agent output is a validated `delivery` patch. Review the full result before saving it. |
-| **Concurrency protection** | Node saves use revision/CAS. Only one mutating Agent task may run for a project node. |
-| **Markdown working papers** | Edit, save, and track the state of every node directly. |
-| **Project rule overrides** | Add project-specific instructions per node without changing bundled defaults. |
-| **Local file pool** | Import TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX, then select files as Agent context. |
-| **Local model settings** | OpenAI-compatible Chat Completions and Responses providers; one provider can hold multiple models with an explicit default, and every model requires an input context window. API keys are stored as plaintext in `~/.sion/providers.json` (restricted permissions) and never echoed in the UI. |
-| **Per-session model choice** | Each session stores its own model and reasoning effort (off/low/medium/high); switching sessions or restarting restores it. |
-| **Context and usage** | The circular indicator tracks the current session's complete visible history plus next-turn attachments, and separates current context occupancy from cumulative session input/output usage. It warns at 80% and rejects over-limit sends before persisting anything. |
-| **One project container** | Choose a project directory once; Sion creates and discovers multiple projects inside it without prompting again. |
-| **Right-side work tabs** | Draft, attachments, file previews, and Agent change previews use closable tabs. The pane is resizable and durable tabs restore after restart. |
-| **Settings in one place** | Project-directory and model configuration live under Settings at bottom-left; there are no account, version, dark-theme, or browser controls. |
-| **File preview** | The attachments tab previews extracted file text (text only); only checked files become Agent context. |
-| **Structured Word export** | The Export Center runs a recoverable four-stage workflow (blueprint, formal draft, Word and QA, engineering attachments) that turns node content into a DOCX with heading levels, a table of contents, lists, and tables, plus structured review and native Save As. |
+| **12-node design path** | Progress from project basics to the final document through 12 dependency-ordered nodes. |
+| **Per-node Agent chat** | Each node has its own rules, sessions, and context; model and reasoning effort are selectable per session. |
+| **Reviewable Agent deliveries** | Agent output is a validated `delivery` JSON patch, written only after preview and confirmation. |
+| **Concurrency protection** | Node saves use revision/CAS; only one mutating Agent task may run per project node at a time. |
+| **Markdown working papers** | Node content is directly editable and versioned. |
+| **Project rule overrides** | Default Agent rules are bundled; per-project custom rules extend them without changing global defaults. |
+| **Local file pool** | Import TXT / Markdown / JSON / CSV / PDF / DOCX / XLSX; extracted text can be selected as Agent context. |
+| **Local model configuration** | OpenAI-compatible Chat Completions and OpenAI Responses protocols. See [Model Configuration](#model-configuration). |
+| **Context and usage indicator** | The composer indicator measures context occupancy and cumulative session usage along the real run assembly path; warns at 80%, rejects sends over 100%. |
+| **Structured Word export** | A four-stage Export Center produces DOCX with heading levels, TOC, lists, and tables. See [Export Center](#export-center). |
+| **Single project container** | Choose a project directory once; Sion creates and discovers multiple projects inside it. |
 
-## Download and install
+## Download and Install
 
-Prebuilt installers are on [GitHub Releases](https://github.com/ChesionSoft/Sion/releases).
+Prebuilt installers are available on [GitHub Releases](https://github.com/ChesionSoft/Sion/releases).
 
-Public builds are **unsigned development verification packages** (no Apple notarization / Windows code signing yet). After a browser download, macOS attaches a quarantine flag; Gatekeeper may block the first launch with “cannot verify the developer”, “is damaged and can’t be opened”, or a failed install prompt. That usually means the system rejected an unnotarized app, not a corrupt download.
+Current public builds are **unsigned development verification packages** (no Apple notarization / Windows code signing). The first launch may be blocked by the OS. Use one of the methods below.
 
-### macOS: bypass Gatekeeper for unsigned builds
+### macOS
 
-Public Release builds are **not notarized**. The dialog  
-“Apple could not verify ‘Sion’ is free of malware” is expected, not a corrupt download.
+Download `Sion_*_universal.dmg`, open it, and drag **Sion** into **Applications**. The Gatekeeper warning "Apple cannot verify that Sion is free of malware" is expected. Unblock it with any of the following:
 
-Install first: download `Sion_*_universal.dmg` → open → drag **Sion** into **Applications**.  
-Then try the methods below in order (most people succeed at option 2).
-
-**Option 1: Clear quarantine on the app (DMG-only `xattr` is usually not enough)**
-
-Browser downloads set `com.apple.quarantine`. Clearing it on the `.dmg` alone often does nothing; clear it on the installed **Sion.app**:
+**Option 1: Clear the quarantine attribute** (on the installed app; clearing the DMG alone is insufficient)
 
 ```bash
-# Preferred: remove quarantine only
 xattr -dr com.apple.quarantine /Applications/Sion.app
-
-# Or strip all extended attributes
-xattr -cr /Applications/Sion.app
 ```
 
-If the app is not in Applications, use the real path, e.g. `~/Downloads/Sion.app`.
+**Option 2: Allow via System Settings**
 
-**Option 2 (recommended): System Settings → Open Anyway**
-
-On recent macOS, Control-click may not offer Open for unnotarized apps:
-
-1. Double-click **Sion** once (dismiss **Done** / **Cancel**; this records the block).
-2. Open **System Settings → Privacy & Security**.
-3. Scroll to **Security**.
-4. You should see that Sion was blocked because it could not be checked for malware → **Open Anyway**.
-5. Confirm with password / Watch / Touch ID.
-6. Click **Open** again.
-
-If **Open Anyway** is missing: double-click Sion once more, return to that page, or run option 1 first and repeat steps 1–6.
+1. Double-click **Sion** once (click **Done** on the block dialog to register the attempt).
+2. Open **System Settings → Privacy & Security → Security**.
+3. Find the Sion entry and click **Open Anyway**, then confirm.
 
 **Option 3: Control-click Open**
 
-1. In Applications, select **Sion**.
-2. **Control-click** (right-click / two-finger click) → **Open** (do not double-click).
-3. If the dialog shows **Open**, confirm it.
+In Applications, Control-click **Sion** → **Open**.
 
-**Option 4: Launch from Terminal**
-
-```bash
-xattr -dr com.apple.quarantine /Applications/Sion.app
-open /Applications/Sion.app
-```
-
-Do not disable SIP or run `spctl --master-disable`.  
-Removing this warning for all users requires Developer ID signing and notarization (see `RELEASE.md`).
+> Do not disable Gatekeeper globally with `spctl --master-disable` or disable SIP. Eliminating this warning entirely requires Developer ID signing and notarization; see [RELEASE.md](RELEASE.md).
 
 ### Windows
 
-Run the NSIS installer (`.exe`). If SmartScreen shows “Windows protected your PC”, choose **More info** → **Run anyway**.
+Download and run the NSIS installer (`.exe`). If SmartScreen shows "Windows protected your PC", choose **More info** → **Run anyway**.
 
-## Quick start
+## Quick Start
 
-Developing Sion from source requires Node.js, Rust stable, and Tauri system prerequisites for the host platform. Run macOS builds on macOS and Windows installers on Windows.
+Development requirements: Node.js, Rust stable, and the Tauri system dependencies for the host platform. macOS apps must be built on macOS; Windows installers must be built on Windows.
 
 ```bash
-# 1. Install dependencies
-npm install
-
-# 2. Start the desktop app
-npm run tauri dev
+npm install            # Install dependencies
+npm run tauri dev      # Start the desktop app
 ```
 
-Useful checks:
+Common checks:
 
 ```bash
-npm run lint
-npm run build
-npm run test:rust
-cargo test --workspace
+npm run lint                 # TypeScript checks
+npm run build                # Build the React/Vite workbench
+npm run test:rust            # Tauri command-layer tests
+cargo test --workspace       # Rust domain and storage tests
 cargo clippy --workspace -- -D warnings
 npm run test:no-browser-runtime
 ```
 
 ## Workflow
 
-1. Open **Settings** at the bottom-left and choose the directory that will contain projects (once). Return to the **Projects** hub to create a project; Sion gives every project its own folder.
-2. Configure a provider and default model under **Settings → Models**. Offline editing works without one.
-3. Open a project, then add or switch design nodes in the sidebar. The center pane is the current-node Agent conversation; the right-side **Draft**, **Attachments**, and file-preview tabs hold editable and reference material.
-4. Chat with the current-node Agent, review its delivery patch, then explicitly apply it to the Markdown working paper.
-5. In the **Export Center**, generate the blueprint, formal draft, and formal Word, run structured review and approvals, then export engineering attachments or Save As the Word after QA passes.
+1. Choose a project directory in **Settings** (once); create projects from the **Projects** hub — Sion creates a dedicated folder per project.
+2. Configure a provider and default model under **Settings → Models** (not required for offline editing).
+3. Open a project and add or switch design nodes in the sidebar: the center pane hosts the node's Agent conversation, the right-side **Draft** tab edits Markdown, and the **Attachments** tab manages local files.
+4. Chat with the current node's Agent, preview its delivery patch, and confirm to write it into the working paper.
+5. In the **Export Center**, generate the blueprint, formal draft, and formal Word in sequence; after review and approval, export engineering attachments or save the Word externally.
 
-## Design nodes
+## Design Nodes
 
 | # | Node | Purpose |
 |---:|---|---|
-| 1 | Project Basics | Project name, client, author, and boundaries. |
-| 2 | Background & Goals | Background, goals, and scope. |
-| 3 | Users & Permissions | Users, roles, permissions, and responsibilities. |
-| 4 | Business Process Design | Core business processes. |
-| 5 | Feature Module Design | Modules, sub-features, and business rules. |
-| 6 | Page & Interaction Design | Pages, navigation, and key interactions. |
-| 7 | Data Structure Design | Entities, fields, and data relationships. |
-| 8 | API Design | Service interfaces and request/response contracts. |
-| 9 | Architecture & Deployment | Stack, deployment approach, and dependencies. |
-| 10 | Development Task Breakdown | Executable implementation tasks. |
-| 11 | Open Items & Risks | Assumptions, risks, and unresolved questions. |
-| 12 | Final Document Generation | Final checks and Word export. |
+| 1 | Project Basics | Project name, client, author, and boundaries |
+| 2 | Background & Goals | Background, objectives, and scope |
+| 3 | Users & Permissions | Users, roles, permissions, and responsibilities |
+| 4 | Business Process Design | Core business processes |
+| 5 | Feature Module Design | Modules, sub-features, and business rules |
+| 6 | Page & Interaction Design | Page inventory, navigation, and key interactions |
+| 7 | Data Structure Design | Entities, fields, and data relationships |
+| 8 | API Design | Service interfaces and request/response contracts |
+| 9 | Architecture & Deployment | Tech stack, deployment plan, and dependencies |
+| 10 | Development Task Breakdown | Executable development tasks |
+| 11 | Open Items & Risks | Assumptions, risks, and pending questions |
+| 12 | Final Document Generation | Section review and final Word export |
 
-## Model configuration
+## Model Configuration
 
-Sion supports OpenAI-compatible **Chat Completions** and **OpenAI Responses**. Configure OpenAI, DeepSeek, Qwen, SiliconFlow, or another compatible provider according to the API protocol and model IDs it actually exposes.
+Supports the OpenAI-compatible **Chat Completions** and **OpenAI Responses** protocols; compatible providers include OpenAI, DeepSeek, Qwen, and SiliconFlow.
 
-Add or edit a connection under **Settings → Models**:
+Configure under **Settings → Models**:
 
-| Field | What to enter |
+| Field | Description |
 |---|---|
-| **Provider Name** | A UI label, such as `OpenAI`, `DeepSeek`, or `Qwen`. |
-| **API Base URL** | The provider's **version root**, including its version prefix but not the final endpoint path. It commonly ends in `/v1`. |
-| **Protocol** | Use **Chat Completions** for most OpenAI-compatible services. Use **Responses** only when the provider explicitly supports the OpenAI Responses API. |
-| **Model list** | A provider can hold multiple models, each with a name, a context window, and one marked default. Model names must be unique (after trimming); exactly one model is the default. |
-| **Context window** | Every usable model requires a positive integer input context window in tokens (for example `128000`). A model without a context window cannot be selected or sent. Sion never guesses a default. |
-| **API Key** | A key issued by that provider. It is required for a new provider and is never echoed after saving. When editing an existing provider, leave this field blank to keep the stored key, or enter a new value to replace it. Keys are plaintext in `~/.sion/providers.json` with restricted file permissions. |
+| **Provider Name** | UI label, e.g. `OpenAI`, `DeepSeek` |
+| **API Base URL** | The provider's version root (includes the version prefix, excludes the endpoint path; typically ends with `/v1`) |
+| **Protocol** | Chat Completions for most compatible services; Responses only when the provider explicitly supports it |
+| **Model list** | Multiple models per provider, each with a name and context window; exactly one default |
+| **Context window** | A positive-integer input context window (tokens) is required per model; models without one cannot be selected |
+| **API Key** | Required for new providers; when editing, leave blank to keep the stored key or enter a new value to replace it. Never echoed in the UI after saving |
 
-### How to enter the URL
+**Base URL rule**: Sion appends the endpoint path according to the selected protocol.
 
-The current UI uses **Base URL mode**. Sion appends the final path for the selected protocol:
-
-| Protocol | You enter | Sion requests |
+| Protocol | You enter | Actual request |
 |---|---|---|
 | Chat Completions | `https://api.example.com/v1` | `https://api.example.com/v1/chat/completions` |
 | Responses | `https://api.example.com/v1` | `https://api.example.com/v1/responses` |
 
-For example, if a provider documents the full URL as `https://api.example.com/v1/chat/completions`, enter only:
+Do not include `/chat/completions` or `/responses` in the Base URL, or the path will be duplicated. Use `http://` only for self-hosted services on localhost or a private network; production services should use `https://`.
 
-```text
-https://api.example.com/v1
-```
+Reference configurations:
 
-Do not include `/chat/completions` or `/responses` in the Base URL: Sion would append it again. Use `http://` only for a compatible service you run locally or on a trusted private network; production services should use `https://`.
+| Provider | API Base URL | Protocol |
+|---|---|---|
+| OpenAI | `https://api.openai.com/v1` | Chat Completions / Responses |
+| DeepSeek | `https://api.deepseek.com/v1` | Chat Completions |
+| Qwen (compatible mode) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Chat Completions |
+| SiliconFlow | `https://api.siliconflow.cn/v1` | Chat Completions |
 
-### Ready-to-adapt examples
+**Behavior notes**:
 
-These show endpoint and protocol shapes only. Available models, account access, and billing are determined by the provider.
+- Each session stores its own model and reasoning effort (off/low/medium/high; default medium), restored across session switches and restarts.
+- The context indicator refreshes on session load, message completion, or changes to model/rules/attachments, using the same assembly path as a real run; sends exceeding the context window are rejected before any message is persisted.
+- During a reply, only the provider-supplied public reasoning summary is streamed (capped at 2,000 characters); hidden chain-of-thought is neither displayed nor persisted.
+- Models are used only for Agent runs and Export Center generation steps; Markdown editing, project management, and DOCX export work fully offline.
 
-| Provider | API Base URL | Protocol | Example default model |
-|---|---|---|---|
-| OpenAI (Chat) | `https://api.openai.com/v1` | Chat Completions | `gpt-5` |
-| OpenAI (Responses) | `https://api.openai.com/v1` | Responses | `gpt-5` |
-| DeepSeek | `https://api.deepseek.com/v1` | Chat Completions | `deepseek-chat` |
-| Qwen compatible mode | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Chat Completions | Use the model ID in your console |
-| SiliconFlow | `https://api.siliconflow.cn/v1` | Chat Completions | Use the model ID in your console |
+> The Sion desktop runtime contains no browser search, browser automation, or web-fetching subsystem. Agents operate solely on the current node, selected attachments, and conversation context.
 
-### Confirm the configuration
+## Attachments and Agent Deliveries
 
-1. Select **Save Configuration**. Seeing the provider in the list with a configured state means its API key was saved to ~/.sion/providers.json.
-2. Open or create a project and send an Agent message in any node. A streaming reply confirms the connection.
-3. The first provider saved is the current default provider. In **Manage Model Connections** you can edit any provider's name, URL, protocol, or model without re-entering its API Key (leave the key blank to keep the stored secret), or enter a new key to replace it. Any provider can be set as the default. Deleting a provider also removes its record and API key from providers.json.
+**Attachments**: Imported files are copied into the project's `files/` directory and managed together with their extracted text. Supported formats: TXT / Markdown / JSON / CSV / PDF / DOCX / XLSX; extraction failures are explicitly flagged. The attachments pane previews extracted text (plain text only; no web rendering). Previewing is independent of selecting a file as Agent context. The full text of checked files is injected only into the next user message and the selection is cleared after a successful send. File text is read locally through Tauri and never enters the frontend.
 
-Common issues:
-
-- **401 / unauthorized**: the API key is incorrect, lacks access, or belongs to a different service than the Base URL.
-- **404 / missing endpoint**: the Base URL probably includes `/chat/completions` or `/responses`, or the selected protocol is wrong.
-- **Model not found**: use the provider console's exact model ID in **Default Model**.
-- **Can I work offline?** Yes. A model connection is needed only for Agent runs; Markdown editing, project creation, and DOCX export work offline.
-
-Provider metadata and API keys are stored together in ~/.sion/providers.json (restricted permissions). The UI never echoes the key, and the key never enters project data, exports, or logs.
-
-Each session stores its own model and reasoning effort (off, low, medium, high; new sessions default to medium). Switch model or reasoning effort at any time next to the conversation composer; the choice is saved to the current session and restored when you switch sessions or restart.
-
-The circular indicator does not recalculate on every draft keystroke. It refreshes after session load, message completion, or changes to the model, rules, node, or next-turn attachments, using the same assembly path as a real run: protocol instructions, Agent rules, current node Markdown, every visible message in the current session, and selected next-turn attachments. Open it to see current context occupancy separately from cumulative input/output usage across completed model calls. Provider usage is exact when available and otherwise clearly marked estimated or mixed. Under 80% is ready, 80%–100% is a warning, and over 100% rejects the send before saving the user message, creating a run, or clearing the attachment selection, so no partial record is left behind. Sion sets no maximum output length and never auto-truncates prompt content.
-
-An empty conversation offers four fill-only suggestions: “Summarize the information already in this section,” “List questions that still need confirmation,” “Add details from the reference material,” and “Check this section for omissions and suggest improvements.” A click fills the composer for editing; the user still presses Enter to submit. Run-history rows and per-turn status rows open the same centered **Run Details** dialog with timestamps, model information, context breakdown, usage, activity timeline, and delivery result. Older runs show “This information was not saved in the historical record” only where a field is unavailable while preserving the rest of the detail.
-
-While an Agent is replying, **Agent is thinking** can be expanded to stream only the public reasoning summary explicitly supplied by the provider. Models that expose hidden reasoning only show execution state; hidden chain-of-thought is never displayed or persisted. Public summaries are capped at 2,000 Unicode characters and never enter project data as hidden-reasoning fields. Failed calls show a safely mapped, specific reason in both the conversation and Run Details; HTTP 504 means the provider's upstream gateway timed out. Sion does not retry automatically and adds no failed-run retry button.
-
-> The desktop runtime has no browser search, browser automation, Playwright, or web-fetch subsystem. Agents work only from the current node, selected attachments, and the conversation.
-
-## Attachments and Agent deliveries
-
-Imported files are copied into the project's `files/` directory alongside extracted text. TXT, Markdown, JSON, CSV, PDF, DOCX, and XLSX are extractable. Failed extraction is visible as a failure; it is never presented as usable text. The right-hand attachments pane previews the extracted text of an imported file (text only; it never renders web pages or opens external links). Previewing a file is independent of selecting it as Agent context. Full text for files checked in the composer applies only to the next user message; a successful send clears the selection, while a validation failure keeps it for retry. Historical messages keep their attachment references, but later turns do not reinsert the full bodies of old attachments. Full file text is always read locally through Tauri and never enters the frontend.
-
-Writeable Agent output must be fenced `delivery` JSON. By default it patches existing second-level sections only; a full rewrite requires an explicit user request. Sion validates the node structure, previews changes, and saves with the current revision, so a partial streaming response cannot become project content.
+**Deliveries**: Agent write output must be a constrained fenced `delivery` JSON block — by default, section patches against existing second-level headings; full rewrites require an explicit user request. The application validates node structure, shows a change preview, and saves with the current revision, so incomplete streaming content can never be written into a project.
 
 ## Export Center
 
-The Export Center is a recoverable four-stage local workflow that turns confirmed project nodes into final deliverables. Every artifact is persisted inside the project's `exports/` directory. There is no cloud sync, timed jobs, or export history.
+The Export Center is a recoverable four-stage local workflow that turns confirmed nodes into final deliverables. All artifacts are persisted in the project's `exports/` directory. There is no cloud sync or export history.
 
-- **Export blueprint**: a structured blueprint generated from the first eleven content nodes. It is preparation material, not a delivery artifact, and is shown separately at the top of the page. The blueprint must be approved before the formal draft can be generated.
-- **Formal draft**: a deliverable PRD generated from the approved blueprint, validated structurally (one H1, a non-empty body under every H2, no TBD/TODO placeholders). The draft must be approved before the formal Word can be generated.
-- **Formal Word and QA**: a DOCX generated deterministically from the approved draft, preserving heading levels, cover, table of contents, lists, and tables. It is structurally and content-QA'd before publishing; a failed QA deletes the candidate, keeps the previous passing Word, and marks it as based on an older draft. The formal Word can be copied externally through a native Save As.
-- **Engineering attachments and completion**: after QA passes, `PROJECT_DESIGN.md`, `SPEC.md`, `TASKS.md`, and `AGENTS.md` are generated deterministically; the batch is complete only when all four are written.
+| Stage | Artifact | Description |
+|---|---|---|
+| 1. Export blueprint | Structured blueprint | Generated from the first 11 content nodes; must be approved before the draft |
+| 2. Formal draft | Deliverable PRD body | Passes structural validation (single H1, non-empty body under every H2, no TBD/TODO placeholders); must be approved before Word generation |
+| 3. Formal Word & QA | DOCX + QA report | Deterministically generated from the approved draft, preserving heading levels, cover, TOC, lists, and tables; on QA failure the previous passing Word is kept |
+| 4. Engineering attachments | `PROJECT_DESIGN.md` / `SPEC.md` / `TASKS.md` / `AGENTS.md` | Deterministically generated after QA passes; complete only when all four are written |
 
-The seven delivery artifacts are: the formal draft, the Word QA report, the formal Word, and the four engineering attachments. Regenerating an existing blueprint or draft never overwrites it directly: a candidate is generated and diffed first, then applied only after confirmation with revision-and-digest verification. Review is not chat: each instruction becomes a task whose result is a structured patch that must be selected and diffed before it is applied.
+Behavior rules:
 
-Markdown is previewed directly in app; DOCX is converted to sanitized content HTML with a notice that cover, TOC, headers, footers, and pagination must be checked in Word or WPS.
+- Regenerating an existing blueprint or draft produces a candidate with a diff first; replacement happens only after confirmation with revision-and-digest verification — never a direct overwrite.
+- Manual edits or applied review patches revoke approval of the affected artifact; downstream artifacts are kept and marked as based on an older version. Source-node changes only raise advisory notices and do not revoke approvals.
+- Review feedback is executed as tasks whose results are structured patches, applied item by item after diff preview.
+- Models are called only to generate the blueprint, draft, and review proposals; approval, Word generation, QA, engineering attachments, and Save As require no model.
 
-Source-node changes are advisory only: they never revoke approval or block generation, preview, or Save As. Editing the blueprint or draft, or applying a review patch, changes that artifact's digest and immediately revokes its approval; downstream files are kept and marked as based on an older version.
+## Local Data and Privacy
 
-A model is used only to generate the blueprint, draft, and review proposals; approval, Word generation, QA, engineering attachments, and Save As never call a model. API keys are read only from `~/.sion/providers.json` and never enter project data, exports, logs, or run records; the model only receives the nodes, blueprint, or draft of the current project.
-
-## Local data and privacy
-
-Global configuration lives in `~/.sion/`; project data lives under the project directory you choose, one folder per project ID:
+Global configuration lives in `~/.sion/`; project data lives under the chosen project directory, one folder per project ID:
 
 ```text
 ~/.sion/
 ├── settings.json
-├── providers.json
+├── providers.json      # Provider configuration and API keys (plaintext, restricted file permissions)
 └── registry.json
 
 <projects directory>/
 └── <project id>/
     ├── project.json
-    ├── nodes/
-    ├── chat/
-    ├── files/
+    ├── nodes/          # Node working papers (CAS-versioned saves)
+    ├── chat/           # Session records
+    ├── files/          # Imported attachments and extracted text
     ├── agent-overrides/
-    ├── exports/
-    └── runs/
+    ├── exports/        # Export artifacts
+    └── runs/           # Agent run records
 ```
 
-The project directory is chosen once; Sion creates and discovers multiple projects inside it. Project content, attachments, chat history, and exports can contain client information and should not be committed to a public repository. The settings, registry, and providers.json (which contains API keys) under `~/.sion/` should not be committed either.
+Privacy constraints:
 
-## Build and release
+- API keys are stored only in `~/.sion/providers.json` and never enter project data, exports, logs, or IPC summaries.
+- `~/.sion/` and the project directory may contain client material and must not be committed to public repositories.
+- Models receive only the nodes, blueprint, or draft permitted within the current project.
+
+## Build and Release
 
 ```bash
-npm run build:desktop        # Build current platform without bundling
-npm run bundle:mac           # macOS: native-architecture app and DMG
-npm run bundle:mac-universal # macOS: Apple Silicon + Intel universal app and DMG
+npm run build:desktop        # Current platform: build without bundling
+npm run bundle:mac           # macOS: native-arch App and DMG
+npm run bundle:mac-universal # macOS: Apple Silicon + Intel universal App/DMG
 npm run bundle:windows       # Windows: NSIS and MSI installers
 ```
 
-Pushing a `v*` tag (for example `v1.0.0`) triggers GitHub Actions to build a Universal macOS DMG and a Windows x64 NSIS installer and attach them to the GitHub Release. The default pipeline produces unsigned development verification packages; end-user installers still require platform code signing, and direct macOS distribution also requires Apple notarization. See [RELEASE.md](RELEASE.md) for the release checklist.
+Pushing a `v*` tag (e.g. `v1.0.0`) triggers GitHub Actions: a universal macOS DMG and a Windows x64 NSIS installer are built and attached to the GitHub Release. The current pipeline produces unsigned development verification packages; production releases require platform code signing, and direct macOS distribution additionally requires Apple notarization. See [RELEASE.md](RELEASE.md).
