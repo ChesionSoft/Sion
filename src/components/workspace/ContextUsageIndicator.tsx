@@ -77,6 +77,7 @@ export function ContextUsageIndicator(props: {
             <dl className="context-usage-breakdown">
               <ContextRow label="协议提示" value={snapshot.breakdown.protocolTokens} />
               <ContextRow label="Agent 规则" value={snapshot.breakdown.rulesTokens} />
+              <ContextRow label="依赖节点交付稿" value={snapshot.breakdown.dependencyNodeTokens} />
               <ContextRow label="节点文稿" value={snapshot.breakdown.nodeMarkdownTokens} />
               <ContextRow label="会话历史" value={snapshot.breakdown.conversationTokens} />
               <ContextRow label="本轮资料" value={snapshot.breakdown.attachmentTokens} />

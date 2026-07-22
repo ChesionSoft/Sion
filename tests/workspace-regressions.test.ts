@@ -529,3 +529,16 @@ test("export center advertises only implemented local capabilities", async () =>
   assert.match(joined, /DOCX/);
   assert.doesNotMatch(joined, /云端导出|计划任务|scheduled export|cloud export/i);
 });
+
+test("dependency delivery tokens appear in context and run details", async () => {
+  const [types, indicator, dialog] = await Promise.all([
+    readFile("src/types.ts", "utf8"),
+    readFile("src/components/workspace/ContextUsageIndicator.tsx", "utf8"),
+    readFile("src/components/workspace/RunDetailDialog.tsx", "utf8"),
+  ]);
+  assert.match(types, /dependencyNodeTokens: number/);
+  assert.match(indicator, /依赖节点交付稿/);
+  assert.match(indicator, /snapshot\.breakdown\.dependencyNodeTokens/);
+  assert.match(dialog, /依赖节点交付稿/);
+  assert.match(dialog, /breakdown\.dependencyNodeTokens/);
+});

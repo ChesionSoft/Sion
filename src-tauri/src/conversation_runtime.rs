@@ -171,6 +171,7 @@ pub fn snapshot_for_prompt(
         breakdown: ContextUsageBreakdown {
             protocol_tokens: estimate.estimated_input_tokens,
             rules_tokens: 0,
+            dependency_node_tokens: 0,
             node_markdown_tokens: 0,
             conversation_tokens: 0,
             attachment_tokens: 0,
@@ -239,6 +240,7 @@ pub fn prepare_from_parts(
         breakdown: ContextUsageBreakdown {
             protocol_tokens: estimate_input_tokens(&sections.protocol),
             rules_tokens: estimate_input_tokens(&sections.rules),
+            dependency_node_tokens: 0,
             node_markdown_tokens: estimate_input_tokens(&sections.node_markdown),
             conversation_tokens: estimate_input_tokens(&sections.transcript),
             attachment_tokens: estimate_input_tokens(&sections.attachments),

@@ -26,9 +26,9 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use tauri::{Emitter, Manager};
 #[cfg(target_os = "macos")]
 use tauri::RunEvent;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tokio_util::sync::CancellationToken;
 
@@ -1059,6 +1059,7 @@ fn largest_context_section(snapshot: &ConversationContextSnapshot) -> String {
     [
         ("protocol", breakdown.protocol_tokens),
         ("rules", breakdown.rules_tokens),
+        ("dependency_nodes", breakdown.dependency_node_tokens),
         ("node_markdown", breakdown.node_markdown_tokens),
         ("conversation", breakdown.conversation_tokens),
         ("attachment", breakdown.attachment_tokens),
