@@ -1071,6 +1071,32 @@ fn largest_context_section(snapshot: &ConversationContextSnapshot) -> String {
     .unwrap_or_else(|| "protocol".to_string())
 }
 
+fn context_section_label(section: &str) -> &str {
+    match section {
+        "protocol" => "协议提示",
+        "rules" => "Agent 规则",
+        "dependency_nodes" => "依赖节点交付稿",
+        "node_markdown" => "节点文稿",
+        "conversation" => "会话历史",
+        "attachment" => "本轮资料",
+        _ => section,
+    }
+}
+
+fn ensure_context_is_runnable(
+    snapshot: ConversationContextSnapshot,
+) -> Result<ConversationContextSnapshot, ApiError> {
+    if snapshot.status != sion_core::ContextEstimateStatus::Blocked {
+        return Ok(snapshot);
+    }
+
+    let largest = largest_context_section(&snapshot);
+    Err(ApiError::CheckFailed(format!(
+        "上下文超出模型窗口：最大占用来自{}",
+        context_section_label(&largest)
+    )))
+}
+
 #[tauri::command]
 fn agent_run_list(
     request: AgentRunListRequest,
@@ -1255,6 +1281,15 @@ fn conversation_turn_retry_delivery(
         &dependency_nodes,
     );
     let prompt = prepared_prompt.prompt.clone();
+    let context_snapshot = ensure_context_is_runnable(
+        prepared_prompt.snapshot(
+            resolved.context_window_tokens,
+            store
+                .session_usage(request.node_id, &request.session_id)
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
+            &request.now,
+        ),
+    )?;
     let run_request = sion_agent::RunRequest {
         project_id: request.project_id.clone(),
         node_id: request.node_id,
@@ -1266,15 +1301,7 @@ fn conversation_turn_retry_delivery(
         created_at: request.now.clone(),
         session_id: Some(request.session_id.clone()),
         turn_id: Some(request.turn_id.clone()),
-        context_snapshot: Some(
-            prepared_prompt.snapshot(
-                resolved.context_window_tokens,
-                store
-                    .session_usage(request.node_id, &request.session_id)
-                    .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
-                &request.now,
-            ),
-        ),
+        context_snapshot: Some(context_snapshot),
     };
     let mut scheduler = state
         .scheduler
@@ -1405,6 +1432,15 @@ fn delivery_regeneration_start(
         &dependency_nodes,
     );
     let prompt = prepared_prompt.prompt.clone();
+    let context_snapshot = ensure_context_is_runnable(
+        prepared_prompt.snapshot(
+            resolved.context_window_tokens,
+            store
+                .session_usage(request.node_id, &request.session_id)
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
+            &request.now,
+        ),
+    )?;
     let generation_id = request.generation_id.clone();
     let run_request = sion_agent::RunRequest {
         project_id: request.project_id.clone(),
@@ -1417,15 +1453,7 @@ fn delivery_regeneration_start(
         created_at: request.now.clone(),
         session_id: Some(request.session_id.clone()),
         turn_id: None,
-        context_snapshot: Some(
-            prepared_prompt.snapshot(
-                resolved.context_window_tokens,
-                store
-                    .session_usage(request.node_id, &request.session_id)
-                    .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
-                &request.now,
-            ),
-        ),
+        context_snapshot: Some(context_snapshot),
     };
     let mut scheduler = state
         .scheduler
@@ -3540,6 +3568,39 @@ mod tests {
         );
         assert_eq!(fixture.store.list_runs().unwrap(), before_runs);
         std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn specialized_model_prompt_rejects_blocked_context_before_enqueue() {
+        let prepared = conversation_runtime::PreparedPrompt {
+            prompt: "超长依赖上下文".repeat(100),
+            breakdown: sion_core::ContextUsageBreakdown {
+                protocol_tokens: 1,
+                rules_tokens: 1,
+                dependency_node_tokens: 100,
+                node_markdown_tokens: 1,
+                conversation_tokens: 1,
+                attachment_tokens: 1,
+            },
+        };
+        let snapshot = prepared.snapshot(
+            8,
+            sion_core::CumulativeTokenUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                call_count: 0,
+                source: sion_core::TokenUsageSource::Exact,
+            },
+            "now",
+        );
+        assert_eq!(snapshot.status, sion_core::ContextEstimateStatus::Blocked);
+
+        let error = ensure_context_is_runnable(snapshot).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "上下文超出模型窗口：最大占用来自依赖节点交付稿"
+        );
     }
 
     #[test]
