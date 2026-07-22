@@ -520,7 +520,7 @@ fn find_draft_placeholder(markdown: &str) -> Option<(String, String)> {
     // Whole-line stubs: "TODO", "TBD.", "- TODO", "1. TBD"
     for (line_idx, line) in lower.lines().enumerate() {
         let body = strip_list_prefix(line);
-        let body = body.trim_end_matches(|c: char| matches!(c, '.' | '。' | '!' | '！'));
+        let body = body.trim_end_matches(['.', '。', '!', '！']);
         if body == "todo" || body == "tbd" {
             let original = markdown.lines().nth(line_idx).unwrap_or(line);
             return Some((body.to_string(), original.trim().to_string()));
