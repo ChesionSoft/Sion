@@ -1245,12 +1245,16 @@ fn conversation_turn_retry_delivery(
         .agent_override(request.node_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     let rules = compose_effective_agent_rules(request.node_id, override_markdown);
-    let prompt = conversation_runtime::build_delivery_retry_prompt(
+    let dependency_nodes =
+        dependency_context::load(&store, request.node_id).map_err(ApiError::CheckFailed)?;
+    let prepared_prompt = conversation_runtime::build_delivery_retry_prompt(
         &node,
         &messages,
         &assistant_message,
         &rules.effective_markdown,
+        &dependency_nodes,
     );
+    let prompt = prepared_prompt.prompt.clone();
     let run_request = sion_agent::RunRequest {
         project_id: request.project_id.clone(),
         node_id: request.node_id,
@@ -1262,14 +1266,15 @@ fn conversation_turn_retry_delivery(
         created_at: request.now.clone(),
         session_id: Some(request.session_id.clone()),
         turn_id: Some(request.turn_id.clone()),
-        context_snapshot: Some(conversation_runtime::snapshot_for_prompt(
-            &prompt,
-            resolved.context_window_tokens,
-            store
-                .session_usage(request.node_id, &request.session_id)
-                .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
-            &request.now,
-        )),
+        context_snapshot: Some(
+            prepared_prompt.snapshot(
+                resolved.context_window_tokens,
+                store
+                    .session_usage(request.node_id, &request.session_id)
+                    .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
+                &request.now,
+            ),
+        ),
     };
     let mut scheduler = state
         .scheduler
@@ -1390,12 +1395,16 @@ fn delivery_regeneration_start(
         .agent_override(request.node_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     let rules = compose_effective_agent_rules(request.node_id, override_markdown);
-    let prompt = conversation_runtime::build_delivery_regeneration_prompt(
+    let dependency_nodes =
+        dependency_context::load(&store, request.node_id).map_err(ApiError::CheckFailed)?;
+    let prepared_prompt = conversation_runtime::build_delivery_regeneration_prompt(
         &node,
         &messages,
         &attachments,
         &rules.effective_markdown,
+        &dependency_nodes,
     );
+    let prompt = prepared_prompt.prompt.clone();
     let generation_id = request.generation_id.clone();
     let run_request = sion_agent::RunRequest {
         project_id: request.project_id.clone(),
@@ -1408,14 +1417,15 @@ fn delivery_regeneration_start(
         created_at: request.now.clone(),
         session_id: Some(request.session_id.clone()),
         turn_id: None,
-        context_snapshot: Some(conversation_runtime::snapshot_for_prompt(
-            &prompt,
-            resolved.context_window_tokens,
-            store
-                .session_usage(request.node_id, &request.session_id)
-                .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
-            &request.now,
-        )),
+        context_snapshot: Some(
+            prepared_prompt.snapshot(
+                resolved.context_window_tokens,
+                store
+                    .session_usage(request.node_id, &request.session_id)
+                    .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
+                &request.now,
+            ),
+        ),
     };
     let mut scheduler = state
         .scheduler
@@ -3095,16 +3105,13 @@ pub fn run() {
             // Windows/Linux never emit Reopen; their close button still quits.
             #[cfg(target_os = "macos")]
             if let RunEvent::Reopen {
-                has_visible_windows,
+                has_visible_windows: false,
                 ..
             } = event
+                && let Some(window) = app.get_webview_window("main")
             {
-                if !has_visible_windows {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
+                let _ = window.show();
+                let _ = window.set_focus();
             }
             #[cfg(not(target_os = "macos"))]
             {

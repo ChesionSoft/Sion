@@ -193,28 +193,18 @@ pub fn build_agent_prompt(parts: ConversationParts<'_>) -> String {
     prompt_from_sections(&prompt_sections(parts))
 }
 
-pub fn snapshot_for_prompt(
-    prompt: &str,
-    context_window_tokens: u64,
-    cumulative_usage: CumulativeTokenUsage,
-    calculated_at: &str,
-) -> ConversationContextSnapshot {
-    let estimate = estimate_context(prompt, context_window_tokens);
-    ConversationContextSnapshot {
-        estimated_input_tokens: estimate.estimated_input_tokens,
-        context_window_tokens: estimate.context_window_tokens,
-        ratio: estimate.ratio,
-        status: estimate.status,
+fn prepared_prompt_from_sections(sections: PromptSections) -> PreparedPrompt {
+    let prompt = prompt_from_sections(&sections);
+    PreparedPrompt {
+        prompt,
         breakdown: ContextUsageBreakdown {
-            protocol_tokens: estimate.estimated_input_tokens,
-            rules_tokens: 0,
-            dependency_node_tokens: 0,
-            node_markdown_tokens: 0,
-            conversation_tokens: 0,
-            attachment_tokens: 0,
+            protocol_tokens: estimate_input_tokens(&sections.protocol),
+            rules_tokens: estimate_input_tokens(&sections.rules),
+            dependency_node_tokens: estimate_input_tokens(&sections.dependency_nodes),
+            node_markdown_tokens: estimate_input_tokens(&sections.node_markdown),
+            conversation_tokens: estimate_input_tokens(&sections.transcript),
+            attachment_tokens: estimate_input_tokens(&sections.attachments),
         },
-        cumulative_usage,
-        calculated_at: calculated_at.to_string(),
     }
 }
 
@@ -224,15 +214,21 @@ pub fn build_delivery_retry_prompt(
     messages: &[ChatMessage],
     assistant_message: &ChatMessage,
     rules: &str,
-) -> String {
-    format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。\n\n此前助手回复如下：\n{}\n\n请仅基于最新保存的交付稿重新判断，在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{{\"mode\":\"unchanged\"}}\n```\n- 分节补丁：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容\"}}]}}\n```\n不要使用整篇 rewrite。\n\n# 本节点规则\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+    dependency_nodes: &[DependencyNodeContext],
+) -> PreparedPrompt {
+    let protocol = format!(
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。\n\n{DEPENDENCY_PROTOCOL}\n\n此前助手回复如下：\n{}\n\n请仅基于最新保存的当前交付稿重新判断，在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{{\"mode\":\"unchanged\"}}\n```\n- 分节补丁：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容\"}}]}}\n```\n不要使用整篇 rewrite。",
         assistant_message.content,
-        rules,
-        node.id.as_str(),
-        node.markdown,
-        full_transcript(messages, "")
-    )
+    );
+    prepared_prompt_from_sections(PromptSections {
+        protocol,
+        rules: rules.to_string(),
+        dependency_nodes: dependency_context::format(dependency_nodes),
+        attachments: String::new(),
+        node_label: node.id.as_str().to_string(),
+        node_markdown: node.markdown.clone(),
+        transcript: full_transcript(messages, ""),
+    })
 }
 
 #[allow(dead_code)]
@@ -241,15 +237,20 @@ pub fn build_delivery_regeneration_prompt(
     messages: &[ChatMessage],
     attachments: &[SelectedFileContext],
     effective_rules: &str,
-) -> String {
-    format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。请基于当前节点、选定文件和会话，重新生成本节点的完整交付稿。\n\n输出完整 Markdown，包含本节点所有必填二级标题。不要输出 delivery 交付块，不要在前后添加解释说明。\n\n# 本节点规则\n{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
-        effective_rules,
-        attachment_block(attachments),
-        node.id.as_str(),
-        node.markdown,
-        full_transcript(messages, "")
-    )
+    dependency_nodes: &[DependencyNodeContext],
+) -> PreparedPrompt {
+    let protocol = format!(
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。请基于当前节点、只读依赖节点交付稿、选定文件和会话，重新生成本节点的完整交付稿。\n\n{DEPENDENCY_PROTOCOL}\n\n输出完整 Markdown，包含本节点所有必填二级标题。不要输出 delivery 交付块，不要在前后添加解释说明。"
+    );
+    prepared_prompt_from_sections(PromptSections {
+        protocol,
+        rules: effective_rules.to_string(),
+        dependency_nodes: dependency_context::format(dependency_nodes),
+        attachments: attachment_block(attachments),
+        node_label: node.id.as_str().to_string(),
+        node_markdown: node.markdown.clone(),
+        transcript: full_transcript(messages, ""),
+    })
 }
 
 pub fn prepare_from_parts(
@@ -267,17 +268,7 @@ pub fn prepare_from_parts(
         .collect();
     let messages = parts.messages;
     let sections = prompt_sections(parts);
-    let prepared_prompt = PreparedPrompt {
-        prompt: prompt_from_sections(&sections),
-        breakdown: ContextUsageBreakdown {
-            protocol_tokens: estimate_input_tokens(&sections.protocol),
-            rules_tokens: estimate_input_tokens(&sections.rules),
-            dependency_node_tokens: estimate_input_tokens(&sections.dependency_nodes),
-            node_markdown_tokens: estimate_input_tokens(&sections.node_markdown),
-            conversation_tokens: estimate_input_tokens(&sections.transcript),
-            attachment_tokens: estimate_input_tokens(&sections.attachments),
-        },
-    };
+    let prepared_prompt = prepared_prompt_from_sections(sections);
     let snapshot = prepared_prompt.snapshot(
         context_window_tokens,
         aggregate_message_usage(messages),
@@ -530,13 +521,32 @@ mod tests {
             original_name: "brief.md".into(),
             text: "历史附件正文".into(),
         }];
-        let retry = build_delivery_retry_prompt(&node, &[], &assistant, "当前自定义规则");
-        assert!(retry.contains("此前回复"));
-        assert!(retry.contains(r#"{"mode":"unchanged"}"#));
-        let regen = build_delivery_regeneration_prompt(&node, &[], &attachments, "当前自定义规则");
-        assert!(regen.contains("历史附件正文"));
-        assert!(regen.contains("当前自定义规则"));
-        assert!(regen.contains("输出完整 Markdown"));
-        assert!(!regen.contains("```delivery"));
+        let dependencies = vec![crate::dependency_context::DependencyNodeContext {
+            id: WorkflowNodeId::BasicInfo,
+            title: "项目基本信息",
+            status: NodeStatus::Confirmed,
+            revision: 9,
+            markdown: "# 项目基本信息\n\n## 基础信息表\n重试与重生成依赖哨兵".into(),
+        }];
+        let retry =
+            build_delivery_retry_prompt(&node, &[], &assistant, "当前自定义规则", &dependencies);
+        assert!(retry.prompt.contains("此前回复"));
+        assert!(retry.prompt.contains("重试与重生成依赖哨兵"));
+        assert!(retry.prompt.contains(r#"{"mode":"unchanged"}"#));
+        assert!(retry.breakdown.dependency_node_tokens > 0);
+
+        let regen = build_delivery_regeneration_prompt(
+            &node,
+            &[],
+            &attachments,
+            "当前自定义规则",
+            &dependencies,
+        );
+        assert!(regen.prompt.contains("历史附件正文"));
+        assert!(regen.prompt.contains("当前自定义规则"));
+        assert!(regen.prompt.contains("重试与重生成依赖哨兵"));
+        assert!(regen.prompt.contains("输出完整 Markdown"));
+        assert!(!regen.prompt.contains("```delivery"));
+        assert!(regen.breakdown.dependency_node_tokens > 0);
     }
 }
