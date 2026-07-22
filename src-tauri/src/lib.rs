@@ -3382,6 +3382,7 @@ mod tests {
         let prompt =
             conversation_runtime::build_agent_prompt(conversation_runtime::ConversationParts {
                 node: &node,
+                dependency_nodes: &[],
                 messages: &[],
                 project_override: Some("只写确认事实"),
                 attachments: &[conversation_runtime::SelectedFileContext {
@@ -3516,6 +3517,55 @@ mod tests {
         );
         assert!(prepared.snapshot.estimated_input_tokens > 8);
         assert!(!largest_context_section(&prepared.snapshot).is_empty());
+        assert_eq!(
+            fixture
+                .store
+                .messages(WorkflowNodeId::Goals, &fixture.session.id)
+                .unwrap(),
+            before_messages
+        );
+        assert_eq!(
+            fixture
+                .store
+                .turns(WorkflowNodeId::Goals, &fixture.session.id)
+                .unwrap(),
+            before_turns
+        );
+        assert_eq!(fixture.store.list_runs().unwrap(), before_runs);
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn dependency_read_failure_does_not_persist_conversation_state() {
+        let fixture = send_fixture(128_000);
+        let before_messages = fixture
+            .store
+            .messages(WorkflowNodeId::Goals, &fixture.session.id)
+            .unwrap();
+        let before_turns = fixture
+            .store
+            .turns(WorkflowNodeId::Goals, &fixture.session.id)
+            .unwrap();
+        let before_runs = fixture.store.list_runs().unwrap();
+        std::fs::remove_file(
+            fixture
+                .root
+                .join("projects/project-1/nodes/basic-info.json"),
+        )
+        .unwrap();
+
+        let error = prepare_agent_send(
+            &fixture.provider_root,
+            &fixture.store,
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            "继续",
+            &[],
+            "now",
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "依赖节点“项目基本信息”交付稿读取失败");
         assert_eq!(
             fixture
                 .store

@@ -9,7 +9,11 @@ use sion_core::{
 };
 use sion_storage::ProjectStore;
 
+use crate::dependency_context::{self, DependencyNodeContext};
+
 const PROTOCOL: &str = "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。不要输出隐藏思维链。\n\n回复正文先给出可见说明，然后在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{\"mode\":\"unchanged\"}\n```\n- 分节补丁：```delivery\n{\"mode\":\"patch\",\"sections\":[{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}]}\n```\n常规对话默认使用 unchanged；只有需要改动交付稿时才用 patch。不要使用整篇 rewrite。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。";
+
+const DEPENDENCY_PROTOCOL: &str = "“只读依赖节点交付稿”仅用于理解背景、保持一致性和发现冲突。只有 status=confirmed 的依赖内容可作为已确认事实，其他状态只作参考。不得为依赖节点生成补丁；delivery 只能修改“当前可写节点”的允许章节。发现依赖稿与当前稿冲突时，在可见回复中指出冲突，不得静默改写上游结论。";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +51,7 @@ pub struct SelectedFileContext {
 
 pub struct ConversationParts<'a> {
     pub node: &'a WorkflowNode,
+    pub dependency_nodes: &'a [DependencyNodeContext],
     pub messages: &'a [ChatMessage],
     pub project_override: Option<&'a str>,
     pub attachments: &'a [SelectedFileContext],
@@ -63,10 +68,40 @@ pub struct PreparedConversation {
 struct PromptSections {
     protocol: String,
     rules: String,
+    dependency_nodes: String,
     attachments: String,
     node_label: String,
     node_markdown: String,
     transcript: String,
+}
+
+/// The assembled prompt and its per-section token breakdown. All three model
+/// prompt paths (normal conversation, delivery retry, full regeneration) build
+/// one of these so they share identical telemetry and snapshot derivation.
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedPrompt {
+    pub(crate) prompt: String,
+    pub(crate) breakdown: ContextUsageBreakdown,
+}
+
+impl PreparedPrompt {
+    pub(crate) fn snapshot(
+        &self,
+        context_window_tokens: u64,
+        cumulative_usage: CumulativeTokenUsage,
+        calculated_at: &str,
+    ) -> ConversationContextSnapshot {
+        let estimate = estimate_context(&self.prompt, context_window_tokens);
+        ConversationContextSnapshot {
+            estimated_input_tokens: estimate.estimated_input_tokens,
+            context_window_tokens: estimate.context_window_tokens,
+            ratio: estimate.ratio,
+            status: estimate.status,
+            breakdown: self.breakdown.clone(),
+            cumulative_usage,
+            calculated_at: calculated_at.to_string(),
+        }
+    }
 }
 
 pub fn load_selected_files(
@@ -130,8 +165,9 @@ fn prompt_sections(parts: ConversationParts<'_>) -> PromptSections {
         parts.project_override.map(|rule| rule.to_string()),
     );
     PromptSections {
-        protocol: PROTOCOL.to_string(),
+        protocol: format!("{PROTOCOL}\n\n{DEPENDENCY_PROTOCOL}"),
         rules: effective_rules.effective_markdown,
+        dependency_nodes: dependency_context::format(parts.dependency_nodes),
         attachments: attachment_block(parts.attachments),
         node_label: parts.node.id.as_str().to_string(),
         node_markdown: parts.node.markdown.clone(),
@@ -141,9 +177,10 @@ fn prompt_sections(parts: ConversationParts<'_>) -> PromptSections {
 
 fn prompt_from_sections(sections: &PromptSections) -> String {
     format!(
-        "{}\n\n# 本节点规则\n{}\n\n# 选定文件\n{}\n\n# 当前节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
+        "{}\n\n# 本节点规则\n{}\n\n# 只读依赖节点交付稿\n{}\n\n# 选定文件\n{}\n\n# 当前可写节点\n{}\n\n# 当前 Markdown\n{}\n\n# 会话\n{}",
         sections.protocol,
         sections.rules,
+        sections.dependency_nodes,
         sections.attachments,
         sections.node_label,
         sections.node_markdown,
@@ -230,26 +267,24 @@ pub fn prepare_from_parts(
         .collect();
     let messages = parts.messages;
     let sections = prompt_sections(parts);
-    let prompt = prompt_from_sections(&sections);
-    let estimate = estimate_context(&prompt, context_window_tokens);
-    let snapshot = ConversationContextSnapshot {
-        estimated_input_tokens: estimate.estimated_input_tokens,
-        context_window_tokens: estimate.context_window_tokens,
-        ratio: estimate.ratio,
-        status: estimate.status,
+    let prepared_prompt = PreparedPrompt {
+        prompt: prompt_from_sections(&sections),
         breakdown: ContextUsageBreakdown {
             protocol_tokens: estimate_input_tokens(&sections.protocol),
             rules_tokens: estimate_input_tokens(&sections.rules),
-            dependency_node_tokens: 0,
+            dependency_node_tokens: estimate_input_tokens(&sections.dependency_nodes),
             node_markdown_tokens: estimate_input_tokens(&sections.node_markdown),
             conversation_tokens: estimate_input_tokens(&sections.transcript),
             attachment_tokens: estimate_input_tokens(&sections.attachments),
         },
-        cumulative_usage: aggregate_message_usage(messages),
-        calculated_at: calculated_at.to_string(),
     };
+    let snapshot = prepared_prompt.snapshot(
+        context_window_tokens,
+        aggregate_message_usage(messages),
+        calculated_at,
+    );
     PreparedConversation {
-        prompt,
+        prompt: prepared_prompt.prompt,
         attachments,
         snapshot,
     }
@@ -283,9 +318,11 @@ pub fn prepare_conversation(
         .agent_override(node_id)
         .map_err(|error| error.to_string())?;
     let attachments = load_selected_files(store, file_ids)?;
+    let dependency_nodes = dependency_context::load(store, node_id)?;
     let mut prepared = prepare_from_parts(
         ConversationParts {
             node: &node,
+            dependency_nodes: &dependency_nodes,
             messages: &messages,
             project_override: project_override.as_deref(),
             attachments: &attachments,
@@ -326,6 +363,7 @@ mod tests {
         let prepared = prepare_from_parts(
             ConversationParts {
                 node: &node,
+                dependency_nodes: &[],
                 messages: &[],
                 project_override: None,
                 attachments: &attachments,
@@ -380,6 +418,7 @@ mod tests {
         let prepared = prepare_from_parts(
             ConversationParts {
                 node: &node,
+                dependency_nodes: &[],
                 messages: &messages,
                 project_override: None,
                 attachments: &[],
@@ -412,6 +451,7 @@ mod tests {
         };
         let prompt = build_agent_prompt(ConversationParts {
             node: &node,
+            dependency_nodes: &[],
             messages: &[],
             project_override: None,
             attachments: &[],
@@ -421,6 +461,45 @@ mod tests {
         assert!(prompt.contains(r#"{"mode":"patch","sections"#));
         assert!(prompt.contains("不要输出隐藏思维链"));
         assert!(!prompt.contains("每轮必须修改"));
+    }
+
+    #[test]
+    fn conversation_prompt_separates_read_only_dependencies_from_current_markdown() {
+        let node = WorkflowNode {
+            id: WorkflowNodeId::PageInteraction,
+            status: NodeStatus::Draft,
+            markdown: "# 页面与交互设计\n\n## 页面清单\n当前稿哨兵".into(),
+            revision: 4,
+            updated_at: "now".into(),
+        };
+        let dependencies = vec![crate::dependency_context::DependencyNodeContext {
+            id: WorkflowNodeId::RolesPermissions,
+            title: "用户角色与权限",
+            status: NodeStatus::Draft,
+            revision: 3,
+            markdown: "# 用户角色与权限\n\n## 角色清单\n依赖稿哨兵".into(),
+        }];
+        let prepared = prepare_from_parts(
+            ConversationParts {
+                node: &node,
+                dependency_nodes: &dependencies,
+                messages: &[],
+                project_override: None,
+                attachments: &[],
+                draft: "检查页面",
+            },
+            128_000,
+            "now",
+        );
+        assert!(prepared.prompt.contains("# 只读依赖节点交付稿"));
+        assert!(prepared.prompt.contains("依赖稿哨兵"));
+        assert!(prepared.prompt.contains("# 当前可写节点"));
+        assert!(prepared.prompt.contains("当前稿哨兵"));
+        assert!(prepared.snapshot.breakdown.dependency_node_tokens > 0);
+        assert_eq!(
+            prepared.snapshot.estimated_input_tokens,
+            estimate_input_tokens(&prepared.prompt)
+        );
     }
 
     #[test]
