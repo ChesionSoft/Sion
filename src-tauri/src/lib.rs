@@ -33,6 +33,7 @@ use tauri_plugin_dialog::DialogExt;
 use tokio_util::sync::CancellationToken;
 
 mod conversation_runtime;
+mod dependency_context;
 mod turn_runtime;
 use conversation_runtime::{EffectiveAgentRules, compose_effective_agent_rules};
 
