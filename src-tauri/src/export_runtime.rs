@@ -277,10 +277,7 @@ fn resolve_active_export_run(
         run_id: run.id,
         status: run.status,
         public_summary: run.summary,
-        updated_at: run
-            .finished_at
-            .or(run.started_at)
-            .unwrap_or(run.created_at),
+        updated_at: run.finished_at.or(run.started_at).unwrap_or(run.created_at),
     })
 }
 
@@ -762,7 +759,9 @@ fn io_error(message: impl Into<String>) -> ExportCommandError {
     }
 }
 
-fn require_cas_saved(result: Result<ExportCasResult, StorageError>) -> Result<(), ExportCommandError> {
+fn require_cas_saved(
+    result: Result<ExportCasResult, StorageError>,
+) -> Result<(), ExportCommandError> {
     match result {
         Ok(ExportCasResult::Saved(_)) => Ok(()),
         Ok(ExportCasResult::Conflict {
@@ -1139,7 +1138,15 @@ fn spawn_export_model_run(
             // Always stamp finish with wall-clock time so long model runs are
             // not recorded with the start-time `now` snapshot.
             let finished_at = super::utc_now();
-            finish_export_run(app, store, &project_id, &run_id, status, summary, &finished_at);
+            finish_export_run(
+                app,
+                store,
+                &project_id,
+                &run_id,
+                status,
+                summary,
+                &finished_at,
+            );
         };
         let root = match sion_root(&app) {
             Ok(root) => root,
