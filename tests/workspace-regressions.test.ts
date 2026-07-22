@@ -531,14 +531,16 @@ test("export center advertises only implemented local capabilities", async () =>
 });
 
 test("dependency delivery tokens appear in context and run details", async () => {
-  const [types, indicator, dialog] = await Promise.all([
+  const [types, indicator, dialog, app] = await Promise.all([
     readFile("src/types.ts", "utf8"),
     readFile("src/components/workspace/ContextUsageIndicator.tsx", "utf8"),
     readFile("src/components/workspace/RunDetailDialog.tsx", "utf8"),
+    readFile("src/App.tsx", "utf8"),
   ]);
   assert.match(types, /dependencyNodeTokens: number/);
   assert.match(indicator, /依赖节点交付稿/);
   assert.match(indicator, /snapshot\.breakdown\.dependencyNodeTokens/);
   assert.match(dialog, /依赖节点交付稿/);
   assert.match(dialog, /breakdown\.dependencyNodeTokens/);
+  assert.match(app, /dependency_nodes:\s*"依赖节点交付稿"/);
 });

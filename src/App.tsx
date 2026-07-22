@@ -68,6 +68,7 @@ function isMacOSDesktop(): boolean {
 const contextSectionLabel: Record<string, string> = {
   protocol: "协议提示",
   rules: "Agent 规则",
+  dependency_nodes: "依赖节点交付稿",
   node_markdown: "节点文稿",
   conversation: "会话历史",
   attachment: "本轮资料",
