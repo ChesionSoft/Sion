@@ -265,6 +265,17 @@ pub fn workflow_definition(id: WorkflowNodeId) -> &'static WorkflowNodeDefinitio
         .expect("workflow is complete")
 }
 
+/// Returns the direct authorized dependency IDs for `id`, sorted by
+/// `WORKFLOW.order` rather than their literal order inside `depends_on`.
+/// Transitive dependencies are intentionally not expanded.
+pub fn readable_dependency_ids(id: WorkflowNodeId) -> Vec<WorkflowNodeId> {
+    let allowed = workflow_definition(id).depends_on;
+    WORKFLOW
+        .iter()
+        .filter_map(|definition| allowed.contains(&definition.id).then_some(definition.id))
+        .collect()
+}
+
 /// Product rule assets are embedded in the Rust binary. `include_str!` makes
 /// an accidentally missing asset a build failure for both development and
 /// packaged desktop builds instead of a silent runtime fallback.
@@ -970,6 +981,85 @@ mod conversation_telemetry_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readable_dependencies_are_direct_and_sorted_by_workflow_order() {
+        assert_eq!(readable_dependency_ids(WorkflowNodeId::BasicInfo), vec![]);
+        assert_eq!(
+            readable_dependency_ids(WorkflowNodeId::PageInteraction),
+            vec![
+                WorkflowNodeId::RolesPermissions,
+                WorkflowNodeId::FeatureDesign,
+            ]
+        );
+        assert_eq!(
+            readable_dependency_ids(WorkflowNodeId::DataStructure),
+            vec![
+                WorkflowNodeId::FeatureDesign,
+                WorkflowNodeId::PageInteraction,
+            ]
+        );
+        assert!(
+            !readable_dependency_ids(WorkflowNodeId::DataStructure)
+                .contains(&WorkflowNodeId::RolesPermissions)
+        );
+    }
+
+    fn declared_dependency_titles(rule: &str) -> Vec<&str> {
+        rule.split("## 输入依赖")
+            .nth(1)
+            .expect("agent rule has an input dependency section")
+            .split("\n## ")
+            .next()
+            .unwrap()
+            .lines()
+            .take_while(|line| !line.starts_with("### "))
+            .filter_map(|line| line.trim().strip_prefix("- "))
+            .collect()
+    }
+
+    #[test]
+    fn agent_rules_match_runtime_dependencies_and_describe_read_only_access() {
+        for definition in WORKFLOW {
+            let rule = agent_rule(definition.id);
+            let expected = readable_dependency_ids(definition.id)
+                .into_iter()
+                .map(|id| workflow_definition(id).title)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                declared_dependency_titles(rule),
+                expected,
+                "{}",
+                definition.title
+            );
+            assert!(rule.contains("只读"), "{}", definition.title);
+            assert!(
+                rule.contains("非 confirmed 状态只作参考"),
+                "{}",
+                definition.title
+            );
+            assert!(rule.contains("不得修改依赖节点"), "{}", definition.title);
+        }
+    }
+
+    #[test]
+    fn readable_dependency_does_not_expand_delivery_write_scope() {
+        let error = apply_agent_delivery(
+            r##"```delivery
+{"mode":"patch","sections":[{"title":"基础信息表","content":"越权内容"}]}
+```"##,
+            WorkflowNodeId::Goals,
+            "# 需求背景与建设目标\n\n## 需求背景\n\n## 建设目标\n\n## 范围边界\n",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            DeliveryError::UnsupportedPatchSection {
+                node: WorkflowNodeId::Goals,
+                section: "基础信息表".to_string(),
+            }
+        );
+    }
 
     #[test]
     fn legacy_session_without_model_selection_deserializes_empty() {
