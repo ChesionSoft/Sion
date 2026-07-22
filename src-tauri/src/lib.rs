@@ -327,10 +327,10 @@ fn list_projects_from_settings(root: &Path) -> Result<ProjectDiscovery, ApiError
         .map_err(|error| ApiError::CheckFailed(error.to_string()))
 }
 
-/// On startup, mark every persisted Queued or Running export run as Interrupted
-/// and clear each project's active run id, so an unclean shutdown never leaves a
-/// stale in-flight run. Called once before any run can be in flight.
-fn recover_all_export_runs(app: &tauri::AppHandle) {
+/// On startup, mark every persisted Queued or Running run as Interrupted and
+/// clear each project's active export run id, so an unclean shutdown never
+/// leaves a stale in-flight run. Called once before any run can be in flight.
+fn recover_interrupted_runs(app: &tauri::AppHandle) {
     let Ok(root) = sion_root(app) else {
         return;
     };
@@ -341,6 +341,35 @@ fn recover_all_export_runs(app: &tauri::AppHandle) {
     for project in discovery.projects {
         let store = ProjectStore::at(&project.root_path);
         let _ = export_runtime::recover_interrupted_export_run(&store, &now);
+        recover_interrupted_conversation_runs(&store, &now);
+    }
+}
+
+/// Marks every persisted Queued or Running conversation run (conversation
+/// turns, delivery retries, and delivery regenerations) as Interrupted. The
+/// in-memory scheduler is empty after a restart, so any such run is stale;
+/// leaving it Running makes the frontend offer a stop button whose cancel then
+/// fails with "agent run was not found" and leaves the UI stuck on a model that
+/// is no longer running.
+fn recover_interrupted_conversation_runs(store: &ProjectStore, now: &str) {
+    let Ok(runs) = store.list_runs() else {
+        return;
+    };
+    for run in runs {
+        if matches!(
+            run.kind,
+            sion_agent::AgentRunKind::Conversation
+                | sion_agent::AgentRunKind::DeliveryRetry
+                | sion_agent::AgentRunKind::DeliveryRegeneration
+        ) && matches!(
+            run.status,
+            sion_agent::AgentRunStatus::Queued | sion_agent::AgentRunStatus::Running
+        ) {
+            let mut updated = run.clone();
+            updated.status = sion_agent::AgentRunStatus::Interrupted;
+            updated.finished_at = Some(now.to_string());
+            let _ = store.save_run(&updated);
+        }
     }
 }
 
@@ -1599,6 +1628,59 @@ fn validate_run_project(run: &sion_agent::AgentRun, project_id: &str) -> Result<
     }
 }
 
+/// Dismisses a stale agent run that is not live in this session's scheduler.
+/// If the persisted run is still Queued or Running, mark it Cancelled; if it is
+/// already terminal, leave it untouched. Returns the resulting run and whether
+/// it was transitioned, so the caller can emit the right events. Used when
+/// `agent_run_cancel` cannot find the run in memory (e.g. after a restart), so
+/// cancelling never hard-fails on a run that is no longer actually running.
+fn dismiss_stale_agent_run_in_store(
+    store: &ProjectStore,
+    project_id: &str,
+    run_id: &str,
+    now: &str,
+) -> Result<(sion_agent::AgentRun, bool), ApiError> {
+    let persisted = store
+        .run(run_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    validate_run_project(&persisted, project_id)?;
+    if matches!(
+        persisted.status,
+        sion_agent::AgentRunStatus::Queued | sion_agent::AgentRunStatus::Running
+    ) {
+        let cancelled = sion_agent::AgentRun {
+            status: sion_agent::AgentRunStatus::Cancelled,
+            finished_at: Some(now.to_string()),
+            summary: Some("用户取消".to_string()),
+            ..persisted
+        };
+        store
+            .save_run(&cancelled)
+            .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+        Ok((cancelled, true))
+    } else {
+        Ok((persisted, false))
+    }
+}
+
+fn dismiss_stale_agent_run(
+    app: &tauri::AppHandle,
+    request: &AgentRunCancelRequest,
+) -> Result<sion_agent::AgentRun, ApiError> {
+    let project_root = resolve_registered_project_root(app, &request.project_id)?;
+    let store = ProjectStore::at(&project_root);
+    let (run, changed) = dismiss_stale_agent_run_in_store(
+        &store,
+        &request.project_id,
+        &request.run_id,
+        &request.now,
+    )?;
+    if changed {
+        let _ = app.emit("agent-run-finished", AgentFinishedEvent { run: run.clone() });
+    }
+    Ok(run)
+}
+
 #[tauri::command]
 fn agent_run_cancel(
     request: AgentRunCancelRequest,
@@ -1606,13 +1688,37 @@ fn agent_run_cancel(
     state: tauri::State<'_, Arc<AgentState>>,
 ) -> Result<VersionedResponse<sion_agent::AgentRun>, ApiError> {
     assert_api_version(&request.version)?;
-    let run = state
+    let live_run = state
         .scheduler
         .lock()
         .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?
         .get(&request.run_id)
-        .cloned()
-        .ok_or_else(|| ApiError::CheckFailed("agent run was not found".to_string()))?;
+        .cloned();
+    let run = match live_run {
+        Some(run) if matches!(
+            run.status,
+            sion_agent::AgentRunStatus::Queued | sion_agent::AgentRunStatus::Running
+        ) => run,
+        Some(already_finished) => {
+            // The run finished this session but the frontend still believes it
+            // is in flight; return the terminal record so the caller can refresh.
+            validate_run_project(&already_finished, &request.project_id)?;
+            return Ok(VersionedResponse {
+                api_version: API_VERSION,
+                payload: already_finished,
+            });
+        }
+        None => {
+            // Not in the in-memory scheduler (e.g. after a restart). Dismiss the
+            // stale persisted record instead of erroring, so the UI is never
+            // stuck on a run that can no longer be stopped.
+            let dismissed = dismiss_stale_agent_run(&app, &request)?;
+            return Ok(VersionedResponse {
+                api_version: API_VERSION,
+                payload: dismissed,
+            });
+        }
+    };
     validate_run_project(&run, &request.project_id)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let job = state
@@ -3071,7 +3177,7 @@ pub fn run() {
         .manage(Arc::new(AgentState::default()))
         .manage(SettingsState::default())
         .setup(|app| {
-            recover_all_export_runs(app.handle());
+            recover_interrupted_runs(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3403,6 +3509,114 @@ mod tests {
         assert!(validate_run_project(&run, "project-a").is_ok());
         let error = validate_run_project(&run, "project-b").unwrap_err();
         assert!(error.to_string().contains("does not belong"));
+    }
+
+    fn make_run(
+        id: &str,
+        status: sion_agent::AgentRunStatus,
+        kind: sion_agent::AgentRunKind,
+    ) -> sion_agent::AgentRun {
+        sion_agent::AgentRun {
+            id: id.to_string(),
+            project_id: "project-1".to_string(),
+            node_id: WorkflowNodeId::Goals,
+            status,
+            created_at: "now".to_string(),
+            started_at: Some("now".to_string()),
+            finished_at: None,
+            summary: None,
+            provider_id: None,
+            model: None,
+            reasoning_effort: None,
+            file_ids: Vec::new(),
+            kind,
+            session_id: None,
+            turn_id: None,
+            context_snapshot: None,
+            usage: None,
+            duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn conversation_run_recovered_as_interrupted_on_startup() {
+        let fixture = send_fixture(128_000);
+        let stale = make_run(
+            "run-stale",
+            sion_agent::AgentRunStatus::Running,
+            sion_agent::AgentRunKind::Conversation,
+        );
+        let done = make_run(
+            "run-done",
+            sion_agent::AgentRunStatus::Completed,
+            sion_agent::AgentRunKind::Conversation,
+        );
+        let export_run = make_run(
+            "run-export",
+            sion_agent::AgentRunStatus::Running,
+            sion_agent::AgentRunKind::ExportBlueprint,
+        );
+        fixture.store.save_run(&stale).unwrap();
+        fixture.store.save_run(&done).unwrap();
+        fixture.store.save_run(&export_run).unwrap();
+
+        recover_interrupted_conversation_runs(&fixture.store, "2026-07-22T00:00:00Z");
+
+        assert_eq!(
+            fixture.store.run(&stale.id).unwrap().status,
+            sion_agent::AgentRunStatus::Interrupted
+        );
+        assert_eq!(
+            fixture.store.run(&done.id).unwrap().status,
+            sion_agent::AgentRunStatus::Completed
+        );
+        // Export runs are owned by export recovery, not conversation recovery.
+        assert_eq!(
+            fixture.store.run(&export_run.id).unwrap().status,
+            sion_agent::AgentRunStatus::Running
+        );
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn cancelling_stale_run_not_in_scheduler_dismisses_it() {
+        let fixture = send_fixture(128_000);
+        let stale = make_run(
+            "run-stale",
+            sion_agent::AgentRunStatus::Running,
+            sion_agent::AgentRunKind::Conversation,
+        );
+        fixture.store.save_run(&stale).unwrap();
+
+        let (dismissed, changed) =
+            dismiss_stale_agent_run_in_store(&fixture.store, "project-1", &stale.id, "now")
+                .unwrap();
+        assert!(changed);
+        assert_eq!(dismissed.status, sion_agent::AgentRunStatus::Cancelled);
+        assert_eq!(dismissed.summary.as_deref(), Some("用户取消"));
+        assert_eq!(
+            fixture.store.run(&stale.id).unwrap().status,
+            sion_agent::AgentRunStatus::Cancelled
+        );
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn cancelling_already_finished_run_is_a_noop() {
+        let fixture = send_fixture(128_000);
+        let done = make_run(
+            "run-done",
+            sion_agent::AgentRunStatus::Completed,
+            sion_agent::AgentRunKind::Conversation,
+        );
+        fixture.store.save_run(&done).unwrap();
+
+        let (dismissed, changed) =
+            dismiss_stale_agent_run_in_store(&fixture.store, "project-1", &done.id, "now")
+                .unwrap();
+        assert!(!changed);
+        assert_eq!(dismissed.status, sion_agent::AgentRunStatus::Completed);
+        std::fs::remove_dir_all(fixture.root).unwrap();
     }
 
     #[test]
