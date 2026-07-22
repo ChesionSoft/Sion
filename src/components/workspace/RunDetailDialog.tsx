@@ -130,6 +130,7 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
               <DetailField label="上下文占用" value={context ? `${Math.round(context.ratio * 100)}% · ${CONTEXT_STATUS_LABEL[context.status]}` : undefined} />
               <DetailField label="协议提示" value={context?.breakdown.protocolTokens} />
               <DetailField label="Agent 规则" value={context?.breakdown.rulesTokens} />
+              <DetailField label="依赖节点交付稿" value={context?.breakdown.dependencyNodeTokens} />
               <DetailField label="节点文稿" value={context?.breakdown.nodeMarkdownTokens} />
               <DetailField label="会话历史" value={context?.breakdown.conversationTokens} />
               <DetailField label="本轮资料" value={context?.breakdown.attachmentTokens} />

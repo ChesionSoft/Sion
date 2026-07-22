@@ -434,7 +434,11 @@ const DRAFT_PHRASE_PLACEHOLDERS: [&str; 6] = [
 fn strip_list_prefix(line: &str) -> &str {
     let mut body = line.trim();
     for _ in 0..3 {
-        if let Some(rest) = body.strip_prefix("- ").or_else(|| body.strip_prefix("* ")).or_else(|| body.strip_prefix("> ")) {
+        if let Some(rest) = body
+            .strip_prefix("- ")
+            .or_else(|| body.strip_prefix("* "))
+            .or_else(|| body.strip_prefix("> "))
+        {
             body = rest.trim_start();
             continue;
         }
@@ -467,7 +471,10 @@ fn find_draft_placeholder(markdown: &str) -> Option<(String, String)> {
 
     for phrase in DRAFT_PHRASE_PLACEHOLDERS {
         if let Some(idx) = lower.find(phrase) {
-            return Some((phrase.to_string(), context_snippet(markdown, idx, phrase.len())));
+            return Some((
+                phrase.to_string(),
+                context_snippet(markdown, idx, phrase.len()),
+            ));
         }
     }
 
@@ -513,7 +520,7 @@ fn find_draft_placeholder(markdown: &str) -> Option<(String, String)> {
     // Whole-line stubs: "TODO", "TBD.", "- TODO", "1. TBD"
     for (line_idx, line) in lower.lines().enumerate() {
         let body = strip_list_prefix(line);
-        let body = body.trim_end_matches(|c: char| matches!(c, '.' | '。' | '!' | '！'));
+        let body = body.trim_end_matches(['.', '。', '!', '！']);
         if body == "todo" || body == "tbd" {
             let original = markdown.lines().nth(line_idx).unwrap_or(line);
             return Some((body.to_string(), original.trim().to_string()));
@@ -932,10 +939,12 @@ mod tests {
         assert!(validate_draft("# PRD\n\n## 目标\n\n[TODO] 后续补充细节").is_err());
         assert!(validate_draft("# PRD\n\n## 空章节\n\n## 下一章\n\n正文").is_err());
         // H2 with only nested H3+ content is a normal PRD shape and must pass.
-        assert!(validate_draft(
-            "# PRD\n\n## 功能模块\n\n### 模块 A\n\n职责说明\n\n### 模块 B\n\n输入输出"
-        )
-        .is_ok());
+        assert!(
+            validate_draft(
+                "# PRD\n\n## 功能模块\n\n### 模块 A\n\n职责说明\n\n### 模块 B\n\n输入输出"
+            )
+            .is_ok()
+        );
         let empty_named = validate_draft("# PRD\n\n## 空章节\n\n## 下一章\n\n正文").unwrap_err();
         assert!(
             matches!(
@@ -951,18 +960,17 @@ mod tests {
     fn draft_allows_product_paths_and_domain_words_with_todo() {
         // Contract-check product copy uses /todos routes and 待办中心.
         // Only unfinished stubs should fail, not product vocabulary.
-        assert!(validate_draft(
-            "# PRD\n\n## 待办中心\n\n集中视图路由为 `/todos`，展示待复核任务。"
-        )
-        .is_ok());
-        assert!(validate_draft(
-            "# PRD\n\n## 功能\n\n系统提供 Todos 列表与归档能力。"
-        )
-        .is_ok());
-        assert!(validate_draft(
-            "# PRD\n\n## 待确认问题清单\n\n本节记录已确认的开放问题处理策略，不含未完成占位。"
-        )
-        .is_ok());
+        assert!(
+            validate_draft("# PRD\n\n## 待办中心\n\n集中视图路由为 `/todos`，展示待复核任务。")
+                .is_ok()
+        );
+        assert!(validate_draft("# PRD\n\n## 功能\n\n系统提供 Todos 列表与归档能力。").is_ok());
+        assert!(
+            validate_draft(
+                "# PRD\n\n## 待确认问题清单\n\n本节记录已确认的开放问题处理策略，不含未完成占位。"
+            )
+            .is_ok()
+        );
         // Bare "TODO" mid-sentence is product-adjacent; only stub forms fail.
         assert!(validate_draft("# PRD\n\n## 功能\n\n用户可从 Todo 入口进入待办。").is_ok());
         assert!(validate_draft("# PRD\n\n## 功能\n\nTODO: 此处未写完").is_err());

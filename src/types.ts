@@ -75,6 +75,7 @@ export type ConversationContextSnapshot = ContextEstimate & {
   breakdown: {
     protocolTokens: number;
     rulesTokens: number;
+    dependencyNodeTokens: number;
     nodeMarkdownTokens: number;
     conversationTokens: number;
     attachmentTokens: number;

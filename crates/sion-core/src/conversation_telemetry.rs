@@ -17,6 +17,8 @@ use crate::{
 pub struct ContextUsageBreakdown {
     pub protocol_tokens: u64,
     pub rules_tokens: u64,
+    #[serde(default)]
+    pub dependency_node_tokens: u64,
     pub node_markdown_tokens: u64,
     pub conversation_tokens: u64,
     pub attachment_tokens: u64,
@@ -151,4 +153,36 @@ pub fn aggregate_usages<'a>(
 
 pub fn aggregate_message_usage(messages: &[ChatMessage]) -> CumulativeTokenUsage {
     aggregate_usages(messages.iter().filter_map(|message| message.usage.as_ref()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_breakdown_defaults_dependency_tokens_to_zero() {
+        let legacy = r#"{
+            "protocolTokens":1,
+            "rulesTokens":2,
+            "nodeMarkdownTokens":3,
+            "conversationTokens":4,
+            "attachmentTokens":5
+        }"#;
+        let parsed: ContextUsageBreakdown = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.dependency_node_tokens, 0);
+    }
+
+    #[test]
+    fn dependency_tokens_serialize_with_the_camel_case_ipc_name() {
+        let value = serde_json::to_value(ContextUsageBreakdown {
+            protocol_tokens: 1,
+            rules_tokens: 2,
+            dependency_node_tokens: 6,
+            node_markdown_tokens: 3,
+            conversation_tokens: 4,
+            attachment_tokens: 5,
+        })
+        .unwrap();
+        assert_eq!(value["dependencyNodeTokens"], 6);
+    }
 }

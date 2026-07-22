@@ -26,13 +26,14 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use tauri::{Emitter, Manager};
 #[cfg(target_os = "macos")]
 use tauri::RunEvent;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tokio_util::sync::CancellationToken;
 
 mod conversation_runtime;
+mod dependency_context;
 mod turn_runtime;
 use conversation_runtime::{EffectiveAgentRules, compose_effective_agent_rules};
 
@@ -1059,6 +1060,7 @@ fn largest_context_section(snapshot: &ConversationContextSnapshot) -> String {
     [
         ("protocol", breakdown.protocol_tokens),
         ("rules", breakdown.rules_tokens),
+        ("dependency_nodes", breakdown.dependency_node_tokens),
         ("node_markdown", breakdown.node_markdown_tokens),
         ("conversation", breakdown.conversation_tokens),
         ("attachment", breakdown.attachment_tokens),
@@ -1067,6 +1069,32 @@ fn largest_context_section(snapshot: &ConversationContextSnapshot) -> String {
     .max_by_key(|(_, tokens)| *tokens)
     .map(|(section, _)| section.to_string())
     .unwrap_or_else(|| "protocol".to_string())
+}
+
+fn context_section_label(section: &str) -> &str {
+    match section {
+        "protocol" => "协议提示",
+        "rules" => "Agent 规则",
+        "dependency_nodes" => "依赖节点交付稿",
+        "node_markdown" => "节点文稿",
+        "conversation" => "会话历史",
+        "attachment" => "本轮资料",
+        _ => section,
+    }
+}
+
+fn ensure_context_is_runnable(
+    snapshot: ConversationContextSnapshot,
+) -> Result<ConversationContextSnapshot, ApiError> {
+    if snapshot.status != sion_core::ContextEstimateStatus::Blocked {
+        return Ok(snapshot);
+    }
+
+    let largest = largest_context_section(&snapshot);
+    Err(ApiError::CheckFailed(format!(
+        "上下文超出模型窗口：最大占用来自{}",
+        context_section_label(&largest)
+    )))
 }
 
 #[tauri::command]
@@ -1243,12 +1271,25 @@ fn conversation_turn_retry_delivery(
         .agent_override(request.node_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     let rules = compose_effective_agent_rules(request.node_id, override_markdown);
-    let prompt = conversation_runtime::build_delivery_retry_prompt(
+    let dependency_nodes =
+        dependency_context::load(&store, request.node_id).map_err(ApiError::CheckFailed)?;
+    let prepared_prompt = conversation_runtime::build_delivery_retry_prompt(
         &node,
         &messages,
         &assistant_message,
         &rules.effective_markdown,
+        &dependency_nodes,
     );
+    let prompt = prepared_prompt.prompt.clone();
+    let context_snapshot = ensure_context_is_runnable(
+        prepared_prompt.snapshot(
+            resolved.context_window_tokens,
+            store
+                .session_usage(request.node_id, &request.session_id)
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
+            &request.now,
+        ),
+    )?;
     let run_request = sion_agent::RunRequest {
         project_id: request.project_id.clone(),
         node_id: request.node_id,
@@ -1260,14 +1301,7 @@ fn conversation_turn_retry_delivery(
         created_at: request.now.clone(),
         session_id: Some(request.session_id.clone()),
         turn_id: Some(request.turn_id.clone()),
-        context_snapshot: Some(conversation_runtime::snapshot_for_prompt(
-            &prompt,
-            resolved.context_window_tokens,
-            store
-                .session_usage(request.node_id, &request.session_id)
-                .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
-            &request.now,
-        )),
+        context_snapshot: Some(context_snapshot),
     };
     let mut scheduler = state
         .scheduler
@@ -1388,12 +1422,25 @@ fn delivery_regeneration_start(
         .agent_override(request.node_id)
         .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     let rules = compose_effective_agent_rules(request.node_id, override_markdown);
-    let prompt = conversation_runtime::build_delivery_regeneration_prompt(
+    let dependency_nodes =
+        dependency_context::load(&store, request.node_id).map_err(ApiError::CheckFailed)?;
+    let prepared_prompt = conversation_runtime::build_delivery_regeneration_prompt(
         &node,
         &messages,
         &attachments,
         &rules.effective_markdown,
+        &dependency_nodes,
     );
+    let prompt = prepared_prompt.prompt.clone();
+    let context_snapshot = ensure_context_is_runnable(
+        prepared_prompt.snapshot(
+            resolved.context_window_tokens,
+            store
+                .session_usage(request.node_id, &request.session_id)
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
+            &request.now,
+        ),
+    )?;
     let generation_id = request.generation_id.clone();
     let run_request = sion_agent::RunRequest {
         project_id: request.project_id.clone(),
@@ -1406,14 +1453,7 @@ fn delivery_regeneration_start(
         created_at: request.now.clone(),
         session_id: Some(request.session_id.clone()),
         turn_id: None,
-        context_snapshot: Some(conversation_runtime::snapshot_for_prompt(
-            &prompt,
-            resolved.context_window_tokens,
-            store
-                .session_usage(request.node_id, &request.session_id)
-                .map_err(|error| ApiError::CheckFailed(error.to_string()))?,
-            &request.now,
-        )),
+        context_snapshot: Some(context_snapshot),
     };
     let mut scheduler = state
         .scheduler
@@ -3093,16 +3133,13 @@ pub fn run() {
             // Windows/Linux never emit Reopen; their close button still quits.
             #[cfg(target_os = "macos")]
             if let RunEvent::Reopen {
-                has_visible_windows,
+                has_visible_windows: false,
                 ..
             } = event
+                && let Some(window) = app.get_webview_window("main")
             {
-                if !has_visible_windows {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
+                let _ = window.show();
+                let _ = window.set_focus();
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -3380,6 +3417,7 @@ mod tests {
         let prompt =
             conversation_runtime::build_agent_prompt(conversation_runtime::ConversationParts {
                 node: &node,
+                dependency_nodes: &[],
                 messages: &[],
                 project_override: Some("只写确认事实"),
                 attachments: &[conversation_runtime::SelectedFileContext {
@@ -3514,6 +3552,88 @@ mod tests {
         );
         assert!(prepared.snapshot.estimated_input_tokens > 8);
         assert!(!largest_context_section(&prepared.snapshot).is_empty());
+        assert_eq!(
+            fixture
+                .store
+                .messages(WorkflowNodeId::Goals, &fixture.session.id)
+                .unwrap(),
+            before_messages
+        );
+        assert_eq!(
+            fixture
+                .store
+                .turns(WorkflowNodeId::Goals, &fixture.session.id)
+                .unwrap(),
+            before_turns
+        );
+        assert_eq!(fixture.store.list_runs().unwrap(), before_runs);
+        std::fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn specialized_model_prompt_rejects_blocked_context_before_enqueue() {
+        let prepared = conversation_runtime::PreparedPrompt {
+            prompt: "超长依赖上下文".repeat(100),
+            breakdown: sion_core::ContextUsageBreakdown {
+                protocol_tokens: 1,
+                rules_tokens: 1,
+                dependency_node_tokens: 100,
+                node_markdown_tokens: 1,
+                conversation_tokens: 1,
+                attachment_tokens: 1,
+            },
+        };
+        let snapshot = prepared.snapshot(
+            8,
+            sion_core::CumulativeTokenUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                call_count: 0,
+                source: sion_core::TokenUsageSource::Exact,
+            },
+            "now",
+        );
+        assert_eq!(snapshot.status, sion_core::ContextEstimateStatus::Blocked);
+
+        let error = ensure_context_is_runnable(snapshot).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "上下文超出模型窗口：最大占用来自依赖节点交付稿"
+        );
+    }
+
+    #[test]
+    fn dependency_read_failure_does_not_persist_conversation_state() {
+        let fixture = send_fixture(128_000);
+        let before_messages = fixture
+            .store
+            .messages(WorkflowNodeId::Goals, &fixture.session.id)
+            .unwrap();
+        let before_turns = fixture
+            .store
+            .turns(WorkflowNodeId::Goals, &fixture.session.id)
+            .unwrap();
+        let before_runs = fixture.store.list_runs().unwrap();
+        std::fs::remove_file(
+            fixture
+                .root
+                .join("projects/project-1/nodes/basic-info.json"),
+        )
+        .unwrap();
+
+        let error = prepare_agent_send(
+            &fixture.provider_root,
+            &fixture.store,
+            WorkflowNodeId::Goals,
+            &fixture.session.id,
+            "继续",
+            &[],
+            "now",
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "依赖节点“项目基本信息”交付稿读取失败");
         assert_eq!(
             fixture
                 .store
