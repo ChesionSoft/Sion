@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isCurrentGenerationEvent, reconcileGeneratedNode, reconcileSavedNode } from "../src/delivery-generation.ts";
+import {
+  appendDeliveryGenerationCandidate,
+  beginDeliveryGeneration,
+  deliveryGenerationScope,
+  isCurrentGenerationEvent,
+  receiveDeliveryGeneration,
+  reconcileGeneratedNode,
+  reconcileSavedNode,
+} from "../src/delivery-generation.ts";
 import type { DeliveryGeneration, WorkflowNode } from "../src/types.ts";
 
 const node = (markdown: string, revision: number): WorkflowNode => ({
@@ -61,6 +69,19 @@ test("only the active generation may apply a terminal event", () => {
   assert.equal(isCurrentGenerationEvent("generation-2", "generation-2"), true);
   assert.equal(isCurrentGenerationEvent("generation-2", "generation-1"), false);
   assert.equal(isCurrentGenerationEvent(null, "generation-1"), false);
+});
+
+test("generation progress remains available for its original node session", () => {
+  const scope = deliveryGenerationScope("project-1", "goals", "session-1");
+  const started = beginDeliveryGeneration({}, scope);
+  const streaming = appendDeliveryGenerationCandidate(started, scope, "draft");
+  const received = receiveDeliveryGeneration(streaming, scope, generation("running"));
+
+  assert.deepEqual(received[scope], {
+    generation: generation("running"),
+    candidate: "draft",
+    starting: false,
+  });
 });
 
 test("a completed generation cannot roll the editor back to an older revision", () => {

@@ -688,6 +688,63 @@ pub fn validate_delivery_markdown(
     Ok(markdown.to_string())
 }
 
+/// Normalizes only required section headings that mirror the embedded Agent
+/// rule template (`### 标题 [必填]`) into the canonical Markdown structure
+/// required by delivery validation. Regenerated documents are complete model
+/// outputs, so this safely bridges the presentation-only template notation
+/// without altering body text, unrelated headings, or fenced code blocks.
+pub fn normalize_regenerated_delivery_markdown(markdown: String, node: WorkflowNodeId) -> String {
+    let required_sections = workflow_definition(node).required_sections;
+    let mut normalized = String::with_capacity(markdown.len());
+    let mut in_fence = false;
+
+    for line in markdown.split_inclusive('\n') {
+        let (body, ending) = if let Some(body) = line.strip_suffix("\r\n") {
+            (body, "\r\n")
+        } else if let Some(body) = line.strip_suffix('\n') {
+            (body, "\n")
+        } else {
+            (line, "")
+        };
+        let trimmed = body.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            normalized.push_str(line);
+            continue;
+        }
+        if !in_fence {
+            let leading_len = body.len() - trimmed.len();
+            let heading_marks = trimmed
+                .chars()
+                .take_while(|character| *character == '#')
+                .count();
+            if heading_marks >= 3 && trimmed.as_bytes().get(heading_marks) == Some(&b' ') {
+                let title = trimmed[heading_marks + 1..].trim();
+                if let Some(section) = required_sections.iter().find(|section| {
+                    title == **section
+                        || title
+                            .strip_suffix("[必填]")
+                            .is_some_and(|value| value.trim_end() == **section)
+                        || title
+                            .strip_suffix("（必填）")
+                            .is_some_and(|value| value.trim_end() == **section)
+                        || title
+                            .strip_suffix("(必填)")
+                            .is_some_and(|value| value.trim_end() == **section)
+                }) {
+                    normalized.push_str(&body[..leading_len]);
+                    normalized.push_str("## ");
+                    normalized.push_str(section);
+                    normalized.push_str(ending);
+                    continue;
+                }
+            }
+        }
+        normalized.push_str(line);
+    }
+    normalized
+}
+
 fn apply_delivery_patch(
     current_markdown: &str,
     node: WorkflowNodeId,
@@ -696,18 +753,18 @@ fn apply_delivery_patch(
     if sections.is_empty() {
         return Err(DeliveryError::EmptyPatch);
     }
-    let definition = workflow_definition(node);
     let mut seen = std::collections::HashSet::new();
     let mut replacements = Vec::with_capacity(sections.len());
     let current_sections = markdown_h2_sections(current_markdown);
     for section in sections {
-        let title = section.title.trim();
-        if !definition.required_sections.contains(&title) {
+        let submitted_title = section.title.trim();
+        let title = canonical_required_section_title(submitted_title, node);
+        let Some(title) = title else {
             return Err(DeliveryError::UnsupportedPatchSection {
                 node,
-                section: title.to_string(),
+                section: submitted_title.to_string(),
             });
-        }
+        };
         if !seen.insert(title) {
             return Err(DeliveryError::DuplicatePatchSection {
                 section: title.to_string(),
@@ -738,6 +795,40 @@ fn apply_delivery_patch(
         result.replace_range(start..end, &format!("\n\n{content}\n\n"));
     }
     validate_delivery_markdown(result, node)
+}
+
+/// Resolves the presentation form used by agent rule templates, such as
+/// `### 标题 [必填]`, to the canonical required-section title. This is
+/// deliberately limited to known required sections so patch validation keeps
+/// rejecting arbitrary or misspelled section names.
+fn canonical_required_section_title(title: &str, node: WorkflowNodeId) -> Option<&'static str> {
+    let title = title.trim();
+    let heading_marks = title
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
+    let title = if heading_marks > 0 && title.as_bytes().get(heading_marks) == Some(&b' ') {
+        title[heading_marks + 1..].trim_start()
+    } else {
+        title
+    };
+
+    workflow_definition(node)
+        .required_sections
+        .iter()
+        .copied()
+        .find(|section| {
+            title == *section
+                || title
+                    .strip_suffix("[必填]")
+                    .is_some_and(|value| value.trim_end() == *section)
+                || title
+                    .strip_suffix("（必填）")
+                    .is_some_and(|value| value.trim_end() == *section)
+                || title
+                    .strip_suffix("(必填)")
+                    .is_some_and(|value| value.trim_end() == *section)
+        })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1294,6 +1385,22 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_regenerated_template_headings_before_validation() {
+        let regenerated = "# 业务流程设计\n\n### 核心业务流程 [必填]\n\n- 创建订单后进入审核。\n";
+
+        let normalized = normalize_regenerated_delivery_markdown(
+            regenerated.to_string(),
+            WorkflowNodeId::BusinessFlow,
+        );
+
+        assert_eq!(
+            normalized,
+            "# 业务流程设计\n\n## 核心业务流程\n\n- 创建订单后进入审核。\n"
+        );
+        assert!(validate_delivery_markdown(normalized, WorkflowNodeId::BusinessFlow).is_ok());
+    }
+
+    #[test]
     fn allows_markdown_code_fences_inside_delivery_json_strings() {
         let markdown = apply_agent_delivery(
             r##"```delivery
@@ -1321,6 +1428,49 @@ mod tests {
         assert!(markdown.contains("| 字段 | 内容 |"));
         assert!(markdown.contains("- 仅支持 Windows 和 macOS。"));
         assert!(!markdown.contains("- 原始边界"));
+    }
+
+    #[test]
+    fn applies_a_patch_with_a_template_style_required_section_title() {
+        let current = "# 业务流程设计\n\n## 核心业务流程\n\n- 原始流程\n";
+        let markdown = apply_agent_delivery(
+            r####"```delivery
+{"mode":"patch","sections":[{"title":"### 核心业务流程 [必填]","content":"- 创建订单后进入审核。"}]}
+```"####,
+            WorkflowNodeId::BusinessFlow,
+            current,
+        )
+        .unwrap();
+
+        assert!(markdown.contains("- 创建订单后进入审核。"));
+        assert!(!markdown.contains("- 原始流程"));
+    }
+
+    #[test]
+    fn template_style_patch_titles_apply_for_every_node_and_required_section() {
+        for node_id in WorkflowNodeId::ALL {
+            let current = default_node(node_id, "now").markdown;
+            for section in workflow_definition(node_id).required_sections {
+                let content = format!("- {section} 的更新内容");
+                let resolved = resolve_agent_delivery(
+                    AgentDelivery::Patch {
+                        sections: vec![AgentDeliverySection {
+                            title: format!("### {section} [必填]"),
+                            content: content.clone(),
+                        }],
+                    },
+                    node_id,
+                    &current,
+                )
+                .unwrap();
+
+                let DeliveryResolution::Markdown(markdown) = resolved else {
+                    panic!("template-style patch should produce markdown");
+                };
+                assert!(markdown.contains(&content));
+                assert!(validate_delivery_markdown(markdown, node_id).is_ok());
+            }
+        }
     }
 
     #[test]

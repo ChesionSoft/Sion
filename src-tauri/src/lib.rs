@@ -1414,6 +1414,8 @@ struct DeliveryRegenerationStartRequest {
     generation_id: String,
     file_ids: Vec<String>,
     expected_revision: u64,
+    #[serde(default)]
+    draft: String,
     now: String,
 }
 
@@ -1459,6 +1461,7 @@ fn delivery_regeneration_start(
         &attachments,
         &rules.effective_markdown,
         &dependency_nodes,
+        &request.draft,
     );
     let prompt = prepared_prompt.prompt.clone();
     let context_snapshot = ensure_context_is_runnable(
@@ -2463,6 +2466,7 @@ fn commit_regenerated_markdown(
     candidate: String,
     now: String,
 ) -> Result<RegenerationCommitResult, ApiError> {
+    let candidate = sion_core::normalize_regenerated_delivery_markdown(candidate, node_id);
     match sion_core::validate_delivery_markdown(candidate, node_id) {
         Err(_) => Ok(RegenerationCommitResult::ValidationFailed {
             public_error: "交付稿结构校验失败".to_string(),

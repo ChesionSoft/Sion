@@ -42,6 +42,8 @@ export function DeliveryWorkspace({
   onCancelRegeneration,
 }: DeliveryWorkspaceProps) {
   const statusKind = node?.status === "confirmed" ? "success" : node?.status === "needs_confirmation" ? "warning" : "neutral";
+  const canSave = node !== null && (dirty || node.status !== "confirmed");
+  const saveLabel = node?.status === "confirmed" ? "保存" : dirty ? "保存并确认" : "确认交付稿";
   return (
     <section className="delivery-workspace">
       <header className="delivery-workspace-header">
@@ -71,7 +73,7 @@ export function DeliveryWorkspace({
       <footer className="delivery-workspace-footer">
         <span>Markdown · {markdown.length.toLocaleString()} 字符{dirty ? " · 有未保存修改" : " · 已保存"}</span>
         <div>
-          <Button variant={dirty ? "primary" : "secondary"} disabled={!dirty || !node || locked} loading={saving} onClick={onSave}>保存</Button>
+          <Button variant={dirty || node?.status !== "confirmed" ? "primary" : "secondary"} disabled={!canSave || !node || locked} loading={saving} onClick={onSave}>{saveLabel}</Button>
           <Button variant="secondary" disabled={!canRegenerate || regenerating} loading={regenerating} onClick={onRegenerate}>重新生成交付稿</Button>
         </div>
       </footer>

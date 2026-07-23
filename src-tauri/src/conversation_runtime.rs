@@ -5,13 +5,13 @@
 use sion_core::{
     ChatMessage, ChatRole, ContextUsageBreakdown, ConversationContextSnapshot,
     CumulativeTokenUsage, MessageAttachmentRef, WorkflowNode, WorkflowNodeId, agent_rule,
-    aggregate_message_usage, estimate_context, estimate_input_tokens,
+    aggregate_message_usage, estimate_context, estimate_input_tokens, workflow_definition,
 };
 use sion_storage::ProjectStore;
 
 use crate::dependency_context::{self, DependencyNodeContext};
 
-const PROTOCOL: &str = "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。不要输出隐藏思维链。\n\n回复正文先给出可见说明，然后在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{\"mode\":\"unchanged\"}\n```\n- 分节补丁：```delivery\n{\"mode\":\"patch\",\"sections\":[{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}]}\n```\n常规对话默认使用 unchanged；只有需要改动交付稿时才用 patch。不要使用整篇 rewrite。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。";
+const PROTOCOL: &str = "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。不要输出隐藏思维链。\n\n回复正文先给出可见说明，然后在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{\"mode\":\"unchanged\"}\n```\n- 分节补丁：```delivery\n{\"mode\":\"patch\",\"sections\":[{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}]}\n```\n用户明确给出的新增或修正事实，只要属于当前节点且可写，必须使用 patch 写入对应章节；仅当本轮没有可写入当前交付稿的信息时才使用 unchanged。不要因为正在进行一般问答而默认 unchanged。不要使用整篇 rewrite。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。";
 
 const DEPENDENCY_PROTOCOL: &str = "“只读依赖节点交付稿”仅用于理解背景、保持一致性和发现冲突。只有 status=confirmed 的依赖内容可作为已确认事实，其他状态只作参考。不得为依赖节点生成补丁；delivery 只能修改“当前可写节点”的允许章节。发现依赖稿与当前稿冲突时，在可见回复中指出冲突，不得静默改写上游结论。";
 
@@ -159,13 +159,28 @@ fn attachment_block(attachments: &[SelectedFileContext]) -> String {
         .join("\n\n")
 }
 
+fn canonical_patch_title_instruction(node_id: WorkflowNodeId) -> String {
+    let titles = workflow_definition(node_id)
+        .required_sections
+        .iter()
+        .map(|section| format!("`{section}`"))
+        .collect::<Vec<_>>()
+        .join("、");
+    format!(
+        "本节点 delivery patch 的 `title` 只能逐字使用以下章节名之一：{titles}。`title` 不包含 Markdown # 标记或 [必填] 标签；模板中的 `### 标题 [必填]` 仅是文档展示格式，不能原样写入 JSON。"
+    )
+}
+
 fn prompt_sections(parts: ConversationParts<'_>) -> PromptSections {
     let effective_rules = compose_effective_agent_rules(
         parts.node.id,
         parts.project_override.map(|rule| rule.to_string()),
     );
     PromptSections {
-        protocol: format!("{PROTOCOL}\n\n{DEPENDENCY_PROTOCOL}"),
+        protocol: format!(
+            "{PROTOCOL}\n\n{}\n\n{DEPENDENCY_PROTOCOL}",
+            canonical_patch_title_instruction(parts.node.id)
+        ),
         rules: effective_rules.effective_markdown,
         dependency_nodes: dependency_context::format(parts.dependency_nodes),
         attachments: attachment_block(parts.attachments),
@@ -217,7 +232,8 @@ pub fn build_delivery_retry_prompt(
     dependency_nodes: &[DependencyNodeContext],
 ) -> PreparedPrompt {
     let protocol = format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。\n\n{DEPENDENCY_PROTOCOL}\n\n此前助手回复如下：\n{}\n\n请仅基于最新保存的当前交付稿重新判断，在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{{\"mode\":\"unchanged\"}}\n```\n- 分节补丁：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容\"}}]}}\n```\n不要使用整篇 rewrite。",
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。\n\n{}\n\n{DEPENDENCY_PROTOCOL}\n\n此前助手回复如下：\n{}\n\n请仅基于最新保存的当前交付稿重新判断，在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{{\"mode\":\"unchanged\"}}\n```\n- 分节补丁：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容\"}}]}}\n```\n不要使用整篇 rewrite。",
+        canonical_patch_title_instruction(node.id),
         assistant_message.content,
     );
     prepared_prompt_from_sections(PromptSections {
@@ -238,9 +254,16 @@ pub fn build_delivery_regeneration_prompt(
     attachments: &[SelectedFileContext],
     effective_rules: &str,
     dependency_nodes: &[DependencyNodeContext],
+    draft: &str,
 ) -> PreparedPrompt {
+    let required_headings = workflow_definition(node.id)
+        .required_sections
+        .iter()
+        .map(|section| format!("## {section}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let protocol = format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。请基于当前节点、只读依赖节点交付稿、选定文件和会话，重新生成本节点的完整交付稿。\n\n{DEPENDENCY_PROTOCOL}\n\n输出完整 Markdown，包含本节点所有必填二级标题。不要输出 delivery 交付块，不要在前后添加解释说明。"
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。请基于当前节点、只读依赖节点交付稿、选定文件和会话，重新生成本节点的完整交付稿。\n\n{DEPENDENCY_PROTOCOL}\n\n输出完整 Markdown，必须逐字包含以下必填二级标题，且每个标题都必须以 `## ` 开头：\n{required_headings}\n不得使用 ### 代替这些必填标题。不要输出 delivery 交付块，不要在前后添加解释说明。"
     );
     prepared_prompt_from_sections(PromptSections {
         protocol,
@@ -249,7 +272,7 @@ pub fn build_delivery_regeneration_prompt(
         attachments: attachment_block(attachments),
         node_label: node.id.as_str().to_string(),
         node_markdown: node.markdown.clone(),
-        transcript: full_transcript(messages, ""),
+        transcript: full_transcript(messages, draft),
     })
 }
 
@@ -450,8 +473,30 @@ mod tests {
         });
         assert!(prompt.contains(r#"{"mode":"unchanged"}"#));
         assert!(prompt.contains(r#"{"mode":"patch","sections"#));
+        assert!(prompt.contains("用户明确给出的新增或修正事实"));
+        assert!(!prompt.contains("常规对话默认使用 unchanged"));
         assert!(prompt.contains("不要输出隐藏思维链"));
         assert!(!prompt.contains("每轮必须修改"));
+    }
+
+    #[test]
+    fn every_node_prompt_lists_its_canonical_patch_titles() {
+        for node_id in WorkflowNodeId::ALL {
+            let node = sion_core::default_node(node_id, "now");
+            let prompt = build_agent_prompt(ConversationParts {
+                node: &node,
+                dependency_nodes: &[],
+                messages: &[],
+                project_override: None,
+                attachments: &[],
+                draft: "补充当前节点内容",
+            });
+
+            assert!(prompt.contains("不包含 Markdown # 标记或 [必填] 标签"));
+            for section in workflow_definition(node_id).required_sections {
+                assert!(prompt.contains(&format!("`{section}`")));
+            }
+        }
     }
 
     #[test]
@@ -535,17 +580,37 @@ mod tests {
         assert!(retry.prompt.contains(r#"{"mode":"unchanged"}"#));
         assert!(retry.breakdown.dependency_node_tokens > 0);
 
+        let saved_user_message = ChatMessage {
+            id: "u-1".into(),
+            role: ChatRole::User,
+            content: "已保存会话内容".into(),
+            reasoning_content: None,
+            sources: None,
+            created_at: "now".into(),
+            turn_id: None,
+            reasoning_duration_ms: None,
+            usage: None,
+            attachments: Vec::new(),
+            model_execution: None,
+        };
         let regen = build_delivery_regeneration_prompt(
             &node,
-            &[],
+            &[saved_user_message],
             &attachments,
             "当前自定义规则",
             &dependencies,
+            "输入框中尚未发送的内容",
         );
         assert!(regen.prompt.contains("历史附件正文"));
         assert!(regen.prompt.contains("当前自定义规则"));
         assert!(regen.prompt.contains("重试与重生成依赖哨兵"));
         assert!(regen.prompt.contains("输出完整 Markdown"));
+        assert!(regen.prompt.contains("用户: 已保存会话内容"));
+        assert!(regen.prompt.contains("用户: 输入框中尚未发送的内容"));
+        assert!(regen.prompt.contains("## 需求背景"));
+        assert!(regen.prompt.contains("## 建设目标"));
+        assert!(regen.prompt.contains("## 范围边界"));
+        assert!(regen.prompt.contains("不得使用 ###"));
         assert!(!regen.prompt.contains("```delivery"));
         assert!(regen.breakdown.dependency_node_tokens > 0);
     }

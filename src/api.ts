@@ -267,6 +267,7 @@ export const startDeliveryRegeneration = (
   generationId: string,
   fileIds: string[],
   expectedRevision: number,
+  draft: string,
   now: string,
 ) =>
   invokePayload<DeliveryGeneration>("delivery_regeneration_start", {
@@ -276,6 +277,7 @@ export const startDeliveryRegeneration = (
     generationId,
     fileIds,
     expectedRevision,
+    draft,
     now,
   });
 

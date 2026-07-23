@@ -53,7 +53,16 @@ import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initia
 
 import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
 import { mergeTurnSnapshot } from "./conversation-turns.ts";
-import { isCurrentGenerationEvent, reconcileGeneratedNode, reconcileSavedNode } from "./delivery-generation.ts";
+import {
+  appendDeliveryGenerationCandidate,
+  beginDeliveryGeneration,
+  deliveryGenerationScope,
+  failToStartDeliveryGeneration,
+  receiveDeliveryGeneration,
+  reconcileGeneratedNode,
+  reconcileSavedNode,
+  type DeliveryGenerationProgressByScope,
+} from "./delivery-generation.ts";
 import { appendLiveReasoning, clearLiveReasoning, removeLiveReasoning, type LiveReasoningByRun } from "./reasoning-stream.ts";
 
 const now = () => new Date().toISOString();
@@ -116,9 +125,7 @@ export function App() {
   const [exportRefreshByProject, setExportRefreshByProject] = useState<Record<string, number>>({});
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [liveReasoningByRun, setLiveReasoningByRun] = useState<LiveReasoningByRun>({});
-  const [generation, setGeneration] = useState<DeliveryGeneration | null>(null);
-  const [generationCandidate, setGenerationCandidate] = useState<string>("");
-  const [regenerating, setRegenerating] = useState(false);
+  const [generationProgressByScope, setGenerationProgressByScope] = useState<DeliveryGenerationProgressByScope>({});
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<NavigationIntent | null>(null);
   const [conflictLatest, setConflictLatest] = useState<WorkflowNode | null>(null);
@@ -142,13 +149,22 @@ export function App() {
   const runDetailScopeRef = useRef<string | null>(null);
   const nodeRef = useRef<WorkflowNode | null>(null);
   const draftRef = useRef("");
-  const activeGenerationIdRef = useRef<string | null>(null);
+  const generationScopeByIdRef = useRef<Record<string, string>>({});
 
   const projectUi = project ? ui.projects[project.id] : undefined;
   const activeNodeId = projectUi?.activeNodeId ?? null;
   const activeRightTabId = projectUi?.activeRightTabId ?? null;
   const nodeId: NodeId = activeNodeId ?? "basic-info";
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
+  const generationScope = project && sessionId
+    ? deliveryGenerationScope(project.id, nodeId, sessionId)
+    : null;
+  const generationProgress = generationScope ? generationProgressByScope[generationScope] : undefined;
+  const generation = generationProgress?.generation ?? null;
+  const generationCandidate = generationProgress?.candidate ?? "";
+  const regenerating = generationProgress?.starting === true
+    || generation?.status === "queued"
+    || generation?.status === "running";
   const markdownDirty = node !== null && draft !== node.markdown;
   const agentRulesDirty = agentRules !== null && isAgentRulesDirty(agentOverrideDraft, agentRules.customMarkdown);
   const dirty = markdownDirty || agentRulesDirty;
@@ -226,9 +242,6 @@ export function App() {
       setSessionId(null);
       setMessages([]);
       setTurns([]);
-      setGeneration(null);
-      setGenerationCandidate("");
-      setRegenerating(false);
     }
   }, [project, activeNodeId]);
 
@@ -258,10 +271,6 @@ export function App() {
       void loadTurns(project.id, activeNodeId, sessionId);
     }
   }, [project, activeNodeId, sessionId]);
-
-  useEffect(() => {
-    activeGenerationIdRef.current = null;
-  }, [project?.id, nodeId, sessionId]);
 
   useEffect(() => {
     setLiveReasoningByRun(clearLiveReasoning());
@@ -295,7 +304,7 @@ export function App() {
         setLiveReasoningByRun((current) => removeLiveReasoning(current, run.id));
         if (sessionId) void loadMessages(project.id, nodeId, sessionId);
         if (sessionId) void loadTurns(project.id, nodeId, sessionId);
-        if (sessionId && modelSelection) {
+        if (project && sessionId && modelSelection) {
           void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
         }
         void loadRuns(project.id);
@@ -313,27 +322,24 @@ export function App() {
       }),
       listen<DeliveryGenerationTokenEvent>("delivery-generation-token", (event) => {
         const payload = event.payload;
-        if (!project || payload.projectId !== project.id || payload.nodeId !== nodeId) return;
-        if (activeGenerationIdRef.current !== payload.generationId) return;
-        setGenerationCandidate((candidate) => candidate + payload.delta);
-        setGeneration((current) => current?.id === payload.generationId
-          ? { ...current, status: "running" }
-          : current);
+        const scope = generationScopeByIdRef.current[payload.generationId];
+        if (!scope) return;
+        setGenerationProgressByScope((current) => appendDeliveryGenerationCandidate(current, scope, payload.delta));
       }),
       listen<DeliveryGeneration>("delivery-generation-running", (event) => {
         const next = event.payload;
-        if (!project || next.projectId !== project.id || next.nodeId !== nodeId) return;
-        if (activeGenerationIdRef.current !== next.id) return;
-        setGeneration(next);
+        const scope = generationScopeByIdRef.current[next.id];
+        if (!scope) return;
+        setGenerationProgressByScope((current) => receiveDeliveryGeneration(current, scope, next));
       }),
       listen<DeliveryGenerationFinishedEvent>("delivery-generation-finished", (event) => {
         const payload = event.payload;
-        if (!project || payload.generation.projectId !== project.id || payload.generation.nodeId !== nodeId) return;
-        if (!isCurrentGenerationEvent(activeGenerationIdRef.current, payload.generation.id)) return;
-        activeGenerationIdRef.current = null;
-        setGeneration(payload.generation);
-        setRegenerating(false);
-        setGenerationCandidate("");
+        const scope = generationScopeByIdRef.current[payload.generation.id];
+        if (!scope) return;
+        setGenerationProgressByScope((current) => receiveDeliveryGeneration(current, scope, payload.generation));
+        delete generationScopeByIdRef.current[payload.generation.id];
+        if (project?.id === payload.generation.projectId) void loadRuns(project.id);
+        if (generationScope !== scope) return;
         const reconciled = reconcileGeneratedNode(
           nodeRef.current,
           draftRef.current,
@@ -342,7 +348,7 @@ export function App() {
         );
         setNode(reconciled.node);
         setDraft(reconciled.draft);
-        if (sessionId && modelSelection) {
+        if (project && sessionId && modelSelection) {
           void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
         }
       }),
@@ -622,9 +628,6 @@ export function App() {
       setSessionsError(null);
     }
     setTurns([]);
-    setGeneration(null);
-    setGenerationCandidate("");
-    setRegenerating(false);
     setWorkspaceView(initialWorkspaceView());
     const existing = ui.projects[item.id];
     const nextProjectUi = existing?.initialized ? existing : initialProjectUi();
@@ -700,7 +703,7 @@ export function App() {
     if (node.id !== nodeId) return "failed";
     setSaving(true);
     try {
-      const result = await saveNode(project.id, nodeId, node.revision, draft, node.status, now());
+      const result = await saveNode(project.id, nodeId, node.revision, draft, "confirmed", now());
       if (result.conflict) {
         setConflictLatest(result.conflict.latest);
         setNotice("检测到另一次保存；你的草稿仍保留在编辑器中");
@@ -732,9 +735,6 @@ export function App() {
     setSessionId(null);
     setMessages([]);
     setTurns([]);
-    setGeneration(null);
-    setGenerationCandidate("");
-    setRegenerating(false);
     try {
       const loaded = await listSessions(projectId, nextNodeId);
       if (workspaceScopeRef.current !== scope) return;
@@ -790,8 +790,6 @@ export function App() {
           setSessionId(null);
           setMessages([]);
           setTurns([]);
-          setGeneration(null);
-          setGenerationCandidate("");
         }
       }
       setNotice("已删除会话");
@@ -843,17 +841,25 @@ export function App() {
   async function startRegeneration() {
     if (!project || !node || !sessionId) return;
     const activeGenerationId = crypto.randomUUID();
-    activeGenerationIdRef.current = activeGenerationId;
-    setRegenerating(true);
-    setGenerationCandidate("");
+    const scope = deliveryGenerationScope(project.id, nodeId, sessionId);
+    generationScopeByIdRef.current[activeGenerationId] = scope;
+    setGenerationProgressByScope((current) => beginDeliveryGeneration(current, scope));
     try {
-      const result = await startDeliveryRegeneration(project.id, nodeId, sessionId, activeGenerationId, selectedFileIds, node.revision, now());
-      if (activeGenerationIdRef.current === activeGenerationId) setGeneration(result);
+      const result = await startDeliveryRegeneration(project.id, nodeId, sessionId, activeGenerationId, selectedFileIds, node.revision, messageDraft.trim(), now());
+      if (generationScopeByIdRef.current[activeGenerationId] === scope) {
+        setGenerationProgressByScope((current) => {
+          const existing = current[scope]?.generation;
+          if (existing?.id === result.id && existing.status === "running" && result.status === "queued") {
+            return current;
+          }
+          return receiveDeliveryGeneration(current, scope, result);
+        });
+      }
     } catch (error) {
-      if (activeGenerationIdRef.current !== activeGenerationId) return;
-      activeGenerationIdRef.current = null;
+      if (generationScopeByIdRef.current[activeGenerationId] !== scope) return;
+      delete generationScopeByIdRef.current[activeGenerationId];
+      setGenerationProgressByScope((current) => failToStartDeliveryGeneration(current, scope));
       setNotice(`重新生成交付稿失败：${String(error)}`);
-      setRegenerating(false);
     }
   }
 
@@ -1058,9 +1064,6 @@ export function App() {
     filePreviewScopeRef.current = null;
     setFilePreview(null);
     setTurns([]);
-    setGeneration(null);
-    setGenerationCandidate("");
-    setRegenerating(false);
     selectDestinationImmediate("projects");
   }
 
@@ -1080,9 +1083,6 @@ export function App() {
     setDraft("");
     setFilePreview(null);
     setTurns([]);
-    setGeneration(null);
-    setGenerationCandidate("");
-    setRegenerating(false);
     setWorkspaceView(initialWorkspaceView());
     const current = ui.projects[project.id] ?? initialProjectUi();
     workspaceScopeRef.current = requestScope(project.id, id);
@@ -1253,9 +1253,6 @@ export function App() {
     setSavingModelSelection(false);
     setSendingMessage(false);
     setTurns([]);
-    setGeneration(null);
-    setGenerationCandidate("");
-    setRegenerating(false);
     messageScopeRef.current = requestScope(project?.id, activeNodeId, nextSessionId);
     setSessionId(nextSessionId);
   }
