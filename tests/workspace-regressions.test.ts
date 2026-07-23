@@ -17,6 +17,35 @@ test("compact workspace keeps every primary action available and labelled", asyn
   assert.match(workspaceSource, /title="聊天记录"/);
 });
 
+test("macOS titlebar is covered by the existing workspace chrome", async () => {
+  const [tauriConfig, capabilities, shellCss, workspaceCss, appShell] = await Promise.all([
+    readFile("src-tauri/tauri.conf.json", "utf8"),
+    readFile("src-tauri/capabilities/default.json", "utf8"),
+    readFile("src/styles/shell.css", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+    readFile("src/components/app/AppShell.tsx", "utf8"),
+  ]);
+  assert.match(tauriConfig, /"titleBarStyle":\s*"Overlay"/);
+  assert.match(tauriConfig, /"hiddenTitle":\s*true/);
+  assert.match(capabilities, /"core:window:allow-start-dragging"/);
+  assert.match(capabilities, /"core:window:allow-toggle-maximize"/);
+  assert.match(shellCss, /\.sidebar-titlebar\s*\{[^}]*padding:\s*42px 8px 7px 14px/s);
+  assert.match(shellCss, /\.sidebar-titlebar\s*\{[^}]*cursor:\s*default/s);
+  assert.match(shellCss, /\.collapsed-shell-actions\s*\{[^}]*top:\s*42px/s);
+  assert.match(workspaceCss, /\.workspace-header\s*\{[^}]*flex:\s*0 0 48px/s);
+  assert.match(workspaceCss, /\.workspace-header\s*\{[^}]*cursor:\s*default/s);
+  assert.doesNotMatch(shellCss, /\.app-main::before/);
+  assert.match(appShell, /getCurrentWindow\(\)\.startDragging\(\)/);
+  assert.match(appShell, /getCurrentWindow\(\)\.toggleMaximize\(\)/);
+  assert.match(appShell, /function startWindowDragging[\s\S]*event\.preventDefault\(\)[\s\S]*startDragging\(\)/);
+  assert.match(appShell, /function toggleWindowMaximize[\s\S]*event\.preventDefault\(\)[\s\S]*toggleMaximize\(\)/);
+  assert.match(appShell, /onMouseDown=\{startWindowDragging\}/);
+  assert.match(appShell, /onDoubleClick=\{toggleWindowMaximize\}/);
+  assert.match(appShell, /const TITLEBAR_GESTURE_HEIGHT = 56/);
+  assert.match(appShell, /event\.clientY - bounds\.top >= TITLEBAR_GESTURE_HEIGHT/);
+  assert.match(appShell, /closest\("button, input, textarea, select, a, \[role=\\"button\\"\]"\)/);
+});
+
 test("shared Markdown renderer centralizes safe GFM for every visual variant", async () => {
   const [safeMarkdown, preview] = await Promise.all([
     readFile("src/components/workspace/SafeMarkdown.tsx", "utf8"),

@@ -14,6 +14,8 @@
       {
         "label": "main",
         "title": "Sion",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "width": 1040,
         "height": 690,
         "minWidth": 960,

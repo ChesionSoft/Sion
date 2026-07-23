@@ -1,8 +1,18 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
 import { type MainDestination, type NodeId, type NoticeMessage, type RecentProject, type UiSettings } from "../../types";
 import { IconButton, Icon, Notice } from "../ui";
 import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { Sidebar } from "./Sidebar";
+
+const TITLEBAR_GESTURE_HEIGHT = 56;
+
+function isTitlebarGesture(event: MouseEvent<HTMLDivElement>) {
+  const bounds = event.currentTarget.getBoundingClientRect();
+  if (event.clientY - bounds.top >= TITLEBAR_GESTURE_HEIGHT) return false;
+  const target = event.target;
+  return !(target instanceof Element && target.closest("button, input, textarea, select, a, [role=\"button\"]"));
+}
 
 export type AppShellProps = {
   destination: MainDestination;
@@ -38,8 +48,24 @@ export function AppShell(props: AppShellProps) {
     props.onNode(nodeId);
   }
 
+  function startWindowDragging(event: MouseEvent<HTMLDivElement>) {
+    if (event.button !== 0 || !isTitlebarGesture(event)) return;
+    event.preventDefault();
+    void getCurrentWindow().startDragging();
+  }
+
+  function toggleWindowMaximize(event: MouseEvent<HTMLDivElement>) {
+    if (!isTitlebarGesture(event)) return;
+    event.preventDefault();
+    void getCurrentWindow().toggleMaximize();
+  }
+
   return (
-    <div className={`app-shell ${props.ui.sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>
+    <div
+      className={`app-shell ${props.ui.sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}
+      onMouseDown={startWindowDragging}
+      onDoubleClick={toggleWindowMaximize}
+    >
       <Sidebar
         destination={props.destination}
         projects={props.projects}
