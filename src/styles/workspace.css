@@ -285,6 +285,9 @@
 }
 
 .delivery-decision-details {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 8px;
   border: 1px solid var(--border-color, rgba(15, 23, 42, 0.12));
   border-radius: 8px;
@@ -302,7 +305,7 @@
 
 .delivery-decision-details > summary::-webkit-details-marker { display: none; }
 
-.delivery-decision-section { margin-top: 8px; }
+.delivery-decision-section { min-width: 0; max-width: 100%; margin-top: 8px; }
 .delivery-decision-section h4 {
   margin: 0 0 4px;
   font-size: 12px;
@@ -312,6 +315,11 @@
 
 .delivery-decision-raw,
 .delivery-decision-diff {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   padding: 8px;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
