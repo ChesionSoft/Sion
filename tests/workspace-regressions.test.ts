@@ -608,3 +608,10 @@ test("delivery decision details expose raw json diff and save result", async () 
   assert.match(types, /DeliveryDecisionTokenEvent/);
   assert.match(types, /DeliveryDecisionInspection/);
 });
+
+test("active conversation work uses an accessible beacon instead of a blinking dot", async () => {
+  const styles = await readFile("src/styles/workspace.css", "utf8");
+  assert.match(styles, /conversation-activity-beacon/);
+  assert.match(styles, /@keyframes conversation-activity-beacon/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
+});
