@@ -20,6 +20,7 @@ type ProjectWorkspaceProps = {
   messages: ChatMessage[];
   turns: ConversationTurn[];
   liveReasoningByRun: Record<string, string>;
+  liveDecisionRawByTurn: Record<string, string>;
   markdownDirty: boolean;
   messageDraft: string;
   sendingMessage: boolean;
@@ -126,6 +127,7 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             messages={props.messages}
             turns={props.turns}
             liveReasoningByRun={props.liveReasoningByRun}
+            liveDecisionRawByTurn={props.liveDecisionRawByTurn}
             markdownDirty={props.markdownDirty}
             activeRunId={props.activeRunId}
             sendingMessage={props.sendingMessage}

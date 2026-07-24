@@ -1,6 +1,7 @@
 import type { ChatMessage, ConversationTurn } from "../../types";
 import { turnCanRetryDelivery, turnHeadline } from "../../conversation-turns.ts";
 import { ConversationReasoningDisclosure } from "./ConversationReasoningDisclosure";
+import { DeliveryDecisionDetails } from "./DeliveryDecisionDetails";
 import { SafeMarkdown } from "./SafeMarkdown";
 
 export type ConversationTurnCardProps = {
@@ -8,6 +9,7 @@ export type ConversationTurnCardProps = {
   userMessage?: ChatMessage;
   assistantMessage?: ChatMessage;
   liveReasoning?: string;
+  liveDecisionRaw?: string;
   markdownDirty: boolean;
   onRetryDelivery: (turnId: string) => void;
   onOpenRunDetail: (runId: string) => void;
@@ -18,11 +20,13 @@ export function ConversationTurnCard({
   userMessage,
   assistantMessage,
   liveReasoning,
+  liveDecisionRaw,
   markdownDirty,
   onRetryDelivery,
   onOpenRunDetail,
 }: ConversationTurnCardProps) {
   const canRetry = turnCanRetryDelivery(turn, markdownDirty);
+  const showDecisionDetails = Boolean(turn.deliveryInspection) || Boolean(liveDecisionRaw);
   return (
     <article
       className={`conversation-turn is-${turn.status} is-${turn.deliveryOutcome.kind}`}
@@ -73,6 +77,13 @@ export function ConversationTurnCard({
             </li>
           ))}
         </ul>
+      ) : null}
+      {showDecisionDetails ? (
+        <DeliveryDecisionDetails
+          inspection={turn.deliveryInspection}
+          liveRaw={liveDecisionRaw}
+          outcome={turn.deliveryOutcome}
+        />
       ) : null}
       {canRetry ? (
         <button

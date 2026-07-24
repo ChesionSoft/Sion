@@ -118,6 +118,15 @@ pub enum DeliveryOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeliveryDecisionInspection {
+    pub raw_response: String,
+    pub base_markdown: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed_markdown: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationTurn {
     pub id: String,
     pub project_id: String,
@@ -130,6 +139,8 @@ pub struct ConversationTurn {
     pub activities: Vec<TurnActivity>,
     pub reasoning_summary: Option<String>,
     pub delivery_outcome: DeliveryOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_inspection: Option<DeliveryDecisionInspection>,
     pub started_at: String,
     pub finished_at: Option<String>,
 }
@@ -160,6 +171,7 @@ mod tests {
                 revision: 8,
                 section_titles: vec!["建设目标".into()],
             },
+            delivery_inspection: None,
             started_at: "2026-07-18T00:00:00Z".into(),
             finished_at: Some("2026-07-18T00:00:01Z".into()),
         };
@@ -170,5 +182,67 @@ mod tests {
             serde_json::from_value::<ConversationTurn>(value).unwrap(),
             turn
         );
+    }
+
+    #[test]
+    fn delivery_inspection_round_trips_with_raw_base_and_proposed_markdown() {
+        let raw = "```delivery\n{\"mode\":\"patch\",\"sections\":[{\"title\":\"建设目标\",\"content\":\"版本为 v1.0\"}]}\n```";
+        let base = "# 需求背景与建设目标\n\n## 建设目标\n已有";
+        let proposed = "# 需求背景与建设目标\n\n## 建设目标\n版本为 v1.0";
+        let turn = ConversationTurn {
+            id: "turn-1".into(),
+            project_id: "project-1".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            user_message_id: "user-1".into(),
+            assistant_message_id: Some("assistant-1".into()),
+            status: TurnStatus::Completed,
+            activities: Vec::new(),
+            reasoning_summary: None,
+            delivery_outcome: DeliveryOutcome::PatchApplied {
+                previous_revision: 7,
+                revision: 8,
+                section_titles: vec!["建设目标".into()],
+            },
+            delivery_inspection: Some(DeliveryDecisionInspection {
+                raw_response: raw.into(),
+                base_markdown: base.into(),
+                proposed_markdown: Some(proposed.into()),
+            }),
+            started_at: "2026-07-18T00:00:00Z".into(),
+            finished_at: Some("2026-07-18T00:00:01Z".into()),
+        };
+        let value = serde_json::to_value(&turn).unwrap();
+        assert_eq!(value["deliveryInspection"]["rawResponse"], raw);
+        assert_eq!(value["deliveryInspection"]["baseMarkdown"], base);
+        assert_eq!(value["deliveryInspection"]["proposedMarkdown"], proposed);
+        assert_eq!(
+            serde_json::from_value::<ConversationTurn>(value).unwrap(),
+            turn
+        );
+    }
+
+    #[test]
+    fn delivery_inspection_is_skipped_when_absent_and_legacy_turns_deserialize() {
+        let legacy = serde_json::json!({
+            "id": "turn-1",
+            "projectId": "project-1",
+            "nodeId": "goals",
+            "sessionId": "session-1",
+            "runId": "run-1",
+            "userMessageId": "user-1",
+            "assistantMessageId": "assistant-1",
+            "status": "completed",
+            "activities": [],
+            "reasoningSummary": null,
+            "deliveryOutcome": { "kind": "unchanged" },
+            "startedAt": "2026-07-18T00:00:00Z",
+            "finishedAt": "2026-07-18T00:00:01Z"
+        });
+        let turn: ConversationTurn = serde_json::from_value(legacy).unwrap();
+        assert_eq!(turn.delivery_inspection, None);
+        let value = serde_json::to_value(&turn).unwrap();
+        assert!(value.get("deliveryInspection").is_none());
     }
 }

@@ -155,7 +155,7 @@ export type Provider = {
   hasApiKey: boolean;
 };
 
-export type AgentRunKind = "conversation" | "delivery_retry" | "delivery_regeneration";
+export type AgentRunKind = "conversation" | "delivery_decision" | "delivery_retry" | "delivery_regeneration";
 export type AgentRun = {
   id: string;
   projectId: string;
@@ -187,6 +187,7 @@ export type AgentRunStartOutcome =
     };
 export type AgentTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
 export type AgentReasoningSummaryEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
+export type DeliveryDecisionTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; turnId: string; delta: string };
 export type AgentFinishedEvent = { run: AgentRun };
 export type TurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
 export type TurnActivityKind = "response" | "delivery_check" | "delivery_validate" | "delivery_save";
@@ -209,6 +210,11 @@ export type DeliveryOutcome =
   | { kind: "conflict"; expectedRevision: number; actualRevision: number }
   | { kind: "failed"; stage: DeliveryStage; publicError: string }
   | { kind: "cancelled" };
+export type DeliveryDecisionInspection = {
+  rawResponse: string;
+  baseMarkdown: string;
+  proposedMarkdown?: string;
+};
 export type ConversationTurn = {
   id: string;
   projectId: string;
@@ -221,6 +227,7 @@ export type ConversationTurn = {
   activities: TurnActivity[];
   reasoningSummary?: string;
   deliveryOutcome: DeliveryOutcome;
+  deliveryInspection?: DeliveryDecisionInspection;
   startedAt: string;
   finishedAt?: string;
 };

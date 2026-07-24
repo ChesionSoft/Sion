@@ -1,5 +1,6 @@
 import type { AgentRun, AgentRunDetail, DeliveryOutcome, TurnActivity } from "../../types";
 import { Button, Dialog, StatusDot } from "../ui";
+import { DeliveryDecisionDetails } from "./DeliveryDecisionDetails";
 
 const LEGACY_MISSING = "历史记录未保存此信息";
 
@@ -13,6 +14,7 @@ const RUN_STATUS_LABEL: Record<AgentRun["status"], string> = {
 
 const RUN_KIND_LABEL: Record<AgentRun["kind"], string> = {
   conversation: "对话",
+  delivery_decision: "交付判断",
   delivery_retry: "交付重试",
   delivery_regeneration: "重新生成交付稿",
 };
@@ -181,6 +183,12 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
           <section>
             <h3>交付结果</h3>
             <p className="run-detail-delivery">{deliveryLabel(turn?.deliveryOutcome)}</p>
+            {turn?.deliveryInspection ? (
+              <DeliveryDecisionDetails
+                inspection={turn.deliveryInspection}
+                outcome={turn.deliveryOutcome}
+              />
+            ) : null}
           </section>
         </div>
       ) : (

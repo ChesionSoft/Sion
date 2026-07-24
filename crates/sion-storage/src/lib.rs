@@ -1808,6 +1808,7 @@ mod tests {
             activities: Vec::new(),
             reasoning_summary: None,
             delivery_outcome: sion_core::DeliveryOutcome::Pending,
+            delivery_inspection: None,
             started_at: "2026-07-18T00:00:00Z".into(),
             finished_at: None,
         }

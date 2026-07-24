@@ -48,7 +48,7 @@ import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
 import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
 import { RunDetailDialog } from "./components/workspace/RunDetailDialog";
-import { NODES, type AgentFinishedEvent, type AgentReasoningSummaryEvent, type AgentRun, type AgentRunDetail, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type ExportRunEvent, type ExportWorkspaceInvalidatedEvent, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentReasoningSummaryEvent, type AgentRun, type AgentRunDetail, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryDecisionTokenEvent, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type ExportRunEvent, type ExportWorkspaceInvalidatedEvent, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 
 import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
@@ -125,6 +125,7 @@ export function App() {
   const [exportRefreshByProject, setExportRefreshByProject] = useState<Record<string, number>>({});
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [liveReasoningByRun, setLiveReasoningByRun] = useState<LiveReasoningByRun>({});
+  const [liveDecisionRawByTurn, setLiveDecisionRawByTurn] = useState<Record<string, string>>({});
   const [generationProgressByScope, setGenerationProgressByScope] = useState<DeliveryGenerationProgressByScope>({});
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<NavigationIntent | null>(null);
@@ -274,6 +275,7 @@ export function App() {
 
   useEffect(() => {
     setLiveReasoningByRun(clearLiveReasoning());
+    setLiveDecisionRawByTurn({});
   }, [project?.id, nodeId, sessionId]);
 
   useEffect(() => {
@@ -287,6 +289,14 @@ export function App() {
           if (existing) return current.map((message) => message.id === transientId ? { ...message, content: message.content + token.delta } : message);
           return [...current, { id: transientId, role: "assistant", content: token.delta, createdAt: now() }];
         });
+      }),
+      listen<DeliveryDecisionTokenEvent>("delivery-decision-token", (event) => {
+        const token = event.payload;
+        if (!project || token.projectId !== project.id || token.nodeId !== nodeId || token.sessionId !== sessionId) return;
+        setLiveDecisionRawByTurn((current) => ({
+          ...current,
+          [token.turnId]: (current[token.turnId] ?? "") + token.delta,
+        }));
       }),
       listen<AgentReasoningSummaryEvent>("agent-reasoning-summary", (event) => {
         if (!project || !sessionId) return;
@@ -319,6 +329,14 @@ export function App() {
         }
         if (sessionId && turn.sessionId !== sessionId) return;
         setTurns((current) => mergeTurnSnapshot(current, turn));
+        if (turn.deliveryInspection) {
+          setLiveDecisionRawByTurn((current) => {
+            if (!(turn.id in current)) return current;
+            const next = { ...current };
+            delete next[turn.id];
+            return next;
+          });
+        }
       }),
       listen<DeliveryGenerationTokenEvent>("delivery-generation-token", (event) => {
         const payload = event.payload;
@@ -1379,6 +1397,7 @@ export function App() {
       messages={messages}
       turns={turns}
       liveReasoningByRun={liveReasoningByRun}
+      liveDecisionRawByTurn={liveDecisionRawByTurn}
       markdownDirty={markdownDirty}
       onRetryDelivery={(id) => void retryDelivery(id)}
       onOpenRunDetail={openRunDetail}

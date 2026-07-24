@@ -11,9 +11,9 @@ use sion_storage::ProjectStore;
 
 use crate::dependency_context::{self, DependencyNodeContext};
 
-const PROTOCOL: &str = "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。不要输出隐藏思维链。\n\n回复正文先给出可见说明，然后在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{\"mode\":\"unchanged\"}\n```\n- 分节补丁：```delivery\n{\"mode\":\"patch\",\"sections\":[{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容，不含 # 或 ## 标题\"}]}\n```\n用户明确给出的新增或修正事实，只要属于当前节点且可写，必须使用 patch 写入对应章节；仅当本轮没有可写入当前交付稿的信息时才使用 unchanged。不要因为正在进行一般问答而默认 unchanged。不要使用整篇 rewrite。`title` 必须精确匹配当前 Markdown 中本节点已有的必填二级标题；`content` 只能包含该章节正文，可使用三级标题，不能包含一级或二级标题。只提交需要改动的章节。";
+const PROTOCOL: &str = "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。不要输出隐藏思维链。只回复可见的中文说明，不要输出 JSON、代码围栏或任何交付块；是否更新交付稿由后续步骤单独判断。";
 
-const DEPENDENCY_PROTOCOL: &str = "“只读依赖节点交付稿”仅用于理解背景、保持一致性和发现冲突。只有 status=confirmed 的依赖内容可作为已确认事实，其他状态只作参考。不得为依赖节点生成补丁；delivery 只能修改“当前可写节点”的允许章节。发现依赖稿与当前稿冲突时，在可见回复中指出冲突，不得静默改写上游结论。";
+const DEPENDENCY_PROTOCOL: &str = "“只读依赖节点交付稿”仅用于理解背景、保持一致性和发现冲突。只有 status=confirmed 的依赖内容可作为已确认事实，其他状态只作参考。不得为依赖节点生成补丁；补丁只能修改“当前可写节点”的允许章节。发现依赖稿与当前稿冲突时，在可见回复中指出冲突，不得静默改写上游结论。";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -177,10 +177,7 @@ fn prompt_sections(parts: ConversationParts<'_>) -> PromptSections {
         parts.project_override.map(|rule| rule.to_string()),
     );
     PromptSections {
-        protocol: format!(
-            "{PROTOCOL}\n\n{}\n\n{DEPENDENCY_PROTOCOL}",
-            canonical_patch_title_instruction(parts.node.id)
-        ),
+        protocol: format!("{PROTOCOL}\n\n{DEPENDENCY_PROTOCOL}"),
         rules: effective_rules.effective_markdown,
         dependency_nodes: dependency_context::format(parts.dependency_nodes),
         attachments: attachment_block(parts.attachments),
@@ -224,7 +221,7 @@ fn prepared_prompt_from_sections(sections: PromptSections) -> PreparedPrompt {
 }
 
 #[allow(dead_code)]
-pub fn build_delivery_retry_prompt(
+pub fn build_delivery_decision_prompt(
     node: &WorkflowNode,
     messages: &[ChatMessage],
     assistant_message: &ChatMessage,
@@ -232,7 +229,7 @@ pub fn build_delivery_retry_prompt(
     dependency_nodes: &[DependencyNodeContext],
 ) -> PreparedPrompt {
     let protocol = format!(
-        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。\n\n{}\n\n{DEPENDENCY_PROTOCOL}\n\n此前助手回复如下：\n{}\n\n请仅基于最新保存的当前交付稿重新判断，在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{{\"mode\":\"unchanged\"}}\n```\n- 分节补丁：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容\"}}]}}\n```\n不要使用整篇 rewrite。",
+        "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。不要输出隐藏思维链。\n\n{}\n\n{DEPENDENCY_PROTOCOL}\n\n此前助手回复如下：\n{}\n\n请仅基于最新保存的当前交付稿和上述助手回复，判断是否需要更新交付稿，并在末尾提供且只提供一个 fenced delivery 交付块，二选一：\n- 无需修改：```delivery\n{{\"mode\":\"unchanged\"}}\n```\n- 分节补丁：```delivery\n{{\"mode\":\"patch\",\"sections\":[{{\"title\":\"当前已有的二级章节名\",\"content\":\"该章节的新内容\"}}]}}\n```\n只提交需要改动的章节，不要使用整篇 rewrite。",
         canonical_patch_title_instruction(node.id),
         assistant_message.content,
     );
@@ -454,7 +451,49 @@ mod tests {
     }
 
     #[test]
-    fn conversation_prompt_requires_an_explicit_delivery_decision() {
+    fn conversation_and_decision_prompts_split_visible_reply_from_delivery_decision() {
+        let node = WorkflowNode {
+            id: WorkflowNodeId::Goals,
+            status: NodeStatus::Draft,
+            markdown: "# 需求背景与建设目标\n\n## 需求背景\n已有\n\n## 建设目标\n已有\n\n## 范围边界\n已有"
+                .into(),
+            revision: 7,
+            updated_at: "now".into(),
+        };
+        let assistant = ChatMessage {
+            id: "a-1".into(),
+            role: ChatRole::Assistant,
+            content: "已将版本调整为 v1.0".into(),
+            reasoning_content: None,
+            sources: None,
+            created_at: "now".into(),
+            turn_id: None,
+            reasoning_duration_ms: None,
+            usage: None,
+            attachments: Vec::new(),
+            model_execution: None,
+        };
+        let conversation = build_agent_prompt(ConversationParts {
+            node: &node,
+            dependency_nodes: &[],
+            messages: &[],
+            project_override: None,
+            attachments: &[],
+            draft: "把版本改成 v1.0",
+        });
+        assert!(
+            !conversation.contains("delivery"),
+            "conversation prompt must not mention delivery"
+        );
+        let decision = build_delivery_decision_prompt(&node, &[], &assistant, "当前自定义规则", &[]);
+        assert!(decision
+            .prompt
+            .contains("此前助手回复如下：\n已将版本调整为 v1.0"));
+        assert!(decision.prompt.contains("mode"));
+    }
+
+    #[test]
+    fn conversation_prompt_asks_for_visible_assistance_without_a_delivery_block() {
         let node = WorkflowNode {
             id: WorkflowNodeId::Goals,
             status: NodeStatus::Draft,
@@ -471,30 +510,36 @@ mod tests {
             attachments: &[],
             draft: "只回答，不修改",
         });
-        assert!(prompt.contains(r#"{"mode":"unchanged"}"#));
-        assert!(prompt.contains(r#"{"mode":"patch","sections"#));
-        assert!(prompt.contains("用户明确给出的新增或修正事实"));
-        assert!(!prompt.contains("常规对话默认使用 unchanged"));
         assert!(prompt.contains("不要输出隐藏思维链"));
-        assert!(!prompt.contains("每轮必须修改"));
+        assert!(!prompt.contains(r#"{"mode":"unchanged"}"#));
+        assert!(!prompt.contains(r#"{"mode":"patch"#));
+        assert!(!prompt.contains("```delivery"));
+        assert!(!prompt.contains("delivery"));
     }
 
     #[test]
-    fn every_node_prompt_lists_its_canonical_patch_titles() {
+    fn decision_prompt_lists_its_canonical_patch_titles() {
         for node_id in WorkflowNodeId::ALL {
             let node = sion_core::default_node(node_id, "now");
-            let prompt = build_agent_prompt(ConversationParts {
-                node: &node,
-                dependency_nodes: &[],
-                messages: &[],
-                project_override: None,
-                attachments: &[],
-                draft: "补充当前节点内容",
-            });
-
-            assert!(prompt.contains("不包含 Markdown # 标记或 [必填] 标签"));
+            let assistant = ChatMessage {
+                id: "a-1".into(),
+                role: ChatRole::Assistant,
+                content: "此前回复".into(),
+                reasoning_content: None,
+                sources: None,
+                created_at: "now".into(),
+                turn_id: None,
+                reasoning_duration_ms: None,
+                usage: None,
+                attachments: Vec::new(),
+                model_execution: None,
+            };
+            let decision = build_delivery_decision_prompt(&node, &[], &assistant, "规则", &[]);
+            assert!(decision
+                .prompt
+                .contains("不包含 Markdown # 标记或 [必填] 标签"));
             for section in workflow_definition(node_id).required_sections {
-                assert!(prompt.contains(&format!("`{section}`")));
+                assert!(decision.prompt.contains(&format!("`{section}`")));
             }
         }
     }
@@ -573,12 +618,12 @@ mod tests {
             revision: 9,
             markdown: "# 项目基本信息\n\n## 基础信息表\n重试与重生成依赖哨兵".into(),
         }];
-        let retry =
-            build_delivery_retry_prompt(&node, &[], &assistant, "当前自定义规则", &dependencies);
-        assert!(retry.prompt.contains("此前回复"));
-        assert!(retry.prompt.contains("重试与重生成依赖哨兵"));
-        assert!(retry.prompt.contains(r#"{"mode":"unchanged"}"#));
-        assert!(retry.breakdown.dependency_node_tokens > 0);
+        let decision =
+            build_delivery_decision_prompt(&node, &[], &assistant, "当前自定义规则", &dependencies);
+        assert!(decision.prompt.contains("此前回复"));
+        assert!(decision.prompt.contains("重试与重生成依赖哨兵"));
+        assert!(decision.prompt.contains(r#"{"mode":"unchanged"}"#));
+        assert!(decision.breakdown.dependency_node_tokens > 0);
 
         let saved_user_message = ChatMessage {
             id: "u-1".into(),

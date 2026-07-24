@@ -32,6 +32,9 @@ pub enum AgentRunStatus {
 pub enum AgentRunKind {
     #[default]
     Conversation,
+    /// Second-stage run that inspects the latest saved Markdown and emits the
+    /// delivery decision (unchanged or patch) for the turn.
+    DeliveryDecision,
     DeliveryRetry,
     DeliveryRegeneration,
     /// Generate or regenerate the export blueprint.
@@ -523,6 +526,16 @@ mod tests {
             scheduler
                 .enqueue(export_request("project-b", AgentRunKind::ExportDraft))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn delivery_decision_run_kind_serializes_as_delivery_decision() {
+        let value = serde_json::to_value(AgentRunKind::DeliveryDecision).unwrap();
+        assert_eq!(value, "delivery_decision");
+        assert_eq!(
+            serde_json::from_value::<AgentRunKind>(serde_json::json!("delivery_decision")).unwrap(),
+            AgentRunKind::DeliveryDecision
         );
     }
 }

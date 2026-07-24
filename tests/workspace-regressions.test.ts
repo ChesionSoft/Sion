@@ -179,6 +179,15 @@ test("conversation pane composes controls and app uses combined send", async () 
   assert.match(sendMessageSource, /startAgentRun\([^)]*content[^)]*selectedFileIds/s);
 });
 
+test("conversation pane guards IME confirmation enter from submitting", async () => {
+  const conversationPane = await readFile("src/components/workspace/ConversationPane.tsx", "utf8");
+  assert.match(conversationPane, /onCompositionStart/);
+  assert.match(conversationPane, /onCompositionEnd/);
+  assert.match(conversationPane, /event\.nativeEvent\.keyCode === 229/);
+  assert.match(conversationPane, /!event\.shiftKey/);
+  assert.match(conversationPane, /isComposingRef/);
+});
+
 test("conversation context refresh is session scoped rather than keystroke scoped", async () => {
   const source = await readFile("src/App.tsx", "utf8");
   const start = source.indexOf("async function loadConversationContext");
@@ -578,4 +587,24 @@ test("dependency delivery tokens appear in context and run details", async () =>
   assert.match(dialog, /依赖节点交付稿/);
   assert.match(dialog, /breakdown\.dependencyNodeTokens/);
   assert.match(app, /dependency_nodes:\s*"依赖节点交付稿"/);
+});
+
+test("delivery decision details expose raw json diff and save result", async () => {
+  const [details, runDetail, appSource, types] = await Promise.all([
+    readFile("src/components/workspace/DeliveryDecisionDetails.tsx", "utf8"),
+    readFile("src/components/workspace/RunDetailDialog.tsx", "utf8"),
+    readFile("src/App.tsx", "utf8"),
+    readFile("src/types.ts", "utf8"),
+  ]);
+  assert.match(details, /模型返回的交付 JSON/);
+  assert.match(details, /交付稿差异/);
+  assert.match(details, /保存结果/);
+  assert.match(details, /proposedMarkdown/);
+  assert.doesNotMatch(details, /dangerouslySetInnerHTML/);
+  assert.match(runDetail, /delivery_decision/);
+  assert.match(runDetail, /DeliveryDecisionDetails/);
+  assert.match(appSource, /delivery-decision-token/);
+  assert.match(appSource, /liveDecisionRawByTurn/);
+  assert.match(types, /DeliveryDecisionTokenEvent/);
+  assert.match(types, /DeliveryDecisionInspection/);
 });

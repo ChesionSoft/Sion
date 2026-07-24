@@ -14,6 +14,7 @@ export type ConversationPaneProps = {
   messages: ChatMessage[];
   turns: ConversationTurn[];
   liveReasoningByRun: Record<string, string>;
+  liveDecisionRawByTurn: Record<string, string>;
   activeRunId: string | null;
   sendingMessage: boolean;
   messageDraft: string;
@@ -41,13 +42,14 @@ const reasoningLabel: Record<string, string> = { off: "关闭", low: "低", medi
 
 export function ConversationPane(props: ConversationPaneProps) {
   const {
-    nodeAvailable, messages, turns, liveReasoningByRun, activeRunId, sendingMessage, messageDraft, markdownDirty,
+    nodeAvailable, messages, turns, liveReasoningByRun, liveDecisionRawByTurn, activeRunId, sendingMessage, messageDraft, markdownDirty,
     onMessageDraft, onSend, onCancel, onRetryDelivery, onOpenRunDetail,
     providers, files, selectedFileIds, importing, modelSelection, savingModelSelection,
     conversationContext, loadingConversationContext, conversationContextError, onModelSelection, onToggleFile, onImportFile,
   } = props;
   const composerMode = activeRunId ? "stop" : sendingMessage ? "sending" : "send";
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isComposingRef = useRef(false);
   const sendDisabled = composerMode === "stop"
     ? !nodeAvailable
     : composerMode === "sending" || !conversationCanSend({
@@ -107,6 +109,7 @@ export function ConversationPane(props: ConversationPaneProps) {
               userMessage={item.userMessage}
               assistantMessage={item.assistantMessage}
               liveReasoning={liveReasoningByRun[item.turn.runId]}
+              liveDecisionRaw={liveDecisionRawByTurn[item.turn.id]}
               markdownDirty={markdownDirty}
               onRetryDelivery={onRetryDelivery}
               onOpenRunDetail={onOpenRunDetail}
@@ -129,8 +132,13 @@ export function ConversationPane(props: ConversationPaneProps) {
           placeholder={nodeAvailable ? "描述你希望在此节点完成的工作…" : "节点尚未加载"}
           value={messageDraft}
           onChange={(event) => onMessageDraft(event.target.value)}
+          onCompositionStart={() => { isComposingRef.current = true; }}
+          onCompositionEnd={() => { isComposingRef.current = false; }}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            const isImeConfirmation = isComposingRef.current
+              || event.nativeEvent.isComposing
+              || event.nativeEvent.keyCode === 229;
+            if (event.key === "Enter" && !event.shiftKey && !isImeConfirmation) {
               event.preventDefault();
               submit();
             }

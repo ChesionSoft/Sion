@@ -67,5 +67,8 @@ export function turnHeadline(turn: ConversationTurn): string {
 }
 
 export function turnCanRetryDelivery(turn: ConversationTurn, dirty: boolean): boolean {
-  return !dirty && turn.deliveryOutcome.kind === "awaiting_manual_draft_resolution";
+  if (dirty) return false;
+  return turn.deliveryOutcome.kind === "awaiting_manual_draft_resolution"
+    || turn.deliveryOutcome.kind === "conflict"
+    || (turn.deliveryOutcome.kind === "failed" && turn.deliveryOutcome.stage !== "response");
 }

@@ -54,12 +54,15 @@ test("grouping links one user and assistant message without duplicating legacy m
   );
 });
 
-test("retry is allowed only when the draft is clean and the turn is awaiting resolution", () => {
+test("retry is allowed for recoverable delivery outcomes when the draft is clean", () => {
   const awaiting = turn({
     deliveryOutcome: { kind: "awaiting_manual_draft_resolution", expectedRevision: 7 },
   });
   assert.equal(turnCanRetryDelivery(awaiting, false), true);
   assert.equal(turnCanRetryDelivery(awaiting, true), false);
+  assert.equal(turnCanRetryDelivery(turn({ deliveryOutcome: { kind: "conflict", expectedRevision: 7, actualRevision: 8 } }), false), true);
+  assert.equal(turnCanRetryDelivery(turn({ deliveryOutcome: { kind: "failed", stage: "decision", publicError: "模型服务失败" } }), false), true);
+  assert.equal(turnCanRetryDelivery(turn({ deliveryOutcome: { kind: "failed", stage: "response", publicError: "模型服务失败" } }), false), false);
   assert.equal(turnCanRetryDelivery(turn({ deliveryOutcome: { kind: "unchanged" } }), false), false);
 });
 

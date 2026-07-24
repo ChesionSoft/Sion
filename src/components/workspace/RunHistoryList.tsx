@@ -11,6 +11,7 @@ const RUN_STATUS_LABEL: Record<AgentRun["status"], string> = {
 
 const RUN_KIND_LABEL: Record<AgentRun["kind"], string> = {
   conversation: "对话",
+  delivery_decision: "交付判断",
   delivery_retry: "交付重试",
   delivery_regeneration: "重新生成交付稿",
 };

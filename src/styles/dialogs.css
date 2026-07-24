@@ -119,3 +119,7 @@
   .provider-model-fields { grid-template-columns: 1fr; }
   .run-detail-grid { grid-template-columns: 1fr; }
 }
+
+.run-detail .delivery-decision-details { margin-top: 10px; }
+.run-detail .delivery-decision-raw,
+.run-detail .delivery-decision-diff { max-height: 280px; overflow: auto; }

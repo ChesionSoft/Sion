@@ -150,6 +150,49 @@ pub fn running_activities(now: &str) -> Vec<TurnActivity> {
     ]
 }
 
+/// Activities shown after the visible reply has been persisted but before the
+/// delivery decision run has resolved: the reply is done, the decision is in
+/// flight, and validation/save wait on its outcome.
+pub fn mid_delivery_activities(now: &str) -> Vec<TurnActivity> {
+    vec![
+        activity(
+            TurnActivityKind::Response,
+            TurnActivityStatus::Completed,
+            "Agent 回复完成",
+            None,
+            now,
+        ),
+        activity(
+            TurnActivityKind::DeliveryCheck,
+            TurnActivityStatus::Running,
+            "判断是否更新交付稿",
+            None,
+            now,
+        ),
+        activity(
+            TurnActivityKind::DeliveryValidate,
+            TurnActivityStatus::Pending,
+            "校验交付内容",
+            None,
+            now,
+        ),
+        activity(
+            TurnActivityKind::DeliverySave,
+            TurnActivityStatus::Pending,
+            "保存交付稿",
+            None,
+            now,
+        ),
+    ]
+}
+
+/// Activities shown while a delivery decision is waiting for a scheduler slot.
+pub fn queued_delivery_activities(now: &str) -> Vec<TurnActivity> {
+    let mut activities = mid_delivery_activities(now);
+    activities[1].status = TurnActivityStatus::Pending;
+    activities
+}
+
 pub fn completed_activities(outcome: &DeliveryOutcome, now: &str) -> Vec<TurnActivity> {
     let (check_status, validate_status, save_status, save_summary) = match outcome {
         DeliveryOutcome::Unchanged => (
@@ -462,6 +505,25 @@ mod tests {
     }
 
     #[test]
+    fn mid_delivery_activities_show_response_done_and_check_running() {
+        let activities = mid_delivery_activities("started");
+        assert_eq!(activities.len(), 4);
+        assert_eq!(activities[0].kind, TurnActivityKind::Response);
+        assert_eq!(activities[0].status, TurnActivityStatus::Completed);
+        assert_eq!(activities[1].kind, TurnActivityKind::DeliveryCheck);
+        assert_eq!(activities[1].status, TurnActivityStatus::Running);
+        assert_eq!(activities[2].status, TurnActivityStatus::Pending);
+        assert_eq!(activities[3].status, TurnActivityStatus::Pending);
+    }
+
+    #[test]
+    fn queued_delivery_activities_wait_for_the_decision_run() {
+        let activities = queued_delivery_activities("queued");
+        assert_eq!(activities[0].status, TurnActivityStatus::Completed);
+        assert_eq!(activities[1].status, TurnActivityStatus::Pending);
+    }
+
+    #[test]
     fn public_reasoning_summary_preserves_exact_stream_text_without_truncating() {
         let chunks = vec![
             "## 核对计划\n\n".to_string(),
@@ -496,6 +558,7 @@ mod tests {
             delivery_outcome: DeliveryOutcome::AwaitingManualDraftResolution {
                 expected_revision: 7,
             },
+            delivery_inspection: None,
             started_at: "started".into(),
             finished_at: Some("finished".into()),
         };
@@ -532,6 +595,7 @@ mod tests {
             activities: Vec::new(),
             reasoning_summary: None,
             delivery_outcome: DeliveryOutcome::Pending,
+            delivery_inspection: None,
             started_at: "started".into(),
             finished_at: None,
         };
