@@ -92,6 +92,16 @@ pub struct WorkflowNodeDefinition {
     pub depends_on: &'static [WorkflowNodeId],
     pub agent_rule_file: &'static str,
     pub required_sections: &'static [&'static str],
+    pub optional_sections: &'static [&'static str],
+}
+
+impl WorkflowNodeDefinition {
+    pub fn patchable_sections(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.required_sections
+            .iter()
+            .copied()
+            .chain(self.optional_sections.iter().copied())
+    }
 }
 
 pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
@@ -104,6 +114,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         depends_on: &[],
         agent_rule_file: "01-basic-info.md",
         required_sections: &["基础信息表", "项目边界"],
+        optional_sections: &[],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::Goals,
@@ -114,6 +125,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         depends_on: &[WorkflowNodeId::BasicInfo],
         agent_rule_file: "02-goals.md",
         required_sections: &["需求背景", "建设目标", "范围边界"],
+        optional_sections: &[],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::RolesPermissions,
@@ -124,6 +136,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         depends_on: &[WorkflowNodeId::BasicInfo, WorkflowNodeId::Goals],
         agent_rule_file: "03-roles-permissions.md",
         required_sections: &["角色清单"],
+        optional_sections: &["权限矩阵"],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::BusinessFlow,
@@ -138,6 +151,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         ],
         agent_rule_file: "04-business-flow.md",
         required_sections: &["核心业务流程"],
+        optional_sections: &["流程步骤"],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::FeatureDesign,
@@ -153,6 +167,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         ],
         agent_rule_file: "05-feature-design.md",
         required_sections: &["功能模块清单", "模块详情"],
+        optional_sections: &["权限矩阵"],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::PageInteraction,
@@ -166,6 +181,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         ],
         agent_rule_file: "06-page-interaction.md",
         required_sections: &["页面清单"],
+        optional_sections: &["关键交互"],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::DataStructure,
@@ -179,6 +195,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         ],
         agent_rule_file: "07-data-structure.md",
         required_sections: &["实体清单"],
+        optional_sections: &["字段说明"],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::ApiDesign,
@@ -189,6 +206,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         depends_on: &[WorkflowNodeId::FeatureDesign, WorkflowNodeId::DataStructure],
         agent_rule_file: "08-api-design.md",
         required_sections: &["接口清单"],
+        optional_sections: &["接口详情"],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::ArchitectureDeployment,
@@ -203,6 +221,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         ],
         agent_rule_file: "09-architecture-deployment.md",
         required_sections: &["技术栈", "部署方案"],
+        optional_sections: &["依赖清单"],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::DevelopmentTasks,
@@ -218,6 +237,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         ],
         agent_rule_file: "10-development-tasks.md",
         required_sections: &["任务清单"],
+        optional_sections: &["排期与依赖"],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::RisksOpenQuestions,
@@ -233,6 +253,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         ],
         agent_rule_file: "11-risks-open-questions.md",
         required_sections: &["风险清单", "待确认事项"],
+        optional_sections: &[],
     },
     WorkflowNodeDefinition {
         id: WorkflowNodeId::FinalExport,
@@ -255,6 +276,7 @@ pub const WORKFLOW: [WorkflowNodeDefinition; 12] = [
         ],
         agent_rule_file: "12-final-export.md",
         required_sections: &["导出检查清单"],
+        optional_sections: &[],
     },
 ];
 
@@ -688,13 +710,13 @@ pub fn validate_delivery_markdown(
     Ok(markdown.to_string())
 }
 
-/// Normalizes only required section headings that mirror the embedded Agent
-/// rule template (`### 标题 [必填]`) into the canonical Markdown structure
+/// Normalizes schema section headings that mirror the embedded Agent rule
+/// template (`### 标题 [必填/可选]`) into the canonical Markdown structure
 /// required by delivery validation. Regenerated documents are complete model
 /// outputs, so this safely bridges the presentation-only template notation
 /// without altering body text, unrelated headings, or fenced code blocks.
 pub fn normalize_regenerated_delivery_markdown(markdown: String, node: WorkflowNodeId) -> String {
-    let required_sections = workflow_definition(node).required_sections;
+    let definition = workflow_definition(node);
     let mut normalized = String::with_capacity(markdown.len());
     let mut in_fence = false;
 
@@ -720,17 +742,26 @@ pub fn normalize_regenerated_delivery_markdown(markdown: String, node: WorkflowN
                 .count();
             if heading_marks >= 3 && trimmed.as_bytes().get(heading_marks) == Some(&b' ') {
                 let title = trimmed[heading_marks + 1..].trim();
-                if let Some(section) = required_sections.iter().find(|section| {
-                    title == **section
+                if let Some(section) = definition.patchable_sections().find(|section| {
+                    title == *section
                         || title
                             .strip_suffix("[必填]")
-                            .is_some_and(|value| value.trim_end() == **section)
+                            .is_some_and(|value| value.trim_end() == *section)
+                        || title
+                            .strip_suffix("[可选]")
+                            .is_some_and(|value| value.trim_end() == *section)
                         || title
                             .strip_suffix("（必填）")
-                            .is_some_and(|value| value.trim_end() == **section)
+                            .is_some_and(|value| value.trim_end() == *section)
+                        || title
+                            .strip_suffix("（可选）")
+                            .is_some_and(|value| value.trim_end() == *section)
                         || title
                             .strip_suffix("(必填)")
-                            .is_some_and(|value| value.trim_end() == **section)
+                            .is_some_and(|value| value.trim_end() == *section)
+                        || title
+                            .strip_suffix("(可选)")
+                            .is_some_and(|value| value.trim_end() == *section)
                 }) {
                     normalized.push_str(&body[..leading_len]);
                     normalized.push_str("## ");
@@ -755,6 +786,7 @@ fn apply_delivery_patch(
     }
     let mut seen = std::collections::HashSet::new();
     let mut replacements = Vec::with_capacity(sections.len());
+    let mut additions = Vec::new();
     let current_sections = markdown_h2_sections(current_markdown);
     for section in sections {
         let submitted_title = section.title.trim();
@@ -770,7 +802,7 @@ fn apply_delivery_patch(
                 section: title.to_string(),
             });
         }
-        let content = section.content.trim();
+        let content = normalize_patch_content(section.content.trim());
         if content.is_empty() {
             return Err(DeliveryError::EmptyPatchContent {
                 section: title.to_string(),
@@ -783,23 +815,31 @@ fn apply_delivery_patch(
         }
         let target = current_sections
             .iter()
-            .find(|candidate| candidate.title == title)
-            .ok_or_else(|| DeliveryError::MissingTargetSection {
+            .find(|candidate| candidate.title == title);
+        if let Some(target) = target {
+            replacements.push((target.content_start, target.end, content.to_string()));
+        } else if workflow_definition(node).optional_sections.contains(&title) {
+            additions.push((title, content.to_string()));
+        } else {
+            return Err(DeliveryError::MissingTargetSection {
                 section: title.to_string(),
-            })?;
-        replacements.push((target.content_start, target.end, content.to_string()));
+            });
+        }
     }
     replacements.sort_by_key(|replacement| std::cmp::Reverse(replacement.0));
     let mut result = current_markdown.to_string();
     for (start, end, content) in replacements {
         result.replace_range(start..end, &format!("\n\n{content}\n\n"));
     }
+    for (title, content) in additions {
+        result.push_str(&format!("\n\n## {title}\n\n{content}\n"));
+    }
     validate_delivery_markdown(result, node)
 }
 
 /// Resolves the presentation form used by agent rule templates, such as
-/// `### 标题 [必填]`, to the canonical required-section title. This is
-/// deliberately limited to known required sections so patch validation keeps
+/// `### 标题 [必填/可选]`, to the canonical patchable-section title. This is
+/// deliberately limited to known schema sections so patch validation keeps
 /// rejecting arbitrary or misspelled section names.
 fn canonical_required_section_title(title: &str, node: WorkflowNodeId) -> Option<&'static str> {
     let title = title.trim();
@@ -814,9 +854,7 @@ fn canonical_required_section_title(title: &str, node: WorkflowNodeId) -> Option
     };
 
     workflow_definition(node)
-        .required_sections
-        .iter()
-        .copied()
+        .patchable_sections()
         .find(|section| {
             title == *section
                 || title
@@ -827,6 +865,15 @@ fn canonical_required_section_title(title: &str, node: WorkflowNodeId) -> Option
                     .is_some_and(|value| value.trim_end() == *section)
                 || title
                     .strip_suffix("(必填)")
+                    .is_some_and(|value| value.trim_end() == *section)
+                || title
+                    .strip_suffix("[可选]")
+                    .is_some_and(|value| value.trim_end() == *section)
+                || title
+                    .strip_suffix("（可选）")
+                    .is_some_and(|value| value.trim_end() == *section)
+                || title
+                    .strip_suffix("(可选)")
                     .is_some_and(|value| value.trim_end() == *section)
         })
 }
@@ -881,6 +928,23 @@ fn contains_structural_heading(markdown: &str) -> bool {
         }
     }
     false
+}
+
+/// Some providers wrap an otherwise valid section body in one leading H1/H2
+/// even though the patch title already identifies its target. Dropping that
+/// single wrapper cannot expand the write scope: any later structural heading
+/// remains invalid and is still rejected by `contains_structural_heading`.
+fn normalize_patch_content(content: &str) -> &str {
+    let Some((first_line, remainder)) = content.split_once('\n') else {
+        return content;
+    };
+    let first_line = first_line.trim().trim_end_matches('\r');
+    let is_wrapper = first_line.starts_with("# ") || first_line.starts_with("## ");
+    if is_wrapper && !remainder.trim().is_empty() {
+        remainder.trim()
+    } else {
+        content
+    }
 }
 
 pub(crate) struct DeliveryBlock<'a> {
@@ -1431,6 +1495,39 @@ mod tests {
     }
 
     #[test]
+    fn patches_an_existing_optional_section_without_rejecting_the_schema_title() {
+        let current = "# 业务流程设计\n\n## 核心业务流程\n\n原始流程\n\n## 流程步骤\n\n原始步骤\n";
+        let markdown = apply_agent_delivery(
+            r##"```delivery
+{"mode":"patch","sections":[{"title":"核心业务流程","content":"更新后的流程"},{"title":"流程步骤","content":"| 步骤 | 动作 |\n| --- | --- |\n| 登录 | 验证 |"}]}
+```"##,
+            WorkflowNodeId::BusinessFlow,
+            current,
+        )
+        .unwrap();
+
+        assert!(markdown.contains("更新后的流程"));
+        assert!(markdown.contains("| 登录 | 验证 |"));
+        assert!(!markdown.contains("原始步骤"));
+    }
+
+    #[test]
+    fn inserts_a_declared_optional_section_when_it_is_not_present_yet() {
+        let current = "# 业务流程设计\n\n## 核心业务流程\n\n原始流程\n";
+        let markdown = apply_agent_delivery(
+            r####"```delivery
+{"mode":"patch","sections":[{"title":"### 流程步骤 [可选]","content":"| 步骤 | 动作 |\n| --- | --- |\n| 登录 | 验证 |"}]}
+```"####,
+            WorkflowNodeId::BusinessFlow,
+            current,
+        )
+        .unwrap();
+
+        assert!(markdown.contains("## 流程步骤\n\n| 步骤 | 动作 |"));
+        assert!(validate_delivery_markdown(markdown, WorkflowNodeId::BusinessFlow).is_ok());
+    }
+
+    #[test]
     fn applies_a_patch_with_a_template_style_required_section_title() {
         let current = "# 业务流程设计\n\n## 核心业务流程\n\n- 原始流程\n";
         let markdown = apply_agent_delivery(
@@ -1477,7 +1574,7 @@ mod tests {
     fn rejects_a_patch_that_rewrites_document_structure() {
         let error = apply_agent_delivery(
             r###"```delivery
-{"mode":"patch","sections":[{"title":"项目边界","content":"## 隐藏章节\n\n- 内容"}]}
+{"mode":"patch","sections":[{"title":"项目边界","content":"- 当前内容\n\n## 隐藏章节\n\n- 内容"}]}
 ```"###,
             WorkflowNodeId::BasicInfo,
             "# 项目基本信息\n\n## 基础信息表\n\n## 项目边界\n",
@@ -1489,6 +1586,23 @@ mod tests {
                 section: "项目边界".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn removes_one_redundant_leading_heading_from_patch_content() {
+        let markdown = apply_agent_delivery(
+            r###"```delivery
+{"mode":"patch","sections":[{"title":"导出检查清单","content":"## 导出蓝图\n\n| 章节 | inclusion |\n| --- | --- |\n| 项目基本信息 | confirmed |"}]}
+```"###,
+            WorkflowNodeId::FinalExport,
+            "# 最终文档生成\n\n## 导出检查清单\n",
+        )
+        .unwrap();
+
+        assert!(markdown.contains("## 导出检查清单"));
+        assert!(!markdown.contains("## 导出蓝图"));
+        assert!(markdown.contains("| 项目基本信息 | confirmed |"));
+        assert!(validate_delivery_markdown(markdown, WorkflowNodeId::FinalExport).is_ok());
     }
 
     #[test]

@@ -2628,7 +2628,7 @@ fn resolve_delivery_decision(
     finished_at: &str,
 ) -> DeliveryDecisionResolution {
     let base_markdown = job.base_markdown.clone();
-    let delivery_result = sion_core::parse_agent_response(raw_response).map(|parsed| parsed.delivery);
+    let delivery_result = turn_runtime::parse_delivery_decision_response(raw_response);
     let proposed_markdown = match &delivery_result {
         Ok(delivery) => match turn_runtime::plan_delivery_completion(
             delivery.clone(),

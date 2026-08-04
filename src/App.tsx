@@ -997,8 +997,9 @@ export function App() {
       setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
       setMessageDraft("");
       setSelectedFileIds([]);
-    } catch {
+    } catch (error) {
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
+      setNotice(`发送消息失败：${String(error)}`);
     } finally {
       if (isLatestRequest(scope, messageMutationScopeRef.current)) setSendingMessage(false);
     }

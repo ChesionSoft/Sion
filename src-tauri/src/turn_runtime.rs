@@ -15,6 +15,85 @@ use sion_core::{
 
 const DELIVERY_FENCE_START: &str = "```delivery";
 
+/// Parses a delivery-decision response and applies one deliberately narrow
+/// recovery for a provider that ended a syntactically complete patch section
+/// but omitted only the final JSON container closers before the closing fence.
+/// The repaired payload still passes the normal delivery parser and all later
+/// node/section validation; unterminated strings and structurally inconsistent
+/// JSON are never repaired.
+pub fn parse_delivery_decision_response(
+    raw: &str,
+) -> Result<AgentDelivery, sion_core::DeliveryError> {
+    match sion_core::parse_agent_response(raw) {
+        Ok(parsed) => Ok(parsed.delivery),
+        Err(original_error) => {
+            let Some(repaired) = repair_missing_patch_closers(raw) else {
+                return Err(original_error);
+            };
+            match sion_core::parse_agent_response(&repaired) {
+                Ok(parsed) => Ok(parsed.delivery),
+                Err(_) => Err(original_error),
+            }
+        }
+    }
+}
+
+fn repair_missing_patch_closers(raw: &str) -> Option<String> {
+    let fence_start = raw.find(DELIVERY_FENCE_START)?;
+    let after_marker = fence_start + DELIVERY_FENCE_START.len();
+    let body_start = after_marker + raw[after_marker..].find('\n')? + 1;
+    let closing_offset = raw[body_start..].rfind("```")?;
+    let closing_start = body_start + closing_offset;
+    if !raw[closing_start + 3..].trim().is_empty() {
+        return None;
+    }
+
+    let body = raw[body_start..closing_start].trim_end();
+    if !body.contains("\"mode\"")
+        || !body.contains("\"patch\"")
+        || !body.contains("\"sections\"")
+        || !matches!(body.chars().last(), Some('}' | ']'))
+    {
+        return None;
+    }
+
+    let mut expected_closers = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    for character in body.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '{' => expected_closers.push('}'),
+            '[' => expected_closers.push(']'),
+            '}' | ']' if expected_closers.pop() != Some(character) => return None,
+            '}' | ']' => {}
+            _ => {}
+        }
+    }
+    if in_string || escaped || !(1..=2).contains(&expected_closers.len()) {
+        return None;
+    }
+
+    let suffix: String = expected_closers.into_iter().rev().collect();
+    Some(format!(
+        "{}{}{}\n{}",
+        &raw[..body_start],
+        body,
+        suffix,
+        &raw[closing_start..]
+    ))
+}
+
 #[derive(Debug, Default)]
 pub struct DeliveryStreamProjector {
     raw: String,
@@ -487,6 +566,28 @@ mod tests {
         let completed = projector.finish();
         assert_eq!(completed.visible_content, "正文已经完成");
         assert!(completed.delivery.is_err());
+    }
+
+    #[test]
+    fn decision_parser_repairs_only_missing_patch_container_closers() {
+        let raw = "```delivery\n{\"mode\":\"patch\",\"sections\":[{\"title\":\"核心业务流程\",\"content\":\"补充内容\"}\n```";
+        let parsed = parse_delivery_decision_response(raw).unwrap();
+        assert!(matches!(
+            parsed,
+            AgentDelivery::Patch { sections }
+                if sections.len() == 1
+                    && sections[0].title == "核心业务流程"
+                    && sections[0].content == "补充内容"
+        ));
+    }
+
+    #[test]
+    fn decision_parser_does_not_repair_incomplete_or_inconsistent_json() {
+        let unterminated_string = "```delivery\n{\"mode\":\"patch\",\"sections\":[{\"title\":\"核心业务流程\",\"content\":\"未完成\n```";
+        assert!(parse_delivery_decision_response(unterminated_string).is_err());
+
+        let wrong_closer = "```delivery\n{\"mode\":\"patch\",\"sections\":[{\"title\":\"核心业务流程\",\"content\":\"内容\"}] ]\n```";
+        assert!(parse_delivery_decision_response(wrong_closer).is_err());
     }
 
     #[test]

@@ -43,13 +43,17 @@ export function FilePoolWorkspace({
       <header><div><h2>文件池</h2><p>选择需要提供给当前节点 Agent 的本地文件。</p></div>{files.length > 0 ? <Button variant="primary" loading={importing} onClick={onImport}>导入文件</Button> : null}</header>
       {files.length === 0 ? <FilePoolEmptyState importing={importing} onImport={onImport} /> : (
         <div className="project-file-list">
-          {files.map((file) => (
-            <article key={file.id}>
-              <label><input type="checkbox" checked={selectedFileIds.includes(file.id)} onChange={() => onToggleContext(file.id)} /><span><strong>{file.originalName}</strong><small>{file.extension.toUpperCase()} · {Math.max(1, Math.round(file.byteSize / 1024)).toLocaleString()} KB</small></span></label>
-              <span className={`file-extraction-status is-${file.extractionStatus ?? "available"}`}>{file.extractionStatus === "failed" ? "提取失败" : file.extractionStatus === "unsupported" ? "仅文件" : file.truncated ? "文本已截断" : "文本可用"}</span>
-              <Button variant="ghost" onClick={() => onPreview(file.id)}>预览</Button>
-            </article>
-          ))}
+          {files.map((file) => {
+            const extractionStatus = file.extractionStatus ?? "available";
+            const selectable = extractionStatus === "available";
+            return (
+              <article key={file.id}>
+                <label className={selectable ? "" : "is-disabled"}><input type="checkbox" checked={selectedFileIds.includes(file.id)} disabled={!selectable} onChange={() => onToggleContext(file.id)} /><span><strong>{file.originalName}</strong><small>{file.extension.toUpperCase()} · {Math.max(1, Math.round(file.byteSize / 1024)).toLocaleString()} KB</small></span></label>
+                <span className={`file-extraction-status is-${extractionStatus}`}>{extractionStatus === "failed" ? "提取失败" : extractionStatus === "unsupported" ? "仅文件" : file.truncated ? "文本已截断" : "文本可用"}</span>
+                <Button variant="ghost" onClick={() => onPreview(file.id)}>预览</Button>
+              </article>
+            );
+          })}
         </div>
       )}
     </section>
