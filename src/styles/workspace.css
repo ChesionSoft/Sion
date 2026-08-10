@@ -167,9 +167,9 @@
 .safe-markdown th, .safe-markdown td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; }
 .safe-markdown th { background: var(--bg-subtle); font-weight: 600; }
 .safe-markdown pre { box-sizing: border-box; width: max-content; min-width: 100%; margin: .8em 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-subtle); font: 12px/1.6 "SFMono-Regular", Consolas, monospace; }
-.safe-markdown code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .92em; }
+.safe-markdown code:not(.md-code-text) { font-family: "SFMono-Regular", Consolas, monospace; font-size: .92em; }
 .safe-markdown pre code { font-size: 12px; background: none; padding: 0; }
-.safe-markdown :not(pre) > code { padding: 1px 4px; border-radius: 4px; background: var(--bg-subtle); }
+.safe-markdown :not(pre) > code:not(.md-code-text) { padding: 1px 4px; border-radius: 4px; background: var(--bg-subtle); }
 .safe-markdown blockquote { margin: .8em 0; padding: .2em 0 .2em 14px; border-left: 3px solid var(--border); color: var(--text-muted); }
 .safe-markdown hr { margin: 1.2em 0; border: 0; border-top: 1px solid var(--border); }
 .safe-markdown-fallback { white-space: pre-wrap; overflow-wrap: anywhere; }
