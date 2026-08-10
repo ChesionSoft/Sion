@@ -826,6 +826,8 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(timeline, /aria-expanded=\{stepsOpen\}/);
   assert.match(timeline, /conversation-activity-toggle-rail/);
   assert.match(timeline, /conversation-activity-marker/);
+  assert.match(timeline, /function TimelineMarker/);
+  assert.match(timeline, /viewBox="0 0 16 16"/);
   assert.match(timeline, /activity\.publicSummary/);
   assert.match(card, /ConversationReasoningDisclosure/);
   assert.match(card, /turnDeliveryPresentation/);
@@ -838,7 +840,8 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(deliveryDetails, /模型返回的交付 JSON/);
   assert.match(deliveryDetails, /publicError/);
   assert.match(css, /\.conversation-activity-timeline\s*\{/);
-  assert.match(css, /\.conversation-activity-item\.is-failed\s*\.conversation-activity-marker::before\s*\{\s*content:\s*"×"/s);
+  assert.match(css, /\.conversation-activity-marker path\s*\{/);
+  assert.doesNotMatch(css, /conversation-activity-marker::before/);
   assert.match(css, /\.conversation-reasoning-shimmer\s*\{/);
   assert.match(css, /@keyframes conversation-shimmer/);
   assert.match(css, /background-clip:\s*text/);
@@ -886,7 +889,8 @@ test("AIcss conversation surface keeps delivery-detail access and reduces motion
   assert.match(disclosure, /!active && !hasContent\) return null/);
   // Timeline stays keyboard accessible without color-only status.
   assert.match(timeline, /aria-label=\{`查看运行详情/);
-  assert.match(css, /\.conversation-activity-item\.is-completed\s*\.conversation-activity-marker::before\s*\{\s*content:\s*"✓"/s);
+  assert.match(timeline, /<TimelineMarker status=\{turn\.status\}/);
+  assert.match(css, /\.conversation-activity-marker path\s*\{/);
   // Streaming status is a polite region, not full-output re-announcement.
   assert.match(streaming, /role="status"/);
   assert.match(streaming, /aria-live="polite"/);

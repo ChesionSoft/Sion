@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ConversationTurn } from "../../types";
+import type { ConversationTurn, TurnActivityStatus } from "../../types";
 
 const TURN_STATUS_LABEL: Record<ConversationTurn["status"], string> = {
   queued: "Agent 已排队",
@@ -15,6 +15,28 @@ export type ConversationActivityTimelineProps = {
   onOpenRunDetail: (runId: string) => void;
 };
 
+type TimelineMarkerStatus = ConversationTurn["status"] | TurnActivityStatus;
+
+function TimelineMarker({ status }: { status: TimelineMarkerStatus }) {
+  return (
+    <span className="conversation-activity-marker" aria-hidden="true">
+      {status === "completed" ? (
+        <svg viewBox="0 0 16 16" focusable="false">
+          <path d="M3.35 8.2 6.55 11.1 12.65 4.95" />
+        </svg>
+      ) : status === "failed" ? (
+        <svg viewBox="0 0 16 16" focusable="false">
+          <path d="m4.75 4.75 6.5 6.5m0-6.5-6.5 6.5" />
+        </svg>
+      ) : status === "skipped" ? (
+        <svg viewBox="0 0 16 16" focusable="false">
+          <path d="M4.25 8h7.5" />
+        </svg>
+      ) : null}
+    </span>
+  );
+}
+
 /** One keyboard-accessible timeline combining the run's overall status (a
  * button that opens the full diagnostic dialog) with each execution activity.
  * Markers are shape + text driven so states stay readable without color. */
@@ -29,7 +51,7 @@ export function ConversationActivityTimeline({
   return (
     <ol className={`conversation-activity-timeline${showSteps && hasSteps ? " is-steps-open" : ""}`}>
       <li className={`conversation-activity-item is-${turn.status}`}>
-        <span className="conversation-activity-marker" aria-hidden="true" />
+        <TimelineMarker status={turn.status} />
         <div className="conversation-activity-content">
           <button
             type="button"
@@ -72,7 +94,7 @@ export function ConversationActivityTimeline({
       ) : null}
       {showSteps ? turn.activities.map((activity) => (
         <li key={activity.id} className={`conversation-activity-item is-${activity.status}`}>
-          <span className="conversation-activity-marker" aria-hidden="true" />
+          <TimelineMarker status={activity.status} />
           <div className="conversation-activity-content">
             <strong className="conversation-activity-label">{activity.label}</strong>
             {activity.publicSummary ? (
