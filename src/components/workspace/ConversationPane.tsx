@@ -125,7 +125,7 @@ export function ConversationPane(props: ConversationPaneProps) {
           );
         })}
       </div>
-      <form className="conversation-composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+      <form className={`conversation-composer is-${composerMode}${sendDisabled ? " is-disabled" : ""}`} onSubmit={(event) => { event.preventDefault(); submit(); }}>
         {selectedFiles.length > 0 ? (
           <div className="conversation-attachment-chips">
             {selectedFiles.map((file) => (

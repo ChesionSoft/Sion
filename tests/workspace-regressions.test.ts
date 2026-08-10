@@ -823,3 +823,25 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(css, /\.delivery-result\.is-error\s*\{/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-reasoning-shimmer\s*\{\s*animation:\s*none/s);
 });
+
+test("composer is the AIcss host surface with state classes and keyboard-safe controls", async () => {
+  const [pane, css, responsive] = await Promise.all([
+    readFile("src/components/workspace/ConversationPane.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+    readFile("src/styles/responsive.css", "utf8"),
+  ]);
+  assert.match(pane, /conversation-composer is-\$\{composerMode\}\$\{sendDisabled \? " is-disabled" : ""\}/);
+  assert.match(pane, /ConversationFileMenu/);
+  assert.match(pane, /ConversationModelMenu/);
+  assert.match(pane, /ContextUsageIndicator/);
+  assert.match(pane, /composerMode === "stop" \? "停止" : "发送"/);
+  assert.match(pane, /onCompositionStart/);
+  assert.match(pane, /event\.nativeEvent\.keyCode === 229/);
+  assert.match(css, /\.conversation-composer\.is-stop\s*\{/);
+  assert.match(css, /\.conversation-composer\.is-disabled\s*\{/);
+  assert.match(css, /\.conversation-composer textarea:disabled\s*\{/);
+  assert.match(css, /\.conversation-composer-actions \.ui-button\s*\{[^}]*border-radius:\s*999px/s);
+  assert.match(css, /\.conversation-model-trigger:focus-visible,/);
+  assert.match(css, /\.conversation-file-trigger:focus-visible/);
+  assert.match(responsive, /@media \(max-width: 560px\)[\s\S]*\.conversation-composer-toolbar\s*\{\s*flex-wrap:\s*wrap/s);
+});

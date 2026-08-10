@@ -28,6 +28,11 @@
   }
 }
 
+@media (max-width: 560px) {
+  .conversation-composer-toolbar { flex-wrap: wrap; row-gap: 6px; }
+  .conversation-composer-actions { margin-left: auto; }
+}
+
 @media (max-width: 760px) {
   .export-workbench {
     grid-template-columns: minmax(0, 1fr);
