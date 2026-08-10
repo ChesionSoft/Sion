@@ -28,7 +28,22 @@ export function ConversationReasoningDisclosure({
             · {characterCount.toLocaleString("zh-CN")} 字
           </span>
         ) : null}
-        <span aria-hidden="true">{open ? "⌃" : "⌄"}</span>
+        <svg
+          className={`conversation-reasoning-chevron${open ? " is-open" : ""}`}
+          viewBox="0 0 16 16"
+          width="12"
+          height="12"
+          aria-hidden="true"
+        >
+          <path
+            d="M4 6l4 4 4-4"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
       </button>
       {open ? (
         <div className="conversation-reasoning-content">
