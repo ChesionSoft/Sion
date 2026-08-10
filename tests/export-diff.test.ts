@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { lineDiff } from "../src/export-diff.ts";
+import { lineDiff, lineDiffWithNumbers } from "../src/export-diff.ts";
 
 test("line diff preserves stable and changed lines", () => {
   assert.deepEqual(lineDiff("a\nb", "a\nc"), [
@@ -22,4 +22,34 @@ test("line diff handles added and removed tails", () => {
     { kind: "same", text: "b" },
     { kind: "remove", text: "c" },
   ]);
+});
+
+test("numbered line diff tracks old and new line numbers", () => {
+  assert.deepEqual(lineDiffWithNumbers("a\nb", "a\nc"), [
+    { kind: "same", text: "a", oldLine: 1, newLine: 1 },
+    { kind: "remove", text: "b", oldLine: 2, newLine: null },
+    { kind: "add", text: "c", oldLine: null, newLine: 2 },
+  ]);
+});
+
+test("numbered line diff handles added and removed tails", () => {
+  assert.deepEqual(lineDiffWithNumbers("a\nb", "a\nb\nc"), [
+    { kind: "same", text: "a", oldLine: 1, newLine: 1 },
+    { kind: "same", text: "b", oldLine: 2, newLine: 2 },
+    { kind: "add", text: "c", oldLine: null, newLine: 3 },
+  ]);
+  assert.deepEqual(lineDiffWithNumbers("a\nb\nc", "a\nb"), [
+    { kind: "same", text: "a", oldLine: 1, newLine: 1 },
+    { kind: "same", text: "b", oldLine: 2, newLine: 2 },
+    { kind: "remove", text: "c", oldLine: 3, newLine: null },
+  ]);
+});
+
+test("numbered line diff stays additive to plain lineDiff", () => {
+  const before = "x\ny\nz";
+  const after = "x\nz\nw";
+  assert.deepEqual(
+    lineDiffWithNumbers(before, after).map(({ kind, text }) => ({ kind, text })),
+    lineDiff(before, after),
+  );
 });

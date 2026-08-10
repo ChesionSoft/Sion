@@ -53,3 +53,30 @@ export const lineDiff = (before: string, after: string): DiffLine[] => {
   }
   return result;
 };
+
+export type NumberedDiffLine = {
+  kind: "same" | "remove" | "add";
+  text: string;
+  oldLine: number | null;
+  newLine: number | null;
+};
+
+/**
+ * Line diff with 1-based old/new line numbers for each row. `same` rows advance
+ * both counters, `remove` only the old counter, `add` only the new counter.
+ * Thin wrapper over `lineDiff`; the plain output is preserved.
+ */
+export const lineDiffWithNumbers = (before: string, after: string): NumberedDiffLine[] => {
+  let oldLine = 1;
+  let newLine = 1;
+  return lineDiff(before, after).map((line) => {
+    switch (line.kind) {
+      case "same":
+        return { ...line, oldLine: oldLine++, newLine: newLine++ };
+      case "remove":
+        return { ...line, oldLine: oldLine++, newLine: null };
+      case "add":
+        return { ...line, oldLine: null, newLine: newLine++ };
+    }
+  });
+};
