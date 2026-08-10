@@ -442,19 +442,6 @@
   75%, 100% { opacity: 0; transform: scale(1.7); }
 }
 
-/* AIcss Orbs C2: eight dots on a fixed ring, each gently pulsing in sequence.
- * Sion uses this one quiet loading language across live lifecycle phases. */
-.sion-activity-orb { position: relative; display: inline-block; width: 14px; height: 14px; color: currentColor; }
-.sion-activity-orb i { position: absolute; left: 50%; top: 50%; width: 2px; height: 2px; margin: -1px 0 0 -1px; border-radius: 50%; background: currentColor; animation: sion-orb-c2-pulse 2s ease-in-out infinite both; animation-delay: var(--orb-delay); }
-.sion-activity-orb i:nth-child(1) { --orb-rx: 0; --orb-ry: -5px; }
-.sion-activity-orb i:nth-child(2) { --orb-rx: 3.55px; --orb-ry: -3.55px; }
-.sion-activity-orb i:nth-child(3) { --orb-rx: 5px; --orb-ry: 0; }
-.sion-activity-orb i:nth-child(4) { --orb-rx: 3.55px; --orb-ry: 3.55px; }
-.sion-activity-orb i:nth-child(5) { --orb-rx: 0; --orb-ry: 5px; }
-.sion-activity-orb i:nth-child(6) { --orb-rx: -3.55px; --orb-ry: 3.55px; }
-.sion-activity-orb i:nth-child(7) { --orb-rx: -5px; --orb-ry: 0; }
-.sion-activity-orb i:nth-child(8) { --orb-rx: -3.55px; --orb-ry: -3.55px; }
-@keyframes sion-orb-c2-pulse { 0%, 100% { opacity: .18; transform: translate(var(--orb-rx), var(--orb-ry)) scale(.7); } 50% { opacity: 1; transform: translate(var(--orb-rx), var(--orb-ry)) scale(1.15); } }
 @keyframes sion-status-confirm { from { opacity: 0; transform: scale(1.18); } to { opacity: 1; transform: scale(1); } }
 .conversation-activity-content { display: grid; gap: 2px; min-width: 0; }
 .conversation-activity-status { display: inline-flex; align-items: center; gap: 5px; justify-self: start; min-height: 22px; border: 0; border-radius: 6px; margin: 0; padding: 2px 4px; color: var(--text-muted); background: transparent; font-size: 11px; line-height: 1.35; cursor: pointer; }
@@ -555,7 +542,6 @@
   .conversation-reasoning-shimmer,
   .conversation-reasoning-live-label,
   .conversation-activity-item.is-running .conversation-activity-label,
-  .sion-activity-orb i,
   .conversation-delivery-generation,
   .conversation-delivery-generation-glow,
   .conversation-delivery-generation strong,

@@ -1,6 +1,5 @@
 import { useState, type CSSProperties } from "react";
-import type { ConversationTurn, TurnActivityKind, TurnActivityStatus } from "../../types";
-import { SionActivityOrb, type SionActivityOrbPhase } from "./SionActivityOrb";
+import type { ConversationTurn, TurnActivityStatus } from "../../types";
 
 const TURN_STATUS_LABEL: Record<ConversationTurn["status"], string> = {
   queued: "Agent 已排队",
@@ -18,13 +17,9 @@ export type ConversationActivityTimelineProps = {
 
 type TimelineMarkerStatus = ConversationTurn["status"] | TurnActivityStatus;
 
-function TimelineMarker({ status, phase }: { status: TimelineMarkerStatus; phase?: SionActivityOrbPhase }) {
+function TimelineMarker({ status }: { status: TimelineMarkerStatus }) {
   if (status === "queued" || status === "running") {
-    return (
-      <span className="conversation-activity-marker is-active" aria-hidden="true">
-        <SionActivityOrb phase={status === "queued" ? "queued" : (phase ?? "delivery")} />
-      </span>
-    );
+    return <span className="conversation-activity-marker is-active" aria-hidden="true" />;
   }
   return (
     <span className="conversation-activity-marker" aria-hidden="true">
@@ -43,10 +38,6 @@ function TimelineMarker({ status, phase }: { status: TimelineMarkerStatus; phase
       ) : null}
     </span>
   );
-}
-
-function activityOrbPhase(kind: TurnActivityKind): SionActivityOrbPhase {
-  return kind === "response" ? "output" : "delivery";
 }
 
 /** One keyboard-accessible timeline combining the run's overall status (a
@@ -110,7 +101,7 @@ export function ConversationActivityTimeline({
           className={`conversation-activity-item is-${activity.status}`}
           style={{ "--timeline-index": index } as CSSProperties}
         >
-          <TimelineMarker status={activity.status} phase={activityOrbPhase(activity.kind)} />
+          <TimelineMarker status={activity.status} />
           <div className="conversation-activity-content">
             <strong className="conversation-activity-label">{activity.label}</strong>
             {activity.publicSummary ? (

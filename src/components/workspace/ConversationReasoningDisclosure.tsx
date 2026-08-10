@@ -1,18 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { TurnVisualPhase } from "../../conversation-turns.ts";
 import { SafeMarkdown } from "./SafeMarkdown";
-import { SionActivityOrb } from "./SionActivityOrb";
 
 export function ConversationReasoningDisclosure({
   active,
   content,
   elapsedText = "",
-  phase = "terminal",
 }: {
   active: boolean;
   content?: string;
   elapsedText?: string;
-  phase?: TurnVisualPhase;
 }) {
   const [open, setOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -29,7 +25,6 @@ export function ConversationReasoningDisclosure({
   if (active && !hasContent) {
     return (
       <div className="conversation-reasoning is-active is-shimmer" role="status" aria-label="Agent 正在思考">
-        <SionActivityOrb phase="thinking" />
         <span className="conversation-reasoning-shimmer" aria-hidden="true">Thinking…</span>
       </div>
     );
@@ -42,7 +37,6 @@ export function ConversationReasoningDisclosure({
     return (
       <section className="conversation-reasoning is-active is-open">
         <div className="conversation-reasoning-head">
-          <SionActivityOrb phase={phase === "output" ? "output" : "reasoning"} />
           <strong className="conversation-reasoning-live-label">Thinking…</strong>
         </div>
         <div className="conversation-reasoning-collapsible">
