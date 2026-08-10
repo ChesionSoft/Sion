@@ -56,7 +56,7 @@ test("shared Markdown renderer centralizes safe GFM for every visual variant", a
   assert.match(safeMarkdown, /remarkPlugins=\{\[remarkGfm\]\}/);
   assert.match(safeMarkdown, /urlTransform=\{blockedMarkdownUrl\}/);
   assert.match(safeMarkdown, /className="safe-markdown-table-scroll"/);
-  assert.match(safeMarkdown, /className="safe-markdown-code-scroll"/);
+  assert.match(safeMarkdown, /MarkdownCodeBlock/);
   assert.match(safeMarkdown, /MarkdownErrorBoundary/);
   assert.match(safeMarkdown, /static getDerivedStateFromError/);
   assert.match(safeMarkdown, /className="safe-markdown-fallback"/);

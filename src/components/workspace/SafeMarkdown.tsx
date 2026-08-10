@@ -5,6 +5,7 @@ import {
   blockedMarkdownUrl,
   markdownImageLabel,
 } from "../../markdown-policy.ts";
+import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 
 type SafeMarkdownVariant = "document" | "chat" | "reasoning";
 
@@ -65,11 +66,7 @@ export function SafeMarkdown({ markdown, variant }: SafeMarkdownProps) {
                 <table>{children}</table>
               </div>
             ),
-            pre: ({ children }) => (
-              <div className="safe-markdown-code-scroll">
-                <pre>{children}</pre>
-              </div>
-            ),
+            pre: ({ children }) => <MarkdownCodeBlock>{children}</MarkdownCodeBlock>,
           }}
         >
           {markdown}
