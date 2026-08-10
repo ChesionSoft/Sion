@@ -391,18 +391,40 @@
   font-size: 12px;
 }
 
-.export-diff-change {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 8px 10px;
+/* Export-specific FileDiff head pieces: selection control, file icon, and
+ * target label. Shared card/row geometry lives in workspace.css under
+ * `.file-diff-*` so conversation delivery inspection reuses the same card. */
+.export-diff-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12px;
 }
 
-.export-diff-change-header {
-  display: flex;
+.export-diff-select input { margin: 0; }
+
+.export-diff-file {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text);
+  gap: 7px;
+  min-width: 0;
+}
+
+.export-diff-icon {
+  display: block;
+  width: 15px;
+  height: 15px;
+  color: var(--text-faint);
+  flex: none;
+}
+
+.export-diff-target {
+  color: var(--text-strong);
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .export-diff-lines {

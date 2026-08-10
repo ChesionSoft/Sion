@@ -2,6 +2,36 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
+import {
+  formatTurnElapsed,
+  groupConversation,
+  hasUnclosedCodeFence,
+  isFencedCodeComplete,
+  isStreamingMessage,
+  streamRunId,
+  turnDeliveryPresentation,
+  turnElapsedMs,
+  turnHasPublicReasoning,
+  turnVisualPhase,
+} from "../src/conversation-turns.ts";
+import type { ConversationTurn } from "../src/types.ts";
+
+function turn(overrides: Partial<ConversationTurn> = {}): ConversationTurn {
+  return {
+    id: "t1",
+    projectId: "p1",
+    nodeId: "n1",
+    sessionId: "s1",
+    runId: "r1",
+    userMessageId: "u1",
+    status: "running",
+    activities: [],
+    deliveryOutcome: { kind: "pending" },
+    startedAt: "2026-08-10T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 test("compact workspace keeps every primary action available and labelled", async () => {
   const [workspaceCss, workspaceSource] = await Promise.all([
     readFile("src/styles/workspace.css", "utf8"),
@@ -56,7 +86,7 @@ test("shared Markdown renderer centralizes safe GFM for every visual variant", a
   assert.match(safeMarkdown, /remarkPlugins=\{\[remarkGfm\]\}/);
   assert.match(safeMarkdown, /urlTransform=\{blockedMarkdownUrl\}/);
   assert.match(safeMarkdown, /className="safe-markdown-table-scroll"/);
-  assert.match(safeMarkdown, /className="safe-markdown-code-scroll"/);
+  assert.match(safeMarkdown, /pre:\s*\(\{ children \}\) => <MarkdownCodeBlock>\{children\}<\/MarkdownCodeBlock>/);
   assert.match(safeMarkdown, /MarkdownErrorBoundary/);
   assert.match(safeMarkdown, /static getDerivedStateFromError/);
   assert.match(safeMarkdown, /className="safe-markdown-fallback"/);
@@ -323,7 +353,8 @@ test("conversation turns own agent status and the app no longer notices run comp
   assert.doesNotMatch(app, /已请求取消 Agent Run/);
   assert.match(pane, /ConversationTurnCard/);
   assert.doesNotMatch(card, /<details/);
-  assert.match(card, /conversation-turn-status/);
+  assert.match(card, /ConversationActivityTimeline/);
+  assert.match(card, /delivery-result/);
   assert.match(card, /reasoningSummary/);
   assert.match(card, /重新判断交付稿/);
 });
@@ -354,7 +385,9 @@ test("reasoning disclosure is collapsed, accessible, and adds no retry action", 
   assert.match(source, /useState\(false\)/);
   assert.match(source, /aria-expanded=\{open\}/);
   assert.match(source, /Agent 正在思考/);
-  assert.match(source, /模型暂未提供公开思考内容/);
+  assert.match(source, /conversation-reasoning-shimmer/);
+  assert.match(source, /is-shimmer/);
+  assert.match(source, />Thinking…<\/span>/);
   assert.doesNotMatch(source, /reasoning_content|重新请求|自动重试/);
 });
 
@@ -368,7 +401,7 @@ test("conversation renders assistant and reasoning Markdown with bounded scrolli
   assert.match(turn, /import \{ SafeMarkdown \} from "\.\/SafeMarkdown"/);
   assert.match(turn, /<SafeMarkdown markdown=\{assistantMessage\.content\} variant="chat" \/>/);
   assert.match(turn, /conversation-turn-message is-user">\{userMessage\.content\}/);
-  assert.match(disclosure, /<SafeMarkdown markdown=\{displayContent\} variant="reasoning" \/>/);
+  assert.match(disclosure, /<SafeMarkdown markdown=\{content \?\? ""\} variant="reasoning" \/>/);
   assert.match(disclosure, /\[\.\.\.\(content \?\? ""\)\]\.length/);
   assert.match(disclosure, /conversation-reasoning-count/);
   assert.match(css, /\.conversation-reasoning-content\s*\{[^}]*max-height:\s*min\(360px, 45vh\)/s);
@@ -614,4 +647,248 @@ test("active conversation work uses an accessible beacon instead of a blinking d
   assert.match(styles, /conversation-activity-beacon/);
   assert.match(styles, /@keyframes conversation-activity-beacon/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test("visual phase derivation covers queued, thinking, reasoning, output, terminal", () => {
+  assert.equal(turnVisualPhase(turn({ status: "queued" })), "queued");
+  assert.equal(turnVisualPhase(turn({ status: "running" })), "thinking");
+  assert.equal(turnVisualPhase(turn({ status: "running" }), "思考中…"), "reasoning");
+  assert.equal(turnVisualPhase(turn({ status: "running" }), undefined, true), "output");
+  assert.equal(turnVisualPhase(turn({ status: "running" }), "思考中…", true), "output");
+  assert.equal(turnVisualPhase(turn({ status: "completed" })), "terminal");
+  assert.equal(turnVisualPhase(turn({ status: "failed" })), "terminal");
+  assert.equal(turnVisualPhase(turn({ status: "cancelled" })), "terminal");
+});
+
+test("public reasoning availability prefers live then persisted and stays absent otherwise", () => {
+  assert.equal(turnHasPublicReasoning(turn(), "live"), true);
+  assert.equal(turnHasPublicReasoning(turn(), undefined), false);
+  assert.equal(turnHasPublicReasoning(turn({ reasoningSummary: "old" }), undefined), true);
+  assert.equal(turnHasPublicReasoning(turn({ reasoningSummary: "" }), undefined), false);
+});
+
+test("elapsed time falls back conservatively on malformed or absent timestamps", () => {
+  const now = Date.parse("2026-08-10T00:01:00.000Z");
+  const started = "2026-08-10T00:00:00.000Z";
+  const finished = "2026-08-10T00:00:05.000Z";
+
+  assert.equal(turnElapsedMs(turn({ startedAt: "not-a-date", status: "completed", finishedAt: finished }), now), null);
+  assert.equal(turnElapsedMs(turn({ startedAt: started, status: "completed" }), now), null);
+  assert.equal(turnElapsedMs(turn({ startedAt: started, status: "completed", finishedAt: finished }), now), 5_000);
+  assert.equal(turnElapsedMs(turn({ startedAt: started, status: "running" }), now), 60_000);
+  assert.equal(turnElapsedMs(turn({ startedAt: started, status: "queued" }), now), 60_000);
+});
+
+test("elapsed text is compact and empty when unknown", () => {
+  assert.equal(formatTurnElapsed(null), "");
+  assert.equal(formatTurnElapsed(3_200), "3.2 秒");
+  assert.equal(formatTurnElapsed(12_000), "12 秒");
+  assert.equal(formatTurnElapsed(65_000), "1 分 5 秒");
+});
+
+test("delivery presentation carries revision, sections, conflict and retry language", () => {
+  const applied = turnDeliveryPresentation(turn({
+    status: "completed",
+    deliveryOutcome: { kind: "patch_applied", previousRevision: 2, revision: 3, sectionTitles: ["功能说明", "接口设计"] },
+  }), false);
+  assert.equal(applied.headline, "交付稿已更新 · revision 3");
+  assert.equal(applied.detail, "更新章节：功能说明、接口设计");
+  assert.equal(applied.tone, "success");
+  assert.equal(applied.retryable, false);
+
+  const conflict = turnDeliveryPresentation(turn({
+    status: "completed",
+    deliveryOutcome: { kind: "conflict", expectedRevision: 2, actualRevision: 3 },
+  }), false);
+  assert.equal(conflict.tone, "error");
+  assert.equal(conflict.retryable, true);
+  assert.match(conflict.detail ?? "", /预期 revision 2，实际 3/);
+
+  const dirtyRetry = turnDeliveryPresentation(turn({
+    status: "completed",
+    deliveryOutcome: { kind: "awaiting_manual_draft_resolution", expectedRevision: 2 },
+  }), true);
+  assert.equal(dirtyRetry.retryable, false);
+  assert.match(dirtyRetry.detail ?? "", /未保存的修改/);
+
+  const responseFailure = turnDeliveryPresentation(turn({
+    status: "failed",
+    deliveryOutcome: { kind: "failed", stage: "response", publicError: "网络中断" },
+  }), false);
+  assert.equal(responseFailure.headline, "网络中断");
+  assert.equal(responseFailure.retryable, false);
+
+  const unchanged = turnDeliveryPresentation(turn({
+    status: "completed",
+    deliveryOutcome: { kind: "unchanged" },
+  }), false);
+  assert.equal(unchanged.headline, "已判断，无需更新交付稿");
+});
+
+test("streaming message seam associates transient messages with their run", () => {
+  const transient = { id: "stream-r9", role: "assistant" as const, content: "hi", createdAt: "2026-08-10T00:00:00.000Z" };
+  assert.equal(isStreamingMessage(transient), true);
+  assert.equal(streamRunId(transient), "r9");
+  const persisted = { ...transient, id: "msg-1" };
+  assert.equal(isStreamingMessage(persisted), false);
+  assert.equal(streamRunId(persisted), null);
+});
+
+test("a transient response renders inside its owning turn rather than as a second conversation item", () => {
+  const activeTurn = turn({ runId: "r9", userMessageId: "u9" });
+  const user = { id: "u9", role: "user" as const, content: "更新目标", createdAt: "2026-08-10T00:00:00.000Z" };
+  const transient = { id: "stream-r9", role: "assistant" as const, content: "正在更新", createdAt: "2026-08-10T00:00:01.000Z" };
+
+  const items = groupConversation([user, transient], [activeTurn]);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, "turn");
+  if (items[0].kind !== "turn") return assert.fail("expected the grouped turn");
+  assert.equal(items[0].userMessage?.id, "u9");
+  assert.equal(items[0].streamingMessage?.id, "stream-r9");
+});
+
+test("fence completeness guard keeps partial fenced code as plain text until closed", () => {
+  assert.equal(hasUnclosedCodeFence("plain text"), false);
+  assert.equal(isFencedCodeComplete("plain text"), true);
+  assert.equal(hasUnclosedCodeFence("```ts\nconst x = 1"), true);
+  assert.equal(isFencedCodeComplete("```ts\nconst x = 1"), false);
+  assert.equal(hasUnclosedCodeFence("```ts\nconst x = 1\n```"), false);
+  assert.equal(hasUnclosedCodeFence("before\n```\ncode\n```\nafter"), false);
+  assert.equal(hasUnclosedCodeFence("~~~\ncode\n"), true);
+  assert.equal(hasUnclosedCodeFence("```ts\n```\n```"), true);
+});
+
+test("FileDiff is the shared diff primitive for export review and delivery inspection", async () => {
+  const [uiIndex, artifact, delivery, css] = await Promise.all([
+    readFile("src/components/ui/index.ts", "utf8"),
+    readFile("src/components/export/ArtifactDiff.tsx", "utf8"),
+    readFile("src/components/workspace/DeliveryDecisionDetails.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+  assert.match(uiIndex, /export \{ FileDiff \} from "\.\/FileDiff"/);
+  assert.match(artifact, /import \{ FileDiff \} from "\.\.\/ui"/);
+  assert.match(artifact, /lineDiffWithNumbers/);
+  assert.match(artifact, /selectedChangeIds/);
+  assert.match(artifact, /onToggle\(change\.id\)/);
+  assert.match(delivery, /lineDiffWithNumbers/);
+  assert.match(delivery, /<FileDiff/);
+  assert.doesNotMatch(delivery, /function diffLines|const dp:|diffPrefix/);
+  assert.doesNotMatch(delivery, /<input\s+type="checkbox"/);
+  assert.match(css, /\.file-diff-card\s*\{/);
+  assert.match(css, /\.file-diff-row\.is-add\s*\{/);
+  assert.match(css, /\.file-diff-row\.is-remove\s*\{/);
+  assert.match(css, /\.file-diff-body\s*\{[^}]*max-height:\s*320px/s);
+});
+
+test("streaming replies render through a dedicated AIcss component with a fence guard", async () => {
+  const [streaming, pane, card, safeMarkdown, codeBlock, css] = await Promise.all([
+    readFile("src/components/workspace/ConversationStreamingResponse.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationPane.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationTurnCard.tsx", "utf8"),
+    readFile("src/components/workspace/SafeMarkdown.tsx", "utf8"),
+    readFile("src/components/workspace/MarkdownCodeBlock.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+  assert.match(pane, /ConversationStreamingResponse/);
+  assert.match(pane, /isStreamingMessage\(message\)/);
+  assert.match(pane, /streamingMessage=\{item\.streamingMessage\}/);
+  assert.match(card, /streamingMessage\?: ChatMessage/);
+  assert.match(card, /<ConversationStreamingResponse content=\{streamingMessage\.content\} \/>/);
+  assert.match(streaming, /conversation-streaming-copy/);
+  assert.match(streaming, /role="status"/);
+  assert.match(streaming, /aria-live="polite"/);
+  assert.match(streaming, /Sion 正在生成回复/);
+  assert.match(streaming, /conversation-streaming-caret/);
+  assert.doesNotMatch(streaming, /setInterval|setTimeout|requestAnimationFrame/);
+  assert.match(safeMarkdown, /isFencedCodeComplete/);
+  assert.match(safeMarkdown, /is-fence-open/);
+  assert.match(safeMarkdown, /safe-markdown-fence-open/);
+  assert.match(codeBlock, /md-code-icon/);
+  assert.match(codeBlock, /aria-label=\{copied \? "已复制" : "复制代码"\}/);
+  assert.match(css, /\.conversation-streaming-caret\s*\{/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-streaming-caret\s*\{\s*animation:\s*none/s);
+  assert.match(css, /\.conversation-streaming-status\s*\{[^}]*clip:\s*rect\(0 0 0 0\)/s);
+});
+
+test("turn chrome is a thinking-and-execution timeline with a delivery result card", async () => {
+  const [timeline, card, disclosure, runDetail, deliveryDetails, css] = await Promise.all([
+    readFile("src/components/workspace/ConversationActivityTimeline.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationTurnCard.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationReasoningDisclosure.tsx", "utf8"),
+    readFile("src/components/workspace/RunDetailDialog.tsx", "utf8"),
+    readFile("src/components/workspace/DeliveryDecisionDetails.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+  assert.match(timeline, /conversation-activity-timeline/);
+  assert.match(timeline, /onClick=\{\(\) => onOpenRunDetail\(turn\.runId\)\}/);
+  assert.match(timeline, /turn\.activities\.map/);
+  assert.match(timeline, /个执行步骤/);
+  assert.match(timeline, /aria-expanded=\{stepsOpen\}/);
+  assert.match(timeline, /conversation-activity-marker/);
+  assert.match(timeline, /activity\.publicSummary/);
+  assert.match(card, /ConversationReasoningDisclosure/);
+  assert.match(card, /turnDeliveryPresentation/);
+  assert.match(card, /formatTurnElapsed/);
+  assert.match(card, /conversation-turn-retry/);
+  assert.match(disclosure, /思考了 \$\{elapsedText\}/);
+  assert.match(disclosure, /conversation-reasoning-head/);
+  assert.match(runDetail, /DeliveryDecisionDetails/);
+  assert.match(runDetail, /活动时间线/);
+  assert.match(deliveryDetails, /模型返回的交付 JSON/);
+  assert.match(deliveryDetails, /publicError/);
+  assert.match(css, /\.conversation-activity-timeline\s*\{/);
+  assert.match(css, /\.conversation-activity-item\.is-failed\s*\.conversation-activity-marker::before\s*\{\s*content:\s*"×"/s);
+  assert.match(css, /\.conversation-reasoning-shimmer\s*\{/);
+  assert.match(css, /@keyframes conversation-shimmer/);
+  assert.match(css, /background-clip:\s*text/);
+  assert.match(css, /\.delivery-result\s*\{/);
+  assert.match(css, /\.delivery-result\.is-error\s*\{/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-reasoning-shimmer\s*\{\s*animation:\s*none/s);
+});
+
+test("composer is the AIcss host surface with state classes and keyboard-safe controls", async () => {
+  const [pane, css, responsive] = await Promise.all([
+    readFile("src/components/workspace/ConversationPane.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+    readFile("src/styles/responsive.css", "utf8"),
+  ]);
+  assert.match(pane, /conversation-composer is-\$\{composerMode\}\$\{sendDisabled \? " is-disabled" : ""\}/);
+  assert.match(pane, /ConversationFileMenu/);
+  assert.match(pane, /ConversationModelMenu/);
+  assert.match(pane, /ContextUsageIndicator/);
+  assert.match(pane, /composerMode === "stop" \? "停止" : "发送"/);
+  assert.match(pane, /onCompositionStart/);
+  assert.match(pane, /event\.nativeEvent\.keyCode === 229/);
+  assert.match(css, /\.conversation-composer\.is-stop\s*\{/);
+  assert.match(css, /\.conversation-composer\.is-disabled\s*\{/);
+  assert.match(css, /\.conversation-composer textarea:disabled\s*\{/);
+  assert.match(css, /\.conversation-composer-actions \.ui-button\s*\{[^}]*border-radius:\s*999px/s);
+  assert.match(css, /\.conversation-model-trigger:focus-visible,/);
+  assert.match(css, /\.conversation-file-trigger:focus-visible/);
+  assert.match(responsive, /@media \(max-width: 560px\)[\s\S]*\.conversation-composer-toolbar\s*\{\s*flex-wrap:\s*wrap/s);
+});
+
+test("AIcss conversation surface keeps delivery-detail access and reduces motion", async () => {
+  const [card, disclosure, timeline, streaming, css] = await Promise.all([
+    readFile("src/components/workspace/ConversationTurnCard.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationReasoningDisclosure.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationActivityTimeline.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationStreamingResponse.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+  // Delivery-detail access stays reachable from the turn card.
+  assert.match(card, /DeliveryDecisionDetails/);
+  assert.match(card, /delivery\.kind !== "pending"/);
+  // Shimmer only when running without public reasoning; no fabricated history.
+  assert.match(disclosure, /active && !hasContent/);
+  assert.match(disclosure, /!active && !hasContent\) return null/);
+  // Timeline stays keyboard accessible without color-only status.
+  assert.match(timeline, /aria-label=\{`查看运行详情/);
+  assert.match(css, /\.conversation-activity-item\.is-completed\s*\.conversation-activity-marker::before\s*\{\s*content:\s*"✓"/s);
+  // Streaming status is a polite region, not full-output re-announcement.
+  assert.match(streaming, /role="status"/);
+  assert.match(streaming, /aria-live="polite"/);
+  assert.doesNotMatch(streaming, /aria-live="polite"[\s\S]{0,40}content/);
+  // Reduced-motion covers caret, beacon and shimmer.
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-streaming-caret[\s\S]*\.conversation-reasoning-shimmer[\s\S]*animation:\s*none/s);
 });

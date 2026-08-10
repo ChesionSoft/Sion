@@ -6,8 +6,10 @@ import { ConversationFileMenu } from "./ConversationFileMenu";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ConversationTurnCard } from "./ConversationTurnCard";
 import { ConversationPresets } from "./ConversationPresets";
+import { ConversationStreamingResponse } from "./ConversationStreamingResponse";
 import { conversationCanSend } from "../../conversation-controls";
-import { groupConversation } from "../../conversation-turns.ts";
+import { groupConversation, isStreamingMessage } from "../../conversation-turns.ts";
+import { SafeMarkdown } from "./SafeMarkdown";
 
 export type ConversationPaneProps = {
   nodeAvailable: boolean;
@@ -86,11 +88,22 @@ export function ConversationPane(props: ConversationPaneProps) {
         ) : items.map((item) => {
           if (item.kind === "legacy_message") {
             const message = item.message;
-            const streaming = message.id.startsWith("stream-");
+            if (isStreamingMessage(message)) {
+              return (
+                <article className="conversation-message is-assistant is-streaming" key={message.id}>
+                  <div className="conversation-message-meta"><strong>Sion</strong><time>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div>
+                  <ConversationStreamingResponse content={message.content} />
+                </article>
+              );
+            }
             return (
-              <article className={`conversation-message is-${message.role} ${streaming ? "is-streaming" : ""}`} key={message.id}>
+              <article className={`conversation-message is-${message.role}`} key={message.id}>
                 <div className="conversation-message-meta"><strong>{message.role === "user" ? "你" : message.role === "assistant" ? "Sion" : "系统"}</strong><time>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div>
-                <div className="conversation-message-copy">{message.content}</div>
+                <div className="conversation-message-copy">
+                  {message.role === "assistant" ? (
+                    <SafeMarkdown markdown={message.content} variant="chat" />
+                  ) : message.content}
+                </div>
                 {message.role === "user" && message.attachments && message.attachments.length > 0 ? (
                   <div className="conversation-message-attachments">
                     {message.attachments.map((attachment) => <span key={attachment.fileId}>{attachment.originalName}</span>)}
@@ -108,6 +121,7 @@ export function ConversationPane(props: ConversationPaneProps) {
               turn={item.turn}
               userMessage={item.userMessage}
               assistantMessage={item.assistantMessage}
+              streamingMessage={item.streamingMessage}
               liveReasoning={liveReasoningByRun[item.turn.runId]}
               liveDecisionRaw={liveDecisionRawByTurn[item.turn.id]}
               markdownDirty={markdownDirty}
@@ -117,7 +131,7 @@ export function ConversationPane(props: ConversationPaneProps) {
           );
         })}
       </div>
-      <form className="conversation-composer" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+      <form className={`conversation-composer is-${composerMode}${sendDisabled ? " is-disabled" : ""}`} onSubmit={(event) => { event.preventDefault(); submit(); }}>
         {selectedFiles.length > 0 ? (
           <div className="conversation-attachment-chips">
             {selectedFiles.map((file) => (
