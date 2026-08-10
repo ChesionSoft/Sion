@@ -18,7 +18,7 @@ export function ConversationReasoningDisclosure({
   if (active && !hasContent) {
     return (
       <div className="conversation-reasoning is-active is-shimmer" role="status" aria-label="Agent 正在思考">
-        <span className="conversation-reasoning-shimmer" aria-hidden="true" />
+        <span className="conversation-reasoning-shimmer" aria-hidden="true">Thinking…</span>
       </div>
     );
   }

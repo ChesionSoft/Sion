@@ -387,6 +387,7 @@ test("reasoning disclosure is collapsed, accessible, and adds no retry action", 
   assert.match(source, /Agent 正在思考/);
   assert.match(source, /conversation-reasoning-shimmer/);
   assert.match(source, /is-shimmer/);
+  assert.match(source, />Thinking…<\/span>/);
   assert.doesNotMatch(source, /reasoning_content|重新请求|自动重试/);
 });
 
@@ -821,6 +822,8 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(timeline, /conversation-activity-timeline/);
   assert.match(timeline, /onClick=\{\(\) => onOpenRunDetail\(turn\.runId\)\}/);
   assert.match(timeline, /turn\.activities\.map/);
+  assert.match(timeline, /个执行步骤/);
+  assert.match(timeline, /aria-expanded=\{stepsOpen\}/);
   assert.match(timeline, /conversation-activity-marker/);
   assert.match(timeline, /activity\.publicSummary/);
   assert.match(card, /ConversationReasoningDisclosure/);
@@ -837,6 +840,7 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(css, /\.conversation-activity-item\.is-failed\s*\.conversation-activity-marker::before\s*\{\s*content:\s*"×"/s);
   assert.match(css, /\.conversation-reasoning-shimmer\s*\{/);
   assert.match(css, /@keyframes conversation-shimmer/);
+  assert.match(css, /background-clip:\s*text/);
   assert.match(css, /\.delivery-result\s*\{/);
   assert.match(css, /\.delivery-result\.is-error\s*\{/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-reasoning-shimmer\s*\{\s*animation:\s*none/s);

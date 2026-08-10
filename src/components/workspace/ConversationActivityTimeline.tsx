@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ConversationTurn } from "../../types";
 
 const TURN_STATUS_LABEL: Record<ConversationTurn["status"], string> = {
@@ -21,6 +22,10 @@ export function ConversationActivityTimeline({
   turn,
   onOpenRunDetail,
 }: ConversationActivityTimelineProps) {
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const active = turn.status === "queued" || turn.status === "running";
+  const hasSteps = turn.activities.length > 0;
+  const showSteps = active || stepsOpen;
   return (
     <ol className="conversation-activity-timeline">
       <li className={`conversation-activity-item is-${turn.status}`}>
@@ -37,7 +42,34 @@ export function ConversationActivityTimeline({
           </button>
         </div>
       </li>
-      {turn.activities.map((activity) => (
+      {!active && hasSteps ? (
+        <li className="conversation-activity-toggle">
+          <button
+            type="button"
+            aria-expanded={stepsOpen}
+            onClick={() => setStepsOpen((open) => !open)}
+          >
+            <span>{stepsOpen ? "收起执行步骤" : `${turn.activities.length} 个执行步骤`}</span>
+            <svg
+              className={stepsOpen ? "is-open" : undefined}
+              viewBox="0 0 16 16"
+              width="12"
+              height="12"
+              aria-hidden="true"
+            >
+              <path
+                d="M4 6l4 4 4-4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </li>
+      ) : null}
+      {showSteps ? turn.activities.map((activity) => (
         <li key={activity.id} className={`conversation-activity-item is-${activity.status}`}>
           <span className="conversation-activity-marker" aria-hidden="true" />
           <div className="conversation-activity-content">
@@ -47,7 +79,7 @@ export function ConversationActivityTimeline({
             ) : null}
           </div>
         </li>
-      ))}
+      )) : null}
     </ol>
   );
 }
