@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   formatTurnElapsed,
+  groupConversation,
   hasUnclosedCodeFence,
   isFencedCodeComplete,
   isStreamingMessage,
@@ -732,6 +733,19 @@ test("streaming message seam associates transient messages with their run", () =
   assert.equal(streamRunId(persisted), null);
 });
 
+test("a transient response renders inside its owning turn rather than as a second conversation item", () => {
+  const activeTurn = turn({ runId: "r9", userMessageId: "u9" });
+  const user = { id: "u9", role: "user" as const, content: "更新目标", createdAt: "2026-08-10T00:00:00.000Z" };
+  const transient = { id: "stream-r9", role: "assistant" as const, content: "正在更新", createdAt: "2026-08-10T00:00:01.000Z" };
+
+  const items = groupConversation([user, transient], [activeTurn]);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, "turn");
+  if (items[0].kind !== "turn") return assert.fail("expected the grouped turn");
+  assert.equal(items[0].userMessage?.id, "u9");
+  assert.equal(items[0].streamingMessage?.id, "stream-r9");
+});
+
 test("fence completeness guard keeps partial fenced code as plain text until closed", () => {
   assert.equal(hasUnclosedCodeFence("plain text"), false);
   assert.equal(isFencedCodeComplete("plain text"), true);
@@ -766,15 +780,19 @@ test("FileDiff is the shared diff primitive for export review and delivery inspe
 });
 
 test("streaming replies render through a dedicated AIcss component with a fence guard", async () => {
-  const [streaming, pane, safeMarkdown, codeBlock, css] = await Promise.all([
+  const [streaming, pane, card, safeMarkdown, codeBlock, css] = await Promise.all([
     readFile("src/components/workspace/ConversationStreamingResponse.tsx", "utf8"),
     readFile("src/components/workspace/ConversationPane.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationTurnCard.tsx", "utf8"),
     readFile("src/components/workspace/SafeMarkdown.tsx", "utf8"),
     readFile("src/components/workspace/MarkdownCodeBlock.tsx", "utf8"),
     readFile("src/styles/workspace.css", "utf8"),
   ]);
   assert.match(pane, /ConversationStreamingResponse/);
   assert.match(pane, /isStreamingMessage\(message\)/);
+  assert.match(pane, /streamingMessage=\{item\.streamingMessage\}/);
+  assert.match(card, /streamingMessage\?: ChatMessage/);
+  assert.match(card, /<ConversationStreamingResponse content=\{streamingMessage\.content\} \/>/);
   assert.match(streaming, /conversation-streaming-copy/);
   assert.match(streaming, /role="status"/);
   assert.match(streaming, /aria-live="polite"/);

@@ -4,9 +4,11 @@ import {
   turnCanRetryDelivery,
   turnDeliveryPresentation,
   turnElapsedMs,
+  turnVisualPhase,
 } from "../../conversation-turns.ts";
 import { ConversationActivityTimeline } from "./ConversationActivityTimeline";
 import { ConversationReasoningDisclosure } from "./ConversationReasoningDisclosure";
+import { ConversationStreamingResponse } from "./ConversationStreamingResponse";
 import { DeliveryDecisionDetails } from "./DeliveryDecisionDetails";
 import { SafeMarkdown } from "./SafeMarkdown";
 
@@ -14,6 +16,7 @@ export type ConversationTurnCardProps = {
   turn: ConversationTurn;
   userMessage?: ChatMessage;
   assistantMessage?: ChatMessage;
+  streamingMessage?: ChatMessage;
   liveReasoning?: string;
   liveDecisionRaw?: string;
   markdownDirty: boolean;
@@ -25,6 +28,7 @@ export function ConversationTurnCard({
   turn,
   userMessage,
   assistantMessage,
+  streamingMessage,
   liveReasoning,
   liveDecisionRaw,
   markdownDirty,
@@ -37,9 +41,10 @@ export function ConversationTurnCard({
   const reasoningContent = liveReasoning || turn.reasoningSummary;
   const elapsedText = formatTurnElapsed(turnElapsedMs(turn, Date.now()));
   const showDecisionDetails = Boolean(turn.deliveryInspection) || Boolean(liveDecisionRaw);
+  const visualPhase = turnVisualPhase(turn, liveReasoning, Boolean(streamingMessage));
   return (
     <article
-      className={`conversation-turn is-${turn.status} is-${turn.deliveryOutcome.kind}`}
+      className={`conversation-turn is-${turn.status} is-${turn.deliveryOutcome.kind} is-phase-${visualPhase}`}
     >
       {userMessage ? (
         <section className="conversation-turn-block is-user">
@@ -47,6 +52,12 @@ export function ConversationTurnCard({
           <div className="conversation-turn-message is-user">{userMessage.content}</div>
         </section>
       ) : null}
+      <ConversationReasoningDisclosure
+        key={turn.runId}
+        active={active}
+        content={reasoningContent}
+        elapsedText={elapsedText}
+      />
       {assistantMessage ? (
         <section className="conversation-turn-block is-assistant">
           <div className="conversation-turn-speaker">Sion</div>
@@ -60,12 +71,12 @@ export function ConversationTurnCard({
           </div>
         </section>
       ) : null}
-      <ConversationReasoningDisclosure
-        key={turn.runId}
-        active={active}
-        content={reasoningContent}
-        elapsedText={elapsedText}
-      />
+      {!assistantMessage && streamingMessage ? (
+        <section className="conversation-turn-block is-assistant is-streaming">
+          <div className="conversation-turn-speaker">Sion</div>
+          <ConversationStreamingResponse content={streamingMessage.content} />
+        </section>
+      ) : null}
       <ConversationActivityTimeline
         turn={turn}
         onOpenRunDetail={onOpenRunDetail}

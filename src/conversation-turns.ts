@@ -214,7 +214,14 @@ export function isFencedCodeComplete(markdown: string): boolean {
 // ---------------------------------------------------------------------------
 
 export type ConversationItem =
-  | { kind: "turn"; turn: ConversationTurn; userMessage?: ChatMessage; assistantMessage?: ChatMessage }
+  | {
+    kind: "turn";
+    turn: ConversationTurn;
+    userMessage?: ChatMessage;
+    assistantMessage?: ChatMessage;
+    /** Ephemeral `stream-<runId>` output, rendered inside its owning turn. */
+    streamingMessage?: ChatMessage;
+  }
   | { kind: "legacy_message"; message: ChatMessage };
 
 export function mergeTurnSnapshot(
@@ -238,11 +245,13 @@ export function groupConversation(
     const assistantMessage = messages.find(
       (message) => message.id === turn.assistantMessageId || (message.turnId === turn.id && message.role === "assistant"),
     );
+    const streamingMessage = messages.find((message) => message.id === streamMessageId(turn.runId));
     if (userMessage) consumed.add(userMessage.id);
     if (assistantMessage) consumed.add(assistantMessage.id);
+    if (streamingMessage) consumed.add(streamingMessage.id);
     return {
       at: userMessage?.createdAt ?? turn.startedAt,
-      item: { kind: "turn", turn, userMessage, assistantMessage },
+      item: { kind: "turn", turn, userMessage, assistantMessage, streamingMessage },
     };
   });
   for (const message of messages) {
