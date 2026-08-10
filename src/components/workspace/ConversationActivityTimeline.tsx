@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ConversationTurn, TurnActivityStatus } from "../../types";
+import { SionActivityOrb } from "./SionActivityOrb";
 
 const TURN_STATUS_LABEL: Record<ConversationTurn["status"], string> = {
   queued: "Agent 已排队",
@@ -18,6 +19,13 @@ export type ConversationActivityTimelineProps = {
 type TimelineMarkerStatus = ConversationTurn["status"] | TurnActivityStatus;
 
 function TimelineMarker({ status }: { status: TimelineMarkerStatus }) {
+  if (status === "queued" || status === "running") {
+    return (
+      <span className="conversation-activity-marker is-active" aria-hidden="true">
+        <SionActivityOrb phase={status === "queued" ? "queued" : "delivery"} />
+      </span>
+    );
+  }
   return (
     <span className="conversation-activity-marker" aria-hidden="true">
       {status === "completed" ? (
