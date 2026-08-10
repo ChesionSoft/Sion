@@ -442,41 +442,19 @@
   75%, 100% { opacity: 0; transform: scale(1.7); }
 }
 
-/* AIcss orb families, scoped to real Sion lifecycle phases. Their animation
- * names describe the observed visual language: a queued ring, breathing
- * thought, focus-travelling reasoning, a streaming handoff, and a delivery
- * morph. */
+/* AIcss Orbs C2: eight dots on a fixed ring, each gently pulsing in sequence.
+ * Sion uses this one quiet loading language across live lifecycle phases. */
 .sion-activity-orb { position: relative; display: inline-block; width: 14px; height: 14px; color: currentColor; }
-.sion-activity-orb i { position: absolute; left: 50%; top: 50%; width: 3px; height: 3px; margin: -1.5px 0 0 -1.5px; border-radius: 50%; background: currentColor; }
-.sion-activity-orb.is-queued i { opacity: .2; animation: sion-orb-ring-chase 1.6s linear infinite both; animation-delay: calc(var(--orb-index) * -200ms); }
-.sion-activity-orb.is-queued i:nth-child(1) { transform: translate(0, -5px); }
-.sion-activity-orb.is-queued i:nth-child(2) { transform: translate(3.55px, -3.55px); }
-.sion-activity-orb.is-queued i:nth-child(3) { transform: translate(5px, 0); }
-.sion-activity-orb.is-queued i:nth-child(4) { transform: translate(3.55px, 3.55px); }
-.sion-activity-orb.is-queued i:nth-child(5) { transform: translate(0, 5px); }
-.sion-activity-orb.is-queued i:nth-child(6) { transform: translate(-3.55px, 3.55px); }
-.sion-activity-orb.is-queued i:nth-child(7) { transform: translate(-5px, 0); }
-.sion-activity-orb.is-queued i:nth-child(8) { transform: translate(-3.55px, -3.55px); }
-@keyframes sion-orb-ring-chase { 0%, 11% { opacity: 1; } 12.5%, 100% { opacity: .2; } }
-.sion-activity-orb.is-thinking i { animation: sion-orb-bloom 4.2s linear infinite both; animation-delay: calc(var(--orb-index) * -1.4s); }
-.sion-activity-orb.is-reasoning i { width: 2.5px; height: 2.5px; margin: -1.25px 0 0 -1.25px; animation: sion-orb-focus 4s cubic-bezier(.22, 1, .36, 1) infinite both; animation-delay: calc(var(--orb-index) * -1s); }
-.sion-activity-orb.is-reasoning i:nth-child(1) { --orb-x: -3px; --orb-y: -3px; }
-.sion-activity-orb.is-reasoning i:nth-child(2) { --orb-x: 3px; --orb-y: -3px; }
-.sion-activity-orb.is-reasoning i:nth-child(3) { --orb-x: 3px; --orb-y: 3px; }
-.sion-activity-orb.is-reasoning i:nth-child(4) { --orb-x: -3px; --orb-y: 3px; }
-.sion-activity-orb.is-output i { animation: sion-orb-handoff 2.8s linear infinite both; animation-delay: calc(var(--orb-index) * -930ms); }
-.sion-activity-orb.is-delivery i { animation: sion-orb-morph 4.8s cubic-bezier(.4, 0, .2, 1) infinite both; animation-delay: calc(var(--orb-index) * -685ms); }
-.sion-activity-orb.is-delivery i:nth-child(1) { --morph-a: -4px, -3px; --morph-b: 0, -5px; --morph-c: 4px, -3px; }
-.sion-activity-orb.is-delivery i:nth-child(2) { --morph-a: 0, -5px; --morph-b: 4px, -3px; --morph-c: 5px, 1px; }
-.sion-activity-orb.is-delivery i:nth-child(3) { --morph-a: 4px, -3px; --morph-b: 5px, 1px; --morph-c: 3px, 4px; }
-.sion-activity-orb.is-delivery i:nth-child(4) { --morph-a: 5px, 1px; --morph-b: 3px, 4px; --morph-c: 0, 5px; }
-.sion-activity-orb.is-delivery i:nth-child(5) { --morph-a: 3px, 4px; --morph-b: 0, 5px; --morph-c: -3px, 4px; }
-.sion-activity-orb.is-delivery i:nth-child(6) { --morph-a: 0, 5px; --morph-b: -3px, 4px; --morph-c: -5px, 1px; }
-.sion-activity-orb.is-delivery i:nth-child(7) { --morph-a: -3px, 4px; --morph-b: -5px, 1px; --morph-c: -4px, -3px; }
-@keyframes sion-orb-bloom { 0% { opacity: 0; transform: scale(.35); } 10% { opacity: 1; transform: scale(.62); } 42% { opacity: .14; transform: scale(1.45); } 62%, 100% { opacity: 0; transform: scale(2.2); } }
-@keyframes sion-orb-focus { 0%, 100% { opacity: .08; filter: blur(1.2px); transform: translate(var(--orb-x), var(--orb-y)) scale(1.12); } 12%, 22% { opacity: 1; filter: blur(0); transform: translate(var(--orb-x), var(--orb-y)) scale(1); } 55% { opacity: .22; filter: blur(.8px); transform: translate(var(--orb-x), var(--orb-y)) scale(1.08); } }
-@keyframes sion-orb-handoff { 0% { opacity: 0; filter: blur(1.8px); transform: translateX(-7px) scale(.55); } 24%, 45% { opacity: 1; filter: blur(0); transform: translateX(0) scale(1); } 72%, 100% { opacity: 0; filter: blur(1.8px); transform: translateX(7px) scale(.55); } }
-@keyframes sion-orb-morph { 0%, 5% { transform: translate(var(--morph-a)); } 35%, 45% { transform: translate(var(--morph-b)); } 70%, 80% { transform: translate(var(--morph-c)); } 100% { transform: translate(var(--morph-a)); } }
+.sion-activity-orb i { position: absolute; left: 50%; top: 50%; width: 2px; height: 2px; margin: -1px 0 0 -1px; border-radius: 50%; background: currentColor; animation: sion-orb-c2-pulse 2s ease-in-out infinite both; animation-delay: var(--orb-delay); }
+.sion-activity-orb i:nth-child(1) { --orb-rx: 0; --orb-ry: -5px; }
+.sion-activity-orb i:nth-child(2) { --orb-rx: 3.55px; --orb-ry: -3.55px; }
+.sion-activity-orb i:nth-child(3) { --orb-rx: 5px; --orb-ry: 0; }
+.sion-activity-orb i:nth-child(4) { --orb-rx: 3.55px; --orb-ry: 3.55px; }
+.sion-activity-orb i:nth-child(5) { --orb-rx: 0; --orb-ry: 5px; }
+.sion-activity-orb i:nth-child(6) { --orb-rx: -3.55px; --orb-ry: 3.55px; }
+.sion-activity-orb i:nth-child(7) { --orb-rx: -5px; --orb-ry: 0; }
+.sion-activity-orb i:nth-child(8) { --orb-rx: -3.55px; --orb-ry: -3.55px; }
+@keyframes sion-orb-c2-pulse { 0%, 100% { opacity: .18; transform: translate(var(--orb-rx), var(--orb-ry)) scale(.7); } 50% { opacity: 1; transform: translate(var(--orb-rx), var(--orb-ry)) scale(1.15); } }
 @keyframes sion-status-confirm { from { opacity: 0; transform: scale(1.18); } to { opacity: 1; transform: scale(1); } }
 .conversation-activity-content { display: grid; gap: 2px; min-width: 0; }
 .conversation-activity-status { display: inline-flex; align-items: center; gap: 5px; justify-self: start; min-height: 22px; border: 0; border-radius: 6px; margin: 0; padding: 2px 4px; color: var(--text-muted); background: transparent; font-size: 11px; line-height: 1.35; cursor: pointer; }
