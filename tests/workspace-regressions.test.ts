@@ -845,3 +845,28 @@ test("composer is the AIcss host surface with state classes and keyboard-safe co
   assert.match(css, /\.conversation-file-trigger:focus-visible/);
   assert.match(responsive, /@media \(max-width: 560px\)[\s\S]*\.conversation-composer-toolbar\s*\{\s*flex-wrap:\s*wrap/s);
 });
+
+test("AIcss conversation surface keeps delivery-detail access and reduces motion", async () => {
+  const [card, disclosure, timeline, streaming, css] = await Promise.all([
+    readFile("src/components/workspace/ConversationTurnCard.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationReasoningDisclosure.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationActivityTimeline.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationStreamingResponse.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+  // Delivery-detail access stays reachable from the turn card.
+  assert.match(card, /DeliveryDecisionDetails/);
+  assert.match(card, /delivery\.kind !== "pending"/);
+  // Shimmer only when running without public reasoning; no fabricated history.
+  assert.match(disclosure, /active && !hasContent/);
+  assert.match(disclosure, /!active && !hasContent\) return null/);
+  // Timeline stays keyboard accessible without color-only status.
+  assert.match(timeline, /aria-label=\{`查看运行详情/);
+  assert.match(css, /\.conversation-activity-item\.is-completed\s*\.conversation-activity-marker::before\s*\{\s*content:\s*"✓"/s);
+  // Streaming status is a polite region, not full-output re-announcement.
+  assert.match(streaming, /role="status"/);
+  assert.match(streaming, /aria-live="polite"/);
+  assert.doesNotMatch(streaming, /aria-live="polite"[\s\S]{0,40}content/);
+  // Reduced-motion covers caret, beacon and shimmer.
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-streaming-caret[\s\S]*\.conversation-reasoning-shimmer[\s\S]*animation:\s*none/s);
+});
