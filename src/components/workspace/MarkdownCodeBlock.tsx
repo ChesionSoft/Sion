@@ -31,6 +31,16 @@ export function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
   return (
     <div className="md-code-block">
       <div className="md-code-head">
+        <svg className="md-code-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path
+            d="M5.5 4.5 2 8l3.5 3.5m5-7L14 8l-3.5 3.5M9.5 3l-3 10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
         <span className="md-code-lang">{lang || "code"}</span>
         <button
           type="button"

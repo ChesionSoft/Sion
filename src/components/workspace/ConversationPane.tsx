@@ -6,8 +6,9 @@ import { ConversationFileMenu } from "./ConversationFileMenu";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ConversationTurnCard } from "./ConversationTurnCard";
 import { ConversationPresets } from "./ConversationPresets";
+import { ConversationStreamingResponse } from "./ConversationStreamingResponse";
 import { conversationCanSend } from "../../conversation-controls";
-import { groupConversation } from "../../conversation-turns.ts";
+import { groupConversation, isStreamingMessage } from "../../conversation-turns.ts";
 
 export type ConversationPaneProps = {
   nodeAvailable: boolean;
@@ -86,9 +87,16 @@ export function ConversationPane(props: ConversationPaneProps) {
         ) : items.map((item) => {
           if (item.kind === "legacy_message") {
             const message = item.message;
-            const streaming = message.id.startsWith("stream-");
+            if (isStreamingMessage(message)) {
+              return (
+                <article className="conversation-message is-assistant is-streaming" key={message.id}>
+                  <div className="conversation-message-meta"><strong>Sion</strong><time>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div>
+                  <ConversationStreamingResponse content={message.content} />
+                </article>
+              );
+            }
             return (
-              <article className={`conversation-message is-${message.role} ${streaming ? "is-streaming" : ""}`} key={message.id}>
+              <article className={`conversation-message is-${message.role}`} key={message.id}>
                 <div className="conversation-message-meta"><strong>{message.role === "user" ? "你" : message.role === "assistant" ? "Sion" : "系统"}</strong><time>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div>
                 <div className="conversation-message-copy">{message.content}</div>
                 {message.role === "user" && message.attachments && message.attachments.length > 0 ? (

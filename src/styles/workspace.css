@@ -42,6 +42,27 @@
 .conversation-message.is-streaming .conversation-message-copy::after { content: ""; display: inline-block; width: 6px; height: 14px; margin-left: 3px; background: var(--text-muted); animation: workspace-caret 850ms steps(1) infinite; vertical-align: -2px; }
 @keyframes workspace-caret { 50% { opacity: 0; } }
 
+.conversation-streaming { position: relative; }
+.conversation-streaming-copy { min-width: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.72; }
+.conversation-streaming-caret { display: inline-block; width: 6px; height: 14px; margin-left: 3px; background: var(--text-muted); animation: workspace-caret 850ms steps(1) infinite; vertical-align: -2px; }
+.conversation-streaming-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* While a streaming reply still has an unclosed code fence, keep it as stable
+ * plain text instead of a runaway code block. */
+.safe-markdown.is-fence-open .safe-markdown-fence-open {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 13px;
+  line-height: 1.72;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-streaming-caret { animation: none; }
+}
+
 .conversation-composer { flex: 0 0 auto; width: min(760px, calc(100% - 48px)); margin: 0 auto 18px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--bg-main); box-shadow: 0 8px 28px rgb(0 0 0 / 8%); }
 .conversation-composer:focus-within { border-color: color-mix(in srgb, var(--focus) 65%, var(--border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 14%, transparent), 0 8px 28px rgb(0 0 0 / 8%); }
 .conversation-composer textarea { display: block; width: 100%; min-height: 84px; max-height: 230px; resize: vertical; border: 0; outline: 0; padding: 13px 14px 7px; color: var(--text); background: transparent; font-size: 13px; line-height: 1.55; }
@@ -206,6 +227,12 @@
   font-size: 12.5px;
   line-height: 1;
   color: var(--text-strong);
+}
+
+.md-code-icon {
+  display: block;
+  flex: none;
+  color: var(--text-faint);
 }
 
 .md-code-copy {

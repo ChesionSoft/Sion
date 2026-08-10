@@ -762,3 +762,29 @@ test("FileDiff is the shared diff primitive for export review and delivery inspe
   assert.match(css, /\.file-diff-row\.is-remove\s*\{/);
   assert.match(css, /\.file-diff-body\s*\{[^}]*max-height:\s*320px/s);
 });
+
+test("streaming replies render through a dedicated AIcss component with a fence guard", async () => {
+  const [streaming, pane, safeMarkdown, codeBlock, css] = await Promise.all([
+    readFile("src/components/workspace/ConversationStreamingResponse.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationPane.tsx", "utf8"),
+    readFile("src/components/workspace/SafeMarkdown.tsx", "utf8"),
+    readFile("src/components/workspace/MarkdownCodeBlock.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+  assert.match(pane, /ConversationStreamingResponse/);
+  assert.match(pane, /isStreamingMessage\(message\)/);
+  assert.match(streaming, /conversation-streaming-copy/);
+  assert.match(streaming, /role="status"/);
+  assert.match(streaming, /aria-live="polite"/);
+  assert.match(streaming, /Sion 正在生成回复/);
+  assert.match(streaming, /conversation-streaming-caret/);
+  assert.doesNotMatch(streaming, /setInterval|setTimeout|requestAnimationFrame/);
+  assert.match(safeMarkdown, /isFencedCodeComplete/);
+  assert.match(safeMarkdown, /is-fence-open/);
+  assert.match(safeMarkdown, /safe-markdown-fence-open/);
+  assert.match(codeBlock, /md-code-icon/);
+  assert.match(codeBlock, /aria-label=\{copied \? "已复制" : "复制代码"\}/);
+  assert.match(css, /\.conversation-streaming-caret\s*\{/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-streaming-caret\s*\{\s*animation:\s*none/s);
+  assert.match(css, /\.conversation-streaming-status\s*\{[^}]*clip:\s*rect\(0 0 0 0\)/s);
+});
