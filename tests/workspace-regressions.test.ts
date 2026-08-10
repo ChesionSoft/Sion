@@ -831,6 +831,8 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(timeline, /conversation-activity-marker/);
   assert.match(timeline, /function TimelineMarker/);
   assert.match(timeline, /viewBox="0 0 16 16"/);
+  assert.match(timeline, /ConversationActivitySpinner/);
+  assert.match(timeline, /currentActivityId/);
   assert.match(timeline, /--timeline-index/);
   assert.match(timeline, /activity\.publicSummary/);
   assert.match(card, /ConversationReasoningDisclosure/);
@@ -848,6 +850,7 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(css, /\.conversation-activity-timeline\s*\{/);
   assert.match(css, /\.conversation-activity-marker path\s*\{/);
   assert.doesNotMatch(css, /conversation-activity-marker::before/);
+  assert.match(css, /@keyframes conversation-c2-pulse/);
   assert.match(css, /@keyframes sion-task-item-in/);
   assert.match(css, /@keyframes sion-reasoning-sentence-in/);
   assert.match(css, /@keyframes sion-delivery-morph/);

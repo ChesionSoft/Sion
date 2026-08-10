@@ -1,5 +1,6 @@
 import { useState, type CSSProperties } from "react";
 import type { ConversationTurn, TurnActivityStatus } from "../../types";
+import { ConversationActivitySpinner } from "./ConversationActivitySpinner";
 
 const TURN_STATUS_LABEL: Record<ConversationTurn["status"], string> = {
   queued: "Agent 已排队",
@@ -17,7 +18,14 @@ export type ConversationActivityTimelineProps = {
 
 type TimelineMarkerStatus = ConversationTurn["status"] | TurnActivityStatus;
 
-function TimelineMarker({ status }: { status: TimelineMarkerStatus }) {
+function TimelineMarker({ status, current = false }: { status: TimelineMarkerStatus; current?: boolean }) {
+  if (current && status === "running") {
+    return (
+      <span className="conversation-activity-marker is-active" aria-hidden="true">
+        <ConversationActivitySpinner />
+      </span>
+    );
+  }
   if (status === "queued" || status === "running") {
     return <span className="conversation-activity-marker is-active" aria-hidden="true" />;
   }
@@ -51,6 +59,7 @@ export function ConversationActivityTimeline({
   const active = turn.status === "queued" || turn.status === "running";
   const hasSteps = turn.activities.length > 0;
   const showSteps = active || stepsOpen;
+  const currentActivityId = turn.activities.find((activity) => activity.status === "running")?.id;
   return (
     <ol className={`conversation-activity-timeline${showSteps && hasSteps ? " is-steps-open" : ""}`}>
       <li className={`conversation-activity-item is-${turn.status}`}>
@@ -101,7 +110,7 @@ export function ConversationActivityTimeline({
           className={`conversation-activity-item is-${activity.status}`}
           style={{ "--timeline-index": index } as CSSProperties}
         >
-          <TimelineMarker status={activity.status} />
+          <TimelineMarker status={activity.status} current={activity.id === currentActivityId} />
           <div className="conversation-activity-content">
             <strong className="conversation-activity-label">{activity.label}</strong>
             {activity.publicSummary ? (
