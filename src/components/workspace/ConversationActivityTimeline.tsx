@@ -27,7 +27,7 @@ export function ConversationActivityTimeline({
   const hasSteps = turn.activities.length > 0;
   const showSteps = active || stepsOpen;
   return (
-    <ol className="conversation-activity-timeline">
+    <ol className={`conversation-activity-timeline${showSteps && hasSteps ? " is-steps-open" : ""}`}>
       <li className={`conversation-activity-item is-${turn.status}`}>
         <span className="conversation-activity-marker" aria-hidden="true" />
         <div className="conversation-activity-content">
@@ -44,6 +44,7 @@ export function ConversationActivityTimeline({
       </li>
       {!active && hasSteps ? (
         <li className="conversation-activity-toggle">
+          <span className="conversation-activity-toggle-rail" aria-hidden="true" />
           <button
             type="button"
             aria-expanded={stepsOpen}

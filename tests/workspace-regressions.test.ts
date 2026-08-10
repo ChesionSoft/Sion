@@ -824,6 +824,7 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(timeline, /turn\.activities\.map/);
   assert.match(timeline, /个执行步骤/);
   assert.match(timeline, /aria-expanded=\{stepsOpen\}/);
+  assert.match(timeline, /conversation-activity-toggle-rail/);
   assert.match(timeline, /conversation-activity-marker/);
   assert.match(timeline, /activity\.publicSummary/);
   assert.match(card, /ConversationReasoningDisclosure/);
@@ -841,6 +842,7 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(css, /\.conversation-reasoning-shimmer\s*\{/);
   assert.match(css, /@keyframes conversation-shimmer/);
   assert.match(css, /background-clip:\s*text/);
+  assert.match(css, /grid-template-columns:\s*14px minmax\(0, 1fr\)/);
   assert.match(css, /\.delivery-result\s*\{/);
   assert.match(css, /\.delivery-result\.is-error\s*\{/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-reasoning-shimmer\s*\{\s*animation:\s*none/s);
