@@ -22,8 +22,10 @@ export function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
   const code = childText(children);
   const lines = code.split("\n");
   const copy = () => {
-    void navigator.clipboard?.writeText(code);
-    setCopied(true);
+    const result = navigator.clipboard?.writeText(code);
+    if (result) {
+      result.then(() => setCopied(true)).catch(() => {});
+    }
     setTimeout(() => setCopied(false), 1200);
   };
   return (
