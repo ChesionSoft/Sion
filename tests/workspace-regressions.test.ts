@@ -835,6 +835,8 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(timeline, /--timeline-index/);
   assert.match(timeline, /activity\.publicSummary/);
   assert.match(card, /ConversationReasoningDisclosure/);
+  assert.match(card, /ConversationDeliveryGeneration/);
+  assert.match(card, /activity\.kind !== "response"/);
   assert.match(card, /turnDeliveryPresentation/);
   assert.match(card, /formatTurnElapsed/);
   assert.match(card, /conversation-turn-retry/);
@@ -851,13 +853,14 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(css, /@keyframes sion-orb-morph/);
   assert.match(css, /@keyframes sion-task-item-in/);
   assert.match(css, /@keyframes sion-reasoning-sentence-in/);
+  assert.match(css, /@keyframes sion-delivery-morph/);
   assert.match(css, /\.conversation-reasoning-shimmer\s*\{/);
   assert.match(css, /@keyframes conversation-shimmer/);
   assert.match(css, /background-clip:\s*text/);
   assert.match(css, /grid-template-columns:\s*14px minmax\(0, 1fr\)/);
   assert.match(css, /\.delivery-result\s*\{/);
   assert.match(css, /\.delivery-result\.is-error\s*\{/);
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-reasoning-shimmer\s*\{\s*animation:\s*none/s);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-reasoning-shimmer,[\s\S]*\.conversation-file-panel\s*\{\s*animation:\s*none/s);
 });
 
 test("composer is the AIcss host surface with state classes and keyboard-safe controls", async () => {
@@ -866,7 +869,7 @@ test("composer is the AIcss host surface with state classes and keyboard-safe co
     readFile("src/styles/workspace.css", "utf8"),
     readFile("src/styles/responsive.css", "utf8"),
   ]);
-  assert.match(pane, /conversation-composer is-\$\{composerMode\}\$\{sendDisabled \? " is-disabled" : ""\}/);
+  assert.match(pane, /conversation-composer is-\$\{composerMode\}\$\{composerMode !== "send" \? " is-working" : ""\}/);
   assert.match(pane, /ConversationFileMenu/);
   assert.match(pane, /ConversationModelMenu/);
   assert.match(pane, /ContextUsageIndicator/);
@@ -874,6 +877,8 @@ test("composer is the AIcss host surface with state classes and keyboard-safe co
   assert.match(pane, /onCompositionStart/);
   assert.match(pane, /event\.nativeEvent\.keyCode === 229/);
   assert.match(css, /\.conversation-composer\.is-stop\s*\{/);
+  assert.match(css, /@keyframes sion-composer-border-spin/);
+  assert.match(css, /@keyframes sion-composer-chip-in/);
   assert.match(css, /\.conversation-composer\.is-disabled\s*\{/);
   assert.match(css, /\.conversation-composer textarea:disabled\s*\{/);
   assert.match(css, /\.conversation-composer-actions \.ui-button\s*\{[^}]*border-radius:\s*999px/s);

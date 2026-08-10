@@ -9,6 +9,7 @@ import {
 import { ConversationActivityTimeline } from "./ConversationActivityTimeline";
 import { ConversationReasoningDisclosure } from "./ConversationReasoningDisclosure";
 import { ConversationStreamingResponse } from "./ConversationStreamingResponse";
+import { ConversationDeliveryGeneration } from "./ConversationDeliveryGeneration";
 import { DeliveryDecisionDetails } from "./DeliveryDecisionDetails";
 import { SafeMarkdown } from "./SafeMarkdown";
 
@@ -42,6 +43,9 @@ export function ConversationTurnCard({
   const elapsedText = formatTurnElapsed(turnElapsedMs(turn, Date.now()));
   const showDecisionDetails = Boolean(turn.deliveryInspection) || Boolean(liveDecisionRaw);
   const visualPhase = turnVisualPhase(turn, liveReasoning, Boolean(streamingMessage));
+  const activeDelivery = active
+    ? turn.activities.find((activity) => activity.kind !== "response" && activity.status === "running")
+    : undefined;
   return (
     <article
       className={`conversation-turn is-${turn.status} is-${turn.deliveryOutcome.kind} is-phase-${visualPhase}`}
@@ -82,6 +86,7 @@ export function ConversationTurnCard({
         turn={turn}
         onOpenRunDetail={onOpenRunDetail}
       />
+      {activeDelivery ? <ConversationDeliveryGeneration label={activeDelivery.label} /> : null}
       {delivery.kind !== "pending" ? (
         <section className={`delivery-result is-${delivery.tone}`}>
           <div className="delivery-result-main">
