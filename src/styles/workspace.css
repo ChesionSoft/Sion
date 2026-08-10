@@ -403,13 +403,17 @@
 .conversation-activity-timeline { position: relative; list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .conversation-activity-timeline.is-steps-open::before { content: ""; position: absolute; z-index: 0; top: 12px; bottom: 13px; left: 6.5px; width: 1px; background: var(--border); }
 .conversation-activity-item { position: relative; z-index: 1; display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: flex-start; column-gap: 9px; font-size: 12px; color: var(--text-muted); }
+.conversation-activity-timeline.is-steps-open .conversation-activity-item:not(:first-child) { animation: sion-task-item-in 360ms ease both; animation-delay: calc(var(--timeline-index, 0) * 50ms); }
+@keyframes sion-task-item-in { from { opacity: 0; transform: translateY(-7px); } to { opacity: 1; transform: translateY(0); } }
 .conversation-activity-marker { position: relative; isolation: isolate; width: 14px; height: 14px; margin-top: 4px; display: grid; place-items: center; border-radius: 50%; background: var(--text-faint); color: var(--bg-main); }
 .conversation-activity-marker svg { display: block; width: 10px; height: 10px; overflow: visible; }
 .conversation-activity-marker path { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .conversation-activity-marker.is-active { overflow: visible; background: transparent; color: #3b82f6; }
 .conversation-activity-item.is-pending .conversation-activity-marker { background: transparent; border: 1px solid var(--text-faint); }
 .conversation-activity-item.is-completed .conversation-activity-marker { background: #2da44e; }
+.conversation-activity-item.is-completed .conversation-activity-marker svg { animation: sion-status-confirm 280ms cubic-bezier(.22, 1, .36, 1) both; }
 .conversation-activity-item.is-failed .conversation-activity-marker { background: #cf222e; }
+.conversation-activity-item.is-failed .conversation-activity-marker svg { animation: sion-status-confirm 280ms cubic-bezier(.22, 1, .36, 1) both; }
 .conversation-activity-item.is-skipped .conversation-activity-marker { background: var(--text-faint); }
 .conversation-activity-item.is-running .conversation-activity-marker,
 .conversation-activity-item.is-queued .conversation-activity-marker {
@@ -465,6 +469,7 @@
 @keyframes sion-orb-focus { 0%, 100% { opacity: .08; filter: blur(1.2px); transform: translate(var(--orb-x), var(--orb-y)) scale(1.12); } 12%, 22% { opacity: 1; filter: blur(0); transform: translate(var(--orb-x), var(--orb-y)) scale(1); } 55% { opacity: .22; filter: blur(.8px); transform: translate(var(--orb-x), var(--orb-y)) scale(1.08); } }
 @keyframes sion-orb-handoff { 0% { opacity: 0; filter: blur(1.8px); transform: translateX(-7px) scale(.55); } 24%, 45% { opacity: 1; filter: blur(0); transform: translateX(0) scale(1); } 72%, 100% { opacity: 0; filter: blur(1.8px); transform: translateX(7px) scale(.55); } }
 @keyframes sion-orb-morph { 0%, 5% { transform: translate(var(--morph-a)); } 35%, 45% { transform: translate(var(--morph-b)); } 70%, 80% { transform: translate(var(--morph-c)); } 100% { transform: translate(var(--morph-a)); } }
+@keyframes sion-status-confirm { from { opacity: 0; transform: scale(1.18); } to { opacity: 1; transform: scale(1); } }
 .conversation-activity-content { display: grid; gap: 2px; min-width: 0; }
 .conversation-activity-status { display: inline-flex; align-items: center; gap: 5px; justify-self: start; min-height: 22px; border: 0; border-radius: 6px; margin: 0; padding: 2px 4px; color: var(--text-muted); background: transparent; font-size: 11px; line-height: 1.35; cursor: pointer; }
 .conversation-activity-status:hover { color: var(--text); background: var(--bg-hover); }
@@ -474,6 +479,8 @@
 .conversation-activity-item.is-failed > .conversation-activity-content > .conversation-activity-status,
 .conversation-activity-item.is-conflict > .conversation-activity-content > .conversation-activity-status { color: #cf222e; }
 .conversation-activity-label { font-weight: 520; }
+.conversation-activity-item.is-running .conversation-activity-label { color: transparent; -webkit-text-fill-color: transparent; background: linear-gradient(90deg, var(--text-muted) 0%, var(--text-muted) 30%, color-mix(in srgb, var(--text-muted) 45%, transparent) 45%, color-mix(in srgb, var(--text-muted) 45%, transparent) 55%, var(--text-muted) 70%, var(--text-muted) 100%); background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; animation: sion-task-shine 2.25s cubic-bezier(.25, .1, .25, 1) infinite; }
+@keyframes sion-task-shine { 0%, 18% { background-position: 100% 0; } 82%, 100% { background-position: 0 0; } }
 .conversation-activity-summary { margin: 0; color: var(--text-faint); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .conversation-activity-toggle { position: relative; z-index: 1; display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; column-gap: 9px; min-height: 20px; }
 .conversation-activity-toggle-rail { width: 1px; height: 100%; justify-self: center; background: var(--border); }
@@ -483,7 +490,8 @@
 .conversation-activity-toggle svg { transition: transform 160ms ease; }
 .conversation-activity-toggle svg.is-open { transform: rotate(180deg); }
 .conversation-turn-activity-dot { position: relative; isolation: isolate; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
-.conversation-reasoning { display: grid; min-width: 0; justify-items: start; }
+.conversation-reasoning { display: grid; min-width: 0; justify-items: start; animation: sion-reasoning-block-in 320ms cubic-bezier(.22, 1, .36, 1) both; }
+@keyframes sion-reasoning-block-in { from { opacity: 0; } to { opacity: 1; } }
 .conversation-reasoning.is-open { justify-items: stretch; }
 .conversation-reasoning > button { display: flex; align-items: center; gap: 7px; max-width: 100%; border: 0; border-radius: 8px; padding: 5px 7px; color: var(--text-muted); background: transparent; font-size: 11px; cursor: pointer; }
 .conversation-reasoning > button:hover { color: var(--text); background: var(--bg-hover); }
@@ -508,11 +516,19 @@
   border-radius: inherit;
   animation: conversation-activity-ripple 1.1s ease-out infinite;
 }
-.conversation-reasoning-head { display: flex; align-items: center; gap: 7px; padding: 4px 7px; color: var(--text-muted); font-size: 11px; }
+.conversation-reasoning-head { display: flex; align-items: center; gap: 7px; min-height: 20px; padding: 1px 7px; color: var(--text-muted); font-size: 11px; }
 .conversation-reasoning-head strong { font-weight: 560; }
-.conversation-reasoning-shimmer { display: inline-block; padding: 4px 7px; background: linear-gradient(100deg, var(--text-faint) 20%, var(--text) 45%, var(--text-faint) 70%); background-size: 220% 100%; background-clip: text; -webkit-background-clip: text; color: transparent; font-size: 11px; font-weight: 560; letter-spacing: .01em; animation: conversation-shimmer 1.7s linear infinite; }
-@keyframes conversation-shimmer { to { background-position: -220% 0; } }
-.conversation-reasoning-content { box-sizing: border-box; justify-self: stretch; min-width: 0; max-width: 100%; max-height: min(360px, 45vh); margin: 1px 0 0 14px; border-left: 1px solid var(--border); padding: 7px 10px; overflow-y: auto; }
+.conversation-reasoning-live-label, .conversation-reasoning-shimmer { display: inline-block; background: linear-gradient(90deg, var(--text-muted) 0%, var(--text-muted) 30%, color-mix(in srgb, var(--text-muted) 45%, transparent) 45%, color-mix(in srgb, var(--text-muted) 45%, transparent) 55%, var(--text-muted) 70%, var(--text-muted) 100%); background-size: 300% 100%; background-clip: text; -webkit-background-clip: text; color: transparent; -webkit-text-fill-color: transparent; font-size: 11px; font-weight: 560; letter-spacing: .01em; animation: conversation-shimmer 2.25s cubic-bezier(.25, .1, .25, 1) infinite; }
+.conversation-reasoning-shimmer { padding: 4px 0; }
+@keyframes conversation-shimmer { 0%, 18% { background-position: 100% 0; } 82%, 100% { background-position: 0 0; } }
+.conversation-reasoning-collapsible { display: grid; grid-template-rows: 1fr; width: 100%; opacity: 1; transition: grid-template-rows 320ms cubic-bezier(.22, 1, .36, 1), opacity 220ms ease; }
+.conversation-reasoning-collapsible.is-collapsed { grid-template-rows: 0fr; opacity: 0; pointer-events: none; }
+.conversation-reasoning-inner { min-height: 0; overflow: hidden; }
+.conversation-reasoning-content { box-sizing: border-box; justify-self: stretch; min-width: 0; max-width: 100%; max-height: min(180px, 40vh); margin: 5px 0 0 14px; border-left: 1px solid var(--border); padding: 7px 10px; overflow-y: auto; scrollbar-width: none; transition: max-height 360ms cubic-bezier(.22, 1, .36, 1); }
+.conversation-reasoning-content::-webkit-scrollbar { display: none; }
+.conversation-reasoning-content.is-following { mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%); -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%); }
+.conversation-reasoning-content .safe-markdown > * { animation: sion-reasoning-sentence-in 420ms cubic-bezier(.22, 1, .36, 1) both; }
+@keyframes sion-reasoning-sentence-in { from { opacity: 0; } to { opacity: 1; } }
 .conversation-turn-retry { justify-self: start; border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 5px 10px; background: var(--bg-main); color: var(--text); font-size: 12px; cursor: pointer; }
 .conversation-turn-retry:hover { border-color: var(--focus); }
 

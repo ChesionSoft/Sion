@@ -388,6 +388,8 @@ test("reasoning disclosure is collapsed, accessible, and adds no retry action", 
   assert.match(source, /conversation-reasoning-shimmer/);
   assert.match(source, /is-shimmer/);
   assert.match(source, />Thinking…<\/span>/);
+  assert.match(source, /scrollTop = element\.scrollHeight/);
+  assert.match(source, /conversation-reasoning-collapsible/);
   assert.doesNotMatch(source, /reasoning_content|重新请求|自动重试/);
 });
 
@@ -404,9 +406,10 @@ test("conversation renders assistant and reasoning Markdown with bounded scrolli
   assert.match(disclosure, /<SafeMarkdown markdown=\{content \?\? ""\} variant="reasoning" \/>/);
   assert.match(disclosure, /\[\.\.\.\(content \?\? ""\)\]\.length/);
   assert.match(disclosure, /conversation-reasoning-count/);
-  assert.match(css, /\.conversation-reasoning-content\s*\{[^}]*max-height:\s*min\(360px, 45vh\)/s);
+  assert.match(css, /\.conversation-reasoning-content\s*\{[^}]*max-height:\s*min\(180px, 40vh\)/s);
   assert.match(css, /\.conversation-reasoning-content\s*\{[^}]*overflow-y:\s*auto/s);
-  assert.doesNotMatch(disclosure, /scrollTop|scrollIntoView/);
+  assert.match(disclosure, /contentRef\.current/);
+  assert.match(disclosure, /element\.scrollTop = element\.scrollHeight/);
 });
 
 test("delivery regenerates locally while DOCX stays in Export Center", async () => {
@@ -829,6 +832,7 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(timeline, /function TimelineMarker/);
   assert.match(timeline, /viewBox="0 0 16 16"/);
   assert.match(timeline, /SionActivityOrb/);
+  assert.match(timeline, /--timeline-index/);
   assert.match(timeline, /activity\.publicSummary/);
   assert.match(card, /ConversationReasoningDisclosure/);
   assert.match(card, /turnDeliveryPresentation/);
@@ -845,6 +849,8 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.doesNotMatch(css, /conversation-activity-marker::before/);
   assert.match(css, /@keyframes sion-orb-ring-chase/);
   assert.match(css, /@keyframes sion-orb-morph/);
+  assert.match(css, /@keyframes sion-task-item-in/);
+  assert.match(css, /@keyframes sion-reasoning-sentence-in/);
   assert.match(css, /\.conversation-reasoning-shimmer\s*\{/);
   assert.match(css, /@keyframes conversation-shimmer/);
   assert.match(css, /background-clip:\s*text/);

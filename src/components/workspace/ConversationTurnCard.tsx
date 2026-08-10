@@ -57,6 +57,7 @@ export function ConversationTurnCard({
         active={active}
         content={reasoningContent}
         elapsedText={elapsedText}
+        phase={visualPhase}
       />
       {assistantMessage ? (
         <section className="conversation-turn-block is-assistant">

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import type { ConversationTurn, TurnActivityStatus } from "../../types";
 import { SionActivityOrb } from "./SionActivityOrb";
 
@@ -100,8 +100,12 @@ export function ConversationActivityTimeline({
           </button>
         </li>
       ) : null}
-      {showSteps ? turn.activities.map((activity) => (
-        <li key={activity.id} className={`conversation-activity-item is-${activity.status}`}>
+      {showSteps ? turn.activities.map((activity, index) => (
+        <li
+          key={activity.id}
+          className={`conversation-activity-item is-${activity.status}`}
+          style={{ "--timeline-index": index } as CSSProperties}
+        >
           <TimelineMarker status={activity.status} />
           <div className="conversation-activity-content">
             <strong className="conversation-activity-label">{activity.label}</strong>
