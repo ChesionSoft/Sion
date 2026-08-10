@@ -53,3 +53,24 @@ test("numbered line diff stays additive to plain lineDiff", () => {
     lineDiff(before, after),
   );
 });
+test("unchanged content produces only context rows with aligned line numbers", () => {
+  assert.deepEqual(lineDiff("a\nb", "a\nb"), [
+    { kind: "same", text: "a" },
+    { kind: "same", text: "b" },
+  ]);
+  assert.deepEqual(lineDiffWithNumbers("a\nb", "a\nb"), [
+    { kind: "same", text: "a", oldLine: 1, newLine: 1 },
+    { kind: "same", text: "b", oldLine: 2, newLine: 2 },
+  ]);
+});
+
+test("empty inputs diff as all-removes or all-adds respectively", () => {
+  assert.deepEqual(lineDiff("", "x\ny"), [
+    { kind: "add", text: "x" },
+    { kind: "add", text: "y" },
+  ]);
+  assert.deepEqual(lineDiff("x\ny", ""), [
+    { kind: "remove", text: "x" },
+    { kind: "remove", text: "y" },
+  ]);
+});

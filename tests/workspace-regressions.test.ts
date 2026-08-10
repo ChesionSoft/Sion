@@ -2,6 +2,35 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
+import {
+  formatTurnElapsed,
+  hasUnclosedCodeFence,
+  isFencedCodeComplete,
+  isStreamingMessage,
+  streamRunId,
+  turnDeliveryPresentation,
+  turnElapsedMs,
+  turnHasPublicReasoning,
+  turnVisualPhase,
+} from "../src/conversation-turns.ts";
+import type { ConversationTurn } from "../src/types.ts";
+
+function turn(overrides: Partial<ConversationTurn> = {}): ConversationTurn {
+  return {
+    id: "t1",
+    projectId: "p1",
+    nodeId: "n1",
+    sessionId: "s1",
+    runId: "r1",
+    userMessageId: "u1",
+    status: "running",
+    activities: [],
+    deliveryOutcome: { kind: "pending" },
+    startedAt: "2026-08-10T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 test("compact workspace keeps every primary action available and labelled", async () => {
   const [workspaceCss, workspaceSource] = await Promise.all([
     readFile("src/styles/workspace.css", "utf8"),
@@ -614,4 +643,100 @@ test("active conversation work uses an accessible beacon instead of a blinking d
   assert.match(styles, /conversation-activity-beacon/);
   assert.match(styles, /@keyframes conversation-activity-beacon/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test("visual phase derivation covers queued, thinking, reasoning, output, terminal", () => {
+  assert.equal(turnVisualPhase(turn({ status: "queued" })), "queued");
+  assert.equal(turnVisualPhase(turn({ status: "running" })), "thinking");
+  assert.equal(turnVisualPhase(turn({ status: "running" }), "思考中…"), "reasoning");
+  assert.equal(turnVisualPhase(turn({ status: "running" }), undefined, true), "output");
+  assert.equal(turnVisualPhase(turn({ status: "running" }), "思考中…", true), "output");
+  assert.equal(turnVisualPhase(turn({ status: "completed" })), "terminal");
+  assert.equal(turnVisualPhase(turn({ status: "failed" })), "terminal");
+  assert.equal(turnVisualPhase(turn({ status: "cancelled" })), "terminal");
+});
+
+test("public reasoning availability prefers live then persisted and stays absent otherwise", () => {
+  assert.equal(turnHasPublicReasoning(turn(), "live"), true);
+  assert.equal(turnHasPublicReasoning(turn(), undefined), false);
+  assert.equal(turnHasPublicReasoning(turn({ reasoningSummary: "old" }), undefined), true);
+  assert.equal(turnHasPublicReasoning(turn({ reasoningSummary: "" }), undefined), false);
+});
+
+test("elapsed time falls back conservatively on malformed or absent timestamps", () => {
+  const now = Date.parse("2026-08-10T00:01:00.000Z");
+  const started = "2026-08-10T00:00:00.000Z";
+  const finished = "2026-08-10T00:00:05.000Z";
+
+  assert.equal(turnElapsedMs(turn({ startedAt: "not-a-date", status: "completed", finishedAt: finished }), now), null);
+  assert.equal(turnElapsedMs(turn({ startedAt: started, status: "completed" }), now), null);
+  assert.equal(turnElapsedMs(turn({ startedAt: started, status: "completed", finishedAt: finished }), now), 5_000);
+  assert.equal(turnElapsedMs(turn({ startedAt: started, status: "running" }), now), 60_000);
+  assert.equal(turnElapsedMs(turn({ startedAt: started, status: "queued" }), now), 60_000);
+});
+
+test("elapsed text is compact and empty when unknown", () => {
+  assert.equal(formatTurnElapsed(null), "");
+  assert.equal(formatTurnElapsed(3_200), "3.2 秒");
+  assert.equal(formatTurnElapsed(12_000), "12 秒");
+  assert.equal(formatTurnElapsed(65_000), "1 分 5 秒");
+});
+
+test("delivery presentation carries revision, sections, conflict and retry language", () => {
+  const applied = turnDeliveryPresentation(turn({
+    status: "completed",
+    deliveryOutcome: { kind: "patch_applied", previousRevision: 2, revision: 3, sectionTitles: ["功能说明", "接口设计"] },
+  }), false);
+  assert.equal(applied.headline, "交付稿已更新 · revision 3");
+  assert.equal(applied.detail, "更新章节：功能说明、接口设计");
+  assert.equal(applied.tone, "success");
+  assert.equal(applied.retryable, false);
+
+  const conflict = turnDeliveryPresentation(turn({
+    status: "completed",
+    deliveryOutcome: { kind: "conflict", expectedRevision: 2, actualRevision: 3 },
+  }), false);
+  assert.equal(conflict.tone, "error");
+  assert.equal(conflict.retryable, true);
+  assert.match(conflict.detail ?? "", /预期 revision 2，实际 3/);
+
+  const dirtyRetry = turnDeliveryPresentation(turn({
+    status: "completed",
+    deliveryOutcome: { kind: "awaiting_manual_draft_resolution", expectedRevision: 2 },
+  }), true);
+  assert.equal(dirtyRetry.retryable, false);
+  assert.match(dirtyRetry.detail ?? "", /未保存的修改/);
+
+  const responseFailure = turnDeliveryPresentation(turn({
+    status: "failed",
+    deliveryOutcome: { kind: "failed", stage: "response", publicError: "网络中断" },
+  }), false);
+  assert.equal(responseFailure.headline, "网络中断");
+  assert.equal(responseFailure.retryable, false);
+
+  const unchanged = turnDeliveryPresentation(turn({
+    status: "completed",
+    deliveryOutcome: { kind: "unchanged" },
+  }), false);
+  assert.equal(unchanged.headline, "已判断，无需更新交付稿");
+});
+
+test("streaming message seam associates transient messages with their run", () => {
+  const transient = { id: "stream-r9", role: "assistant" as const, content: "hi", createdAt: "2026-08-10T00:00:00.000Z" };
+  assert.equal(isStreamingMessage(transient), true);
+  assert.equal(streamRunId(transient), "r9");
+  const persisted = { ...transient, id: "msg-1" };
+  assert.equal(isStreamingMessage(persisted), false);
+  assert.equal(streamRunId(persisted), null);
+});
+
+test("fence completeness guard keeps partial fenced code as plain text until closed", () => {
+  assert.equal(hasUnclosedCodeFence("plain text"), false);
+  assert.equal(isFencedCodeComplete("plain text"), true);
+  assert.equal(hasUnclosedCodeFence("```ts\nconst x = 1"), true);
+  assert.equal(isFencedCodeComplete("```ts\nconst x = 1"), false);
+  assert.equal(hasUnclosedCodeFence("```ts\nconst x = 1\n```"), false);
+  assert.equal(hasUnclosedCodeFence("before\n```\ncode\n```\nafter"), false);
+  assert.equal(hasUnclosedCodeFence("~~~\ncode\n"), true);
+  assert.equal(hasUnclosedCodeFence("```ts\n```\n```"), true);
 });
