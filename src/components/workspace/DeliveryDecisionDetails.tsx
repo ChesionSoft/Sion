@@ -1,3 +1,5 @@
+import { FileDiff } from "../ui";
+import { lineDiffWithNumbers } from "../../export-diff";
 import type { DeliveryDecisionInspection, DeliveryOutcome } from "../../types";
 
 export type DeliveryDecisionDetailsProps = {
@@ -5,8 +7,6 @@ export type DeliveryDecisionDetailsProps = {
   liveRaw?: string;
   outcome?: DeliveryOutcome;
 };
-
-type DiffLine = { kind: "same" | "add" | "remove"; text: string };
 
 function outcomeLabel(outcome?: DeliveryOutcome): string {
   if (!outcome) return "等待交付判断";
@@ -33,56 +33,11 @@ function outcomeTone(outcome?: DeliveryOutcome): string {
   }
 }
 
-function diffLines(base: string, proposed: string): DiffLine[] {
-  const a = base.split("\n");
-  const b = proposed.split("\n");
-  const m = a.length;
-  const n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
-  for (let i = m - 1; i >= 0; i -= 1) {
-    for (let j = n - 1; j >= 0; j -= 1) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const result: DiffLine[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < m && j < n) {
-    if (a[i] === b[j]) {
-      result.push({ kind: "same", text: a[i] });
-      i += 1;
-      j += 1;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      result.push({ kind: "remove", text: a[i] });
-      i += 1;
-    } else {
-      result.push({ kind: "add", text: b[j] });
-      j += 1;
-    }
-  }
-  while (i < m) {
-    result.push({ kind: "remove", text: a[i] });
-    i += 1;
-  }
-  while (j < n) {
-    result.push({ kind: "add", text: b[j] });
-    j += 1;
-  }
-  return result;
-}
-
-function diffPrefix(kind: DiffLine["kind"]): string {
-  if (kind === "add") return "+ ";
-  if (kind === "remove") return "- ";
-  return "  ";
-}
-
 export function DeliveryDecisionDetails({ inspection, liveRaw, outcome }: DeliveryDecisionDetailsProps) {
   const raw = liveRaw ?? inspection?.rawResponse ?? "";
   const base = inspection?.baseMarkdown ?? "";
   const proposed = inspection?.proposedMarkdown;
   const streaming = Boolean(liveRaw) && !inspection;
-  const diff = proposed ? diffLines(base, proposed) : [];
   return (
     <details className="delivery-decision-details">
       <summary>交付判断详情</summary>
@@ -93,15 +48,11 @@ export function DeliveryDecisionDetails({ inspection, liveRaw, outcome }: Delive
       {proposed ? (
         <section className="delivery-decision-section">
           <h4>交付稿差异</h4>
-          <pre className="delivery-decision-diff">
-            {diff.map((line, index) => (
-              <span key={index} className={`delivery-decision-diff-line is-${line.kind}`}>
-                {diffPrefix(line.kind)}
-                {line.text}
-                {"\n"}
-              </span>
-            ))}
-          </pre>
+          <FileDiff
+            className="delivery-decision-diff"
+            label={<span className="delivery-decision-diff-label">当前文稿 → 建议交付稿</span>}
+            rows={lineDiffWithNumbers(base, proposed)}
+          />
         </section>
       ) : null}
       <section className="delivery-decision-section">

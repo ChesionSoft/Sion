@@ -740,3 +740,25 @@ test("fence completeness guard keeps partial fenced code as plain text until clo
   assert.equal(hasUnclosedCodeFence("~~~\ncode\n"), true);
   assert.equal(hasUnclosedCodeFence("```ts\n```\n```"), true);
 });
+
+test("FileDiff is the shared diff primitive for export review and delivery inspection", async () => {
+  const [uiIndex, artifact, delivery, css] = await Promise.all([
+    readFile("src/components/ui/index.ts", "utf8"),
+    readFile("src/components/export/ArtifactDiff.tsx", "utf8"),
+    readFile("src/components/workspace/DeliveryDecisionDetails.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+  assert.match(uiIndex, /export \{ FileDiff \} from "\.\/FileDiff"/);
+  assert.match(artifact, /import \{ FileDiff \} from "\.\.\/ui"/);
+  assert.match(artifact, /lineDiffWithNumbers/);
+  assert.match(artifact, /selectedChangeIds/);
+  assert.match(artifact, /onToggle\(change\.id\)/);
+  assert.match(delivery, /lineDiffWithNumbers/);
+  assert.match(delivery, /<FileDiff/);
+  assert.doesNotMatch(delivery, /function diffLines|const dp:|diffPrefix/);
+  assert.doesNotMatch(delivery, /<input\s+type="checkbox"/);
+  assert.match(css, /\.file-diff-card\s*\{/);
+  assert.match(css, /\.file-diff-row\.is-add\s*\{/);
+  assert.match(css, /\.file-diff-row\.is-remove\s*\{/);
+  assert.match(css, /\.file-diff-body\s*\{[^}]*max-height:\s*320px/s);
+});

@@ -1,4 +1,5 @@
-import { lineDiffWithNumbers, type NumberedDiffLine } from "../../export-diff";
+import { FileDiff } from "../ui";
+import { lineDiffWithNumbers } from "../../export-diff";
 import type { ExportArtifactKind, ExportProposedChange } from "../../types";
 
 export type ArtifactDiffProps = {
@@ -44,19 +45,9 @@ function opSummary(op: ExportProposedChange["op"]): string {
   }
 }
 
-function DiffRow({ line }: { line: NumberedDiffLine }) {
-  return (
-    <div className={`export-diff-row is-${line.kind}`}>
-      <span className="export-diff-ln is-old">{line.oldLine ?? ""}</span>
-      <span className="export-diff-ln is-new">{line.newLine ?? ""}</span>
-      <span className="export-diff-sign">
-        {line.kind === "add" ? "+" : line.kind === "remove" ? "-" : ""}
-      </span>
-      <code className="export-diff-code">{line.text || " "}</code>
-    </div>
-  );
-}
-
+/** Export review renders each proposed change as a selectable FileDiff card.
+ * Selection stays checkbox-driven here; the diff card itself is shared with
+ * conversation delivery inspection. */
 export function ArtifactDiff({
   changes,
   selectedChangeIds,
@@ -68,57 +59,46 @@ export function ArtifactDiff({
   }
   return (
     <div className="export-diff">
-      {changes.map((change, index) => {
-        const lines = lineDiffWithNumbers(change.before, change.after);
-        const selected = selectedChangeIds.includes(change.id);
-        const added = lines.filter((line) => line.kind === "add").length;
-        const removed = lines.filter((line) => line.kind === "remove").length;
-        return (
-          <div key={change.id} className="export-diff-card">
-            <div className="export-diff-head">
-              <label className="export-diff-select">
-                <input
-                  type="checkbox"
-                  checked={selected}
-                  disabled={disabled}
-                  onChange={() => onToggle(change.id)}
+      {changes.map((change, index) => (
+        <FileDiff
+          key={change.id}
+          label={
+            <span className="export-diff-file">
+              <svg
+                className="export-diff-icon"
+                viewBox="0 0 24 24"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <path
+                  d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                 />
-                <span>修改 {index + 1}</span>
-              </label>
-              <span className="export-diff-file">
-                <svg
-                  className="export-diff-icon"
-                  viewBox="0 0 24 24"
-                  width="15"
-                  height="15"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-                <span className="export-diff-target">
-                  {TARGET_KIND_LABEL[change.targetKind]} · {opSummary(change.op)}
-                </span>
+              </svg>
+              <span className="export-diff-target">
+                {TARGET_KIND_LABEL[change.targetKind]} · {opSummary(change.op)}
               </span>
-              <span className="export-diff-stat">
-                <span className="is-add">+{added}</span>
-                <span className="is-del">-{removed}</span>
-              </span>
-            </div>
-            <div className="export-diff-body">
-              {lines.map((line, index_) => (
-                <DiffRow key={index_} line={line} />
-              ))}
-            </div>
-          </div>
-        );
-      })}
+            </span>
+          }
+          rows={lineDiffWithNumbers(change.before, change.after)}
+          leadingControl={
+            <label className="export-diff-select">
+              <input
+                type="checkbox"
+                checked={selectedChangeIds.includes(change.id)}
+                disabled={disabled}
+                onChange={() => onToggle(change.id)}
+              />
+              <span>修改 {index + 1}</span>
+            </label>
+          }
+        />
+      ))}
     </div>
   );
 }
