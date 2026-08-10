@@ -352,7 +352,8 @@ test("conversation turns own agent status and the app no longer notices run comp
   assert.doesNotMatch(app, /已请求取消 Agent Run/);
   assert.match(pane, /ConversationTurnCard/);
   assert.doesNotMatch(card, /<details/);
-  assert.match(card, /conversation-turn-status/);
+  assert.match(card, /ConversationActivityTimeline/);
+  assert.match(card, /delivery-result/);
   assert.match(card, /reasoningSummary/);
   assert.match(card, /重新判断交付稿/);
 });
@@ -383,7 +384,8 @@ test("reasoning disclosure is collapsed, accessible, and adds no retry action", 
   assert.match(source, /useState\(false\)/);
   assert.match(source, /aria-expanded=\{open\}/);
   assert.match(source, /Agent 正在思考/);
-  assert.match(source, /模型暂未提供公开思考内容/);
+  assert.match(source, /conversation-reasoning-shimmer/);
+  assert.match(source, /is-shimmer/);
   assert.doesNotMatch(source, /reasoning_content|重新请求|自动重试/);
 });
 
@@ -397,7 +399,7 @@ test("conversation renders assistant and reasoning Markdown with bounded scrolli
   assert.match(turn, /import \{ SafeMarkdown \} from "\.\/SafeMarkdown"/);
   assert.match(turn, /<SafeMarkdown markdown=\{assistantMessage\.content\} variant="chat" \/>/);
   assert.match(turn, /conversation-turn-message is-user">\{userMessage\.content\}/);
-  assert.match(disclosure, /<SafeMarkdown markdown=\{displayContent\} variant="reasoning" \/>/);
+  assert.match(disclosure, /<SafeMarkdown markdown=\{content \?\? ""\} variant="reasoning" \/>/);
   assert.match(disclosure, /\[\.\.\.\(content \?\? ""\)\]\.length/);
   assert.match(disclosure, /conversation-reasoning-count/);
   assert.match(css, /\.conversation-reasoning-content\s*\{[^}]*max-height:\s*min\(360px, 45vh\)/s);
@@ -787,4 +789,37 @@ test("streaming replies render through a dedicated AIcss component with a fence 
   assert.match(css, /\.conversation-streaming-caret\s*\{/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-streaming-caret\s*\{\s*animation:\s*none/s);
   assert.match(css, /\.conversation-streaming-status\s*\{[^}]*clip:\s*rect\(0 0 0 0\)/s);
+});
+
+test("turn chrome is a thinking-and-execution timeline with a delivery result card", async () => {
+  const [timeline, card, disclosure, runDetail, deliveryDetails, css] = await Promise.all([
+    readFile("src/components/workspace/ConversationActivityTimeline.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationTurnCard.tsx", "utf8"),
+    readFile("src/components/workspace/ConversationReasoningDisclosure.tsx", "utf8"),
+    readFile("src/components/workspace/RunDetailDialog.tsx", "utf8"),
+    readFile("src/components/workspace/DeliveryDecisionDetails.tsx", "utf8"),
+    readFile("src/styles/workspace.css", "utf8"),
+  ]);
+  assert.match(timeline, /conversation-activity-timeline/);
+  assert.match(timeline, /onClick=\{\(\) => onOpenRunDetail\(turn\.runId\)\}/);
+  assert.match(timeline, /turn\.activities\.map/);
+  assert.match(timeline, /conversation-activity-marker/);
+  assert.match(timeline, /activity\.publicSummary/);
+  assert.match(card, /ConversationReasoningDisclosure/);
+  assert.match(card, /turnDeliveryPresentation/);
+  assert.match(card, /formatTurnElapsed/);
+  assert.match(card, /conversation-turn-retry/);
+  assert.match(disclosure, /思考了 \$\{elapsedText\}/);
+  assert.match(disclosure, /conversation-reasoning-head/);
+  assert.match(runDetail, /DeliveryDecisionDetails/);
+  assert.match(runDetail, /活动时间线/);
+  assert.match(deliveryDetails, /模型返回的交付 JSON/);
+  assert.match(deliveryDetails, /publicError/);
+  assert.match(css, /\.conversation-activity-timeline\s*\{/);
+  assert.match(css, /\.conversation-activity-item\.is-failed\s*\.conversation-activity-marker::before\s*\{\s*content:\s*"×"/s);
+  assert.match(css, /\.conversation-reasoning-shimmer\s*\{/);
+  assert.match(css, /@keyframes conversation-shimmer/);
+  assert.match(css, /\.delivery-result\s*\{/);
+  assert.match(css, /\.delivery-result\.is-error\s*\{/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-reasoning-shimmer\s*\{\s*animation:\s*none/s);
 });

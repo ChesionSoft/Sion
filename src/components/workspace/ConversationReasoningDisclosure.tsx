@@ -4,18 +4,47 @@ import { SafeMarkdown } from "./SafeMarkdown";
 export function ConversationReasoningDisclosure({
   active,
   content,
+  elapsedText = "",
 }: {
   active: boolean;
   content?: string;
+  elapsedText?: string;
 }) {
   const [open, setOpen] = useState(false);
-  if (!active && !content) return null;
-  const label = active ? "Agent 正在思考" : "思考内容";
-  const characterCount = [...(content ?? "")].length;
-  const displayContent = content || "模型暂未提供公开思考内容";
+  const hasContent = Boolean(content);
 
+  // Running with no public summary yet: show only the shimmer, never a
+  // fabricated placeholder.
+  if (active && !hasContent) {
+    return (
+      <div className="conversation-reasoning is-active is-shimmer" role="status" aria-label="Agent 正在思考">
+        <span className="conversation-reasoning-shimmer" aria-hidden="true" />
+      </div>
+    );
+  }
+  // Old turns with no recorded reasoning stay entirely absent.
+  if (!active && !hasContent) return null;
+
+  // While active, public reasoning is open and appends in stream order.
+  if (active) {
+    return (
+      <section className="conversation-reasoning is-active is-open">
+        <div className="conversation-reasoning-head">
+          <span className="conversation-turn-activity-dot" aria-hidden="true" />
+          <strong>Agent 正在思考</strong>
+        </div>
+        <div className="conversation-reasoning-content">
+          <SafeMarkdown markdown={content ?? ""} variant="reasoning" />
+        </div>
+      </section>
+    );
+  }
+
+  // Terminal: collapsed to an accessible summary with elapsed duration.
+  const label = elapsedText ? `思考了 ${elapsedText}` : "思考内容";
+  const characterCount = [...(content ?? "")].length;
   return (
-    <section className={`conversation-reasoning ${active ? "is-active" : ""}`}>
+    <section className={`conversation-reasoning${open ? " is-open" : ""}`}>
       <button
         type="button"
         aria-expanded={open}
@@ -47,7 +76,7 @@ export function ConversationReasoningDisclosure({
       </button>
       {open ? (
         <div className="conversation-reasoning-content">
-          <SafeMarkdown markdown={displayContent} variant="reasoning" />
+          <SafeMarkdown markdown={content ?? ""} variant="reasoning" />
         </div>
       ) : null}
     </section>

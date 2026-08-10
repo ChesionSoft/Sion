@@ -1,5 +1,11 @@
 import type { ChatMessage, ConversationTurn } from "../../types";
-import { turnCanRetryDelivery, turnHeadline } from "../../conversation-turns.ts";
+import {
+  formatTurnElapsed,
+  turnCanRetryDelivery,
+  turnDeliveryPresentation,
+  turnElapsedMs,
+} from "../../conversation-turns.ts";
+import { ConversationActivityTimeline } from "./ConversationActivityTimeline";
 import { ConversationReasoningDisclosure } from "./ConversationReasoningDisclosure";
 import { DeliveryDecisionDetails } from "./DeliveryDecisionDetails";
 import { SafeMarkdown } from "./SafeMarkdown";
@@ -26,6 +32,10 @@ export function ConversationTurnCard({
   onOpenRunDetail,
 }: ConversationTurnCardProps) {
   const canRetry = turnCanRetryDelivery(turn, markdownDirty);
+  const delivery = turnDeliveryPresentation(turn, markdownDirty);
+  const active = turn.status === "queued" || turn.status === "running";
+  const reasoningContent = liveReasoning || turn.reasoningSummary;
+  const elapsedText = formatTurnElapsed(turnElapsedMs(turn, Date.now()));
   const showDecisionDetails = Boolean(turn.deliveryInspection) || Boolean(liveDecisionRaw);
   return (
     <article
@@ -52,31 +62,28 @@ export function ConversationTurnCard({
       ) : null}
       <ConversationReasoningDisclosure
         key={turn.runId}
-        active={turn.status === "queued" || turn.status === "running"}
-        content={liveReasoning || turn.reasoningSummary}
+        active={active}
+        content={reasoningContent}
+        elapsedText={elapsedText}
       />
-      <button
-        type="button"
-        className="conversation-turn-status"
-        onClick={() => onOpenRunDetail(turn.runId)}
-        aria-label={`查看运行详情：${turnHeadline(turn)}`}
-      >
-        <span className="conversation-turn-activity-dot" aria-hidden="true" />
-        <strong>{turnHeadline(turn)}</strong>
-        <span className="conversation-turn-status-arrow" aria-hidden="true">›</span>
-      </button>
-      {turn.activities.length > 0 ? (
-        <ul className="conversation-turn-activities">
-          {turn.activities.map((activity) => (
-            <li key={activity.id} className={`is-${activity.status}`}>
-              <span className="conversation-turn-activity-dot" aria-hidden="true" />
-              <span className="conversation-turn-activity-label">{activity.label}</span>
-              {activity.publicSummary ? (
-                <span className="conversation-turn-activity-summary">{activity.publicSummary}</span>
-              ) : null}
-            </li>
-          ))}
-        </ul>
+      <ConversationActivityTimeline
+        turn={turn}
+        onOpenRunDetail={onOpenRunDetail}
+      />
+      {delivery.kind !== "pending" ? (
+        <section className={`delivery-result is-${delivery.tone}`}>
+          <div className="delivery-result-main">
+            <strong>{delivery.headline}</strong>
+            {delivery.detail ? <p>{delivery.detail}</p> : null}
+          </div>
+          <button
+            type="button"
+            className="delivery-result-action"
+            onClick={() => onOpenRunDetail(turn.runId)}
+          >
+            查看详情
+          </button>
+        </section>
       ) : null}
       {showDecisionDetails ? (
         <DeliveryDecisionDetails

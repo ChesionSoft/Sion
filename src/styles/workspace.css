@@ -359,30 +359,25 @@
 .conversation-turn-message.is-user { justify-self: end; max-width: min(620px, 86%); border-radius: 14px 14px 4px 14px; padding: 10px 13px; background: var(--bg-subtle); white-space: pre-wrap; }
 .conversation-turn-message.is-assistant { width: 100%; }
 .conversation-turn-message.is-assistant .conversation-message-execution { margin-top: 6px; color: var(--text-faint); font-size: 10px; }
-.conversation-turn-status { display: flex; align-items: center; justify-self: start; gap: 7px; min-height: 26px; border: 0; border-radius: 8px; margin-left: -7px; padding: 3px 7px; color: var(--text-muted); background: transparent; font-size: 11px; cursor: pointer; }
-.conversation-turn-status:hover { color: var(--text); background: var(--bg-hover); }
-.conversation-turn-status:focus-visible { outline: 2px solid color-mix(in srgb, var(--focus) 65%, transparent); outline-offset: 1px; }
-.conversation-turn-status strong { font-weight: 520; }
 .conversation-turn-status-arrow { color: var(--text-faint); font-size: 15px; }
-.conversation-turn-activities { list-style: none; margin: -4px 0 0 14px; padding: 0 0 0 10px; border-left: 1px solid var(--border); display: grid; gap: 5px; }
-.conversation-turn-activities li { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
-.conversation-turn-activity-dot { position: relative; isolation: isolate; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
-.conversation-turn.is-completed > .conversation-turn-status .conversation-turn-activity-dot { background: #2da44e; }
-.conversation-turn.is-failed > .conversation-turn-status .conversation-turn-activity-dot, .conversation-turn.is-conflict > .conversation-turn-status .conversation-turn-activity-dot { background: #cf222e; }
-.conversation-turn-activities li.is-completed .conversation-turn-activity-dot { background: #2da44e; }
-.conversation-turn-activities li.is-failed .conversation-turn-activity-dot { background: #cf222e; }
-.conversation-turn.is-running > .conversation-turn-status .conversation-turn-activity-dot,
-.conversation-turn.is-queued > .conversation-turn-status .conversation-turn-activity-dot,
-.conversation-turn-activities li.is-running .conversation-turn-activity-dot,
-.conversation-reasoning.is-active .conversation-turn-activity-dot {
+.conversation-activity-timeline { list-style: none; margin: -2px 0 0; padding: 0; display: grid; gap: 7px; }
+.conversation-activity-item { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; color: var(--text-muted); }
+.conversation-activity-marker { position: relative; isolation: isolate; flex: 0 0 auto; width: 14px; height: 14px; margin-top: 2px; display: grid; place-items: center; border-radius: 50%; background: var(--text-faint); color: var(--bg-main); font-size: 9px; font-weight: 700; line-height: 1; }
+.conversation-activity-item.is-pending .conversation-activity-marker { background: transparent; border: 1px solid var(--text-faint); }
+.conversation-activity-item.is-completed .conversation-activity-marker { background: #2da44e; }
+.conversation-activity-item.is-completed .conversation-activity-marker::before { content: "✓"; }
+.conversation-activity-item.is-failed .conversation-activity-marker { background: #cf222e; }
+.conversation-activity-item.is-failed .conversation-activity-marker::before { content: "×"; }
+.conversation-activity-item.is-skipped .conversation-activity-marker { background: var(--text-faint); }
+.conversation-activity-item.is-skipped .conversation-activity-marker::before { content: "–"; }
+.conversation-activity-item.is-running .conversation-activity-marker,
+.conversation-activity-item.is-queued .conversation-activity-marker {
   background: #3b82f6;
   box-shadow: 0 0 0 2px color-mix(in srgb, #3b82f6 18%, transparent), 0 0 9px rgb(59 130 246 / 65%);
   animation: conversation-activity-beacon 1.1s ease-in-out infinite;
 }
-.conversation-turn.is-running > .conversation-turn-status .conversation-turn-activity-dot::after,
-.conversation-turn.is-queued > .conversation-turn-status .conversation-turn-activity-dot::after,
-.conversation-turn-activities li.is-running .conversation-turn-activity-dot::after,
-.conversation-reasoning.is-active .conversation-turn-activity-dot::after {
+.conversation-activity-item.is-running .conversation-activity-marker::after,
+.conversation-activity-item.is-queued .conversation-activity-marker::after {
   content: "";
   position: absolute;
   z-index: -1;
@@ -399,8 +394,19 @@
   0% { opacity: .92; transform: scale(.55); }
   75%, 100% { opacity: 0; transform: scale(1.7); }
 }
-.conversation-turn-activity-summary { color: var(--text-faint); font-size: 11px; }
+.conversation-activity-content { display: grid; gap: 2px; min-width: 0; }
+.conversation-activity-status { display: inline-flex; align-items: center; gap: 5px; justify-self: start; min-height: 26px; border: 0; border-radius: 8px; margin-left: -7px; padding: 3px 7px; color: var(--text-muted); background: transparent; font-size: 11px; cursor: pointer; }
+.conversation-activity-status:hover { color: var(--text); background: var(--bg-hover); }
+.conversation-activity-status:focus-visible { outline: 2px solid color-mix(in srgb, var(--focus) 65%, transparent); outline-offset: 1px; }
+.conversation-activity-status strong { font-weight: 520; }
+.conversation-activity-item.is-completed > .conversation-activity-content > .conversation-activity-status { color: var(--text); }
+.conversation-activity-item.is-failed > .conversation-activity-content > .conversation-activity-status,
+.conversation-activity-item.is-conflict > .conversation-activity-content > .conversation-activity-status { color: #cf222e; }
+.conversation-activity-label { font-weight: 520; }
+.conversation-activity-summary { margin: 0; color: var(--text-faint); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.conversation-turn-activity-dot { position: relative; isolation: isolate; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
 .conversation-reasoning { display: grid; min-width: 0; justify-items: start; }
+.conversation-reasoning.is-open { justify-items: stretch; }
 .conversation-reasoning > button { display: flex; align-items: center; gap: 7px; max-width: 100%; border: 0; border-radius: 8px; padding: 5px 7px; color: var(--text-muted); background: transparent; font-size: 11px; cursor: pointer; }
 .conversation-reasoning > button:hover { color: var(--text); background: var(--bg-hover); }
 .conversation-reasoning-chevron {
@@ -410,21 +416,52 @@
 .conversation-reasoning-chevron.is-open { transform: rotate(180deg); }
 .conversation-reasoning > button:focus-visible { outline: 2px solid color-mix(in srgb, var(--focus) 65%, transparent); outline-offset: 1px; }
 .conversation-reasoning-count { color: var(--text-faint); font-weight: 400; }
+.conversation-reasoning.is-active .conversation-turn-activity-dot {
+  background: #3b82f6;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #3b82f6 18%, transparent), 0 0 9px rgb(59 130 246 / 65%);
+  animation: conversation-activity-beacon 1.1s ease-in-out infinite;
+}
+.conversation-reasoning.is-active .conversation-turn-activity-dot::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -4px;
+  border: 1px solid rgb(59 130 246 / 78%);
+  border-radius: inherit;
+  animation: conversation-activity-ripple 1.1s ease-out infinite;
+}
+.conversation-reasoning-head { display: flex; align-items: center; gap: 7px; padding: 4px 7px; color: var(--text-muted); font-size: 11px; }
+.conversation-reasoning-head strong { font-weight: 560; }
+.conversation-reasoning-shimmer { display: block; width: min(420px, 100%); height: 9px; border-radius: 999px; background: linear-gradient(90deg, var(--bg-subtle) 25%, var(--border) 50%, var(--bg-subtle) 75%); background-size: 200% 100%; animation: conversation-shimmer 1.6s linear infinite; }
+@keyframes conversation-shimmer { to { background-position: -200% 0; } }
 .conversation-reasoning-content { box-sizing: border-box; justify-self: stretch; min-width: 0; max-width: 100%; max-height: min(360px, 45vh); margin: 1px 0 0 14px; border-left: 1px solid var(--border); padding: 7px 10px; overflow-y: auto; }
 .conversation-turn-retry { justify-self: start; border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 5px 10px; background: var(--bg-main); color: var(--text); font-size: 12px; cursor: pointer; }
 .conversation-turn-retry:hover { border-color: var(--focus); }
-.conversation-turn.is-failed > .conversation-turn-status, .conversation-turn.is-conflict > .conversation-turn-status { color: #cf222e; }
-.conversation-turn.is-cancelled > .conversation-turn-status, .conversation-turn.is-interrupted > .conversation-turn-status { color: var(--text-muted); }
+
+/* Terminal delivery result card — Sion-specific presentation with a secondary
+ * run-detail action. Text carries the outcome; colour is redundant, not sole. */
+.delivery-result { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; border: 1px solid var(--border); border-radius: 12px; padding: 11px 13px; background: var(--bg-main); }
+.delivery-result-main { display: grid; gap: 3px; min-width: 0; }
+.delivery-result-main strong { font-size: 13px; font-weight: 600; }
+.delivery-result-main p { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.delivery-result-action { flex: none; align-self: center; border: 0; border-radius: 7px; padding: 4px 9px; background: var(--bg-subtle); color: var(--text-muted); font-size: 11px; cursor: pointer; }
+.delivery-result-action:hover { color: var(--text); background: var(--bg-hover); }
+.delivery-result-action:focus-visible { outline: 2px solid color-mix(in srgb, var(--focus) 65%, transparent); outline-offset: 1px; }
+.delivery-result.is-success { border-color: color-mix(in srgb, #2da44e 42%, var(--border)); }
+.delivery-result.is-success .delivery-result-main strong { color: #1a7f37; }
+.delivery-result.is-warning { border-color: color-mix(in srgb, #b45309 42%, var(--border)); }
+.delivery-result.is-warning .delivery-result-main strong { color: #b45309; }
+.delivery-result.is-error { border-color: color-mix(in srgb, #cf222e 42%, var(--border)); }
+.delivery-result.is-error .delivery-result-main strong { color: #cf222e; }
 
 @media (prefers-reduced-motion: reduce) {
-  .conversation-turn.is-running > .conversation-turn-status .conversation-turn-activity-dot,
-  .conversation-turn.is-queued > .conversation-turn-status .conversation-turn-activity-dot,
-  .conversation-turn-activities li.is-running .conversation-turn-activity-dot,
+  .conversation-activity-item.is-running .conversation-activity-marker,
+  .conversation-activity-item.is-queued .conversation-activity-marker,
+  .conversation-activity-item.is-running .conversation-activity-marker::after,
+  .conversation-activity-item.is-queued .conversation-activity-marker::after,
   .conversation-reasoning.is-active .conversation-turn-activity-dot,
-  .conversation-turn.is-running > .conversation-turn-status .conversation-turn-activity-dot::after,
-  .conversation-turn.is-queued > .conversation-turn-status .conversation-turn-activity-dot::after,
-  .conversation-turn-activities li.is-running .conversation-turn-activity-dot::after,
-  .conversation-reasoning.is-active .conversation-turn-activity-dot::after { animation: none; }
+  .conversation-reasoning.is-active .conversation-turn-activity-dot::after,
+  .conversation-reasoning-shimmer { animation: none; }
 }
 
 @media (max-width: 900px) {
