@@ -485,6 +485,9 @@ pub fn public_model_failure(error: &sion_agent::model_stream::StreamFailure) -> 
             "模型流式回复中断，本次未保存未完成内容".to_string()
         }
         StreamFailure::InvalidFrame => "模型返回了无法解析的流式数据".to_string(),
+        StreamFailure::IncompleteToolCall { .. } => {
+            "模型返回的工具调用不完整，本次未执行任何工具".to_string()
+        }
     }
 }
 

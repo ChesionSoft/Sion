@@ -1192,15 +1192,15 @@ fn spawn_export_model_run(
             }
             state.client.clone()
         };
-        let request = StreamRequest {
-            endpoint: resolved.endpoint,
-            api_key: resolved.api_key,
+        let request = StreamRequest::text_only(
+            resolved.endpoint,
+            resolved.api_key,
             protocol,
-            model: resolved.model,
+            resolved.model,
             prompt,
-            reasoning_effort: model_selection.reasoning_effort,
-            request_public_reasoning_summary: true,
-        };
+            model_selection.reasoning_effort,
+            true,
+        );
         let result = model_stream::stream_text(&client, &request, cancellation).await;
         let finished_at = super::utc_now();
         match result {
@@ -1747,15 +1747,15 @@ fn spawn_export_review_run(
             }
             state.client.clone()
         };
-        let request = StreamRequest {
-            endpoint: resolved.endpoint,
-            api_key: resolved.api_key,
+        let request = StreamRequest::text_only(
+            resolved.endpoint,
+            resolved.api_key,
             protocol,
-            model: resolved.model,
+            resolved.model,
             prompt,
-            reasoning_effort: model_selection.reasoning_effort,
-            request_public_reasoning_summary: true,
-        };
+            model_selection.reasoning_effort,
+            true,
+        );
         let result = model_stream::stream_text(&client, &request, cancellation).await;
         let status = match result {
             Ok(StreamOutcome::Completed(content)) => {

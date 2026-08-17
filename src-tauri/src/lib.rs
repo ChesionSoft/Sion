@@ -2366,15 +2366,15 @@ fn spawn_agent_run(
         let raw_buffer_for_delta = raw_buffer.clone();
         let stream = sion_agent::model_stream::stream_text_with(
             &state.client,
-            &sion_agent::model_stream::StreamRequest {
-                endpoint: job.model.endpoint.clone(),
-                api_key: job.model.api_key.clone(),
+            &sion_agent::model_stream::StreamRequest::text_only(
+                job.model.endpoint.clone(),
+                job.model.api_key.clone(),
                 protocol,
-                model: job.model.model.clone(),
-                prompt: job.prompt.clone(),
-                reasoning_effort: job.reasoning_effort,
-                request_public_reasoning_summary: !is_decision,
-            },
+                job.model.model.clone(),
+                job.prompt.clone(),
+                job.reasoning_effort,
+                !is_decision,
+            ),
             job.cancellation.clone(),
             move |delta| match delta {
                 sion_agent::model_stream::StreamDelta::OutputText(text) => {
@@ -2418,6 +2418,9 @@ fn spawn_agent_run(
                         );
                     }
                 }
+                // The legacy text-only paths never advertise tools; if a provider
+                // still streams a call, it is dropped rather than executed.
+                sion_agent::model_stream::StreamDelta::ToolCallDelta { .. } => {}
             },
         )
         .await;
@@ -2693,15 +2696,15 @@ fn spawn_regeneration_run(
         let candidate = job.candidate.clone();
         let stream = sion_agent::model_stream::stream_text_with(
             &state.client,
-            &sion_agent::model_stream::StreamRequest {
-                endpoint: job.model.endpoint.clone(),
-                api_key: job.model.api_key.clone(),
+            &sion_agent::model_stream::StreamRequest::text_only(
+                job.model.endpoint.clone(),
+                job.model.api_key.clone(),
                 protocol,
-                model: job.model.model.clone(),
-                prompt: job.prompt.clone(),
-                reasoning_effort: job.reasoning_effort,
-                request_public_reasoning_summary: false,
-            },
+                job.model.model.clone(),
+                job.prompt.clone(),
+                job.reasoning_effort,
+                false,
+            ),
             job.cancellation.clone(),
             move |delta| match delta {
                 sion_agent::model_stream::StreamDelta::OutputText(text) => {
@@ -2717,6 +2720,8 @@ fn spawn_regeneration_run(
                     );
                 }
                 sion_agent::model_stream::StreamDelta::ReasoningSummary(_) => {}
+                // Regeneration is a text-only path; never execute streamed calls.
+                sion_agent::model_stream::StreamDelta::ToolCallDelta { .. } => {}
             },
         )
         .await;
@@ -3797,6 +3802,7 @@ mod tests {
                 sion_agent::model_stream::StreamContent {
                     output: vec!["partial".to_string()],
                     reasoning_summary: Vec::new(),
+                    tool_calls: Vec::new(),
                     usage: None,
                 },
             )))
@@ -3845,6 +3851,7 @@ mod tests {
             &sion_agent::model_stream::StreamContent {
                 output: vec!["answer".into()],
                 reasoning_summary: vec![],
+                    tool_calls: Vec::new(),
                 usage: Some(sion_core::ProviderTokenUsage {
                     input_tokens: 12,
                     output_tokens: 3,
@@ -3861,6 +3868,7 @@ mod tests {
             &sion_agent::model_stream::StreamContent {
                 output: vec!["answer".into()],
                 reasoning_summary: vec![],
+                    tool_calls: Vec::new(),
                 usage: None,
             },
         );

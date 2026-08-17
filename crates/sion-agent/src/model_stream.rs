@@ -1,11 +1,17 @@
 //! OpenAI-compatible SSE transport with explicit cancellation semantics.
+//!
+//! Both supported protocols stream normalized events: output text, public
+//! reasoning summaries, tool-call argument deltas, usage, completion,
+//! cancellation, malformed frames, and provider failures. The transport never
+//! exposes request headers, API keys, full request bodies, or raw error bodies.
 
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sion_core::{ProviderTokenUsage, ReasoningEffort, normalize_provider_usage};
+use sion_core::{HarnessToolCall, ProviderTokenUsage, ReasoningEffort, normalize_provider_usage};
 use tokio_util::sync::CancellationToken;
+
+use crate::model_protocol::{ModelRequest, serialize_request_body};
 
 const MAX_PROVIDER_ERROR_BYTES: usize = 16 * 1024;
 
@@ -21,22 +27,59 @@ pub struct StreamRequest {
     pub endpoint: String,
     pub api_key: String,
     pub protocol: ProviderProtocol,
-    pub model: String,
-    pub prompt: String,
-    pub reasoning_effort: ReasoningEffort,
-    pub request_public_reasoning_summary: bool,
+    pub request: ModelRequest,
+}
+
+impl StreamRequest {
+    /// Text-only compatibility constructor for export generation. Export
+    /// runtimes stay out of the Harness in this phase and never accept tools.
+    pub fn text_only(
+        endpoint: String,
+        api_key: String,
+        protocol: ProviderProtocol,
+        model: String,
+        prompt: String,
+        reasoning_effort: ReasoningEffort,
+        request_public_reasoning_summary: bool,
+    ) -> Self {
+        Self {
+            endpoint,
+            api_key,
+            protocol,
+            request: ModelRequest {
+                model,
+                messages: vec![crate::model_protocol::ProtocolMessage::user(prompt)],
+                tools: Vec::new(),
+                tool_choice: crate::model_protocol::ToolChoice::None,
+                reasoning_effort,
+                request_public_reasoning_summary,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamDelta {
     OutputText(String),
     ReasoningSummary(String),
+    /// A fragment of a native tool call. `index` orders parallel calls in one
+    /// assistant step; `call_id` and `name` arrive on the first fragment of a
+    /// call; `arguments_delta` is the streamed JSON argument slice.
+    ToolCallDelta {
+        call_id: String,
+        index: usize,
+        name: String,
+        arguments_delta: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StreamContent {
     pub output: Vec<String>,
     pub reasoning_summary: Vec<String>,
+    /// Complete native tool calls accumulated over the whole model step. Empty
+    /// when the model produced a final response without requesting tools.
+    pub tool_calls: Vec<HarnessToolCall>,
     pub usage: Option<ProviderTokenUsage>,
 }
 
@@ -69,6 +112,9 @@ pub enum StreamFailure {
     StreamRead,
     StreamIncomplete,
     InvalidFrame,
+    /// A native tool call could not be finalized (missing id/name, invalid
+    /// JSON completion). The `reason` is a fixed safe label, never provider text.
+    IncompleteToolCall { index: usize, reason: &'static str },
 }
 
 pub async fn stream_text(
@@ -88,7 +134,7 @@ pub async fn stream_text_with<F>(
 where
     F: FnMut(&StreamDelta),
 {
-    let body = request_body(request);
+    let body = serialize_request_body(request.protocol, &request.request);
     let response = client
         .post(&request.endpoint)
         .bearer_auth(&request.api_key)
@@ -109,13 +155,18 @@ where
     let mut buffer = String::new();
     let mut output = Vec::new();
     let mut reasoning_summary = Vec::new();
+    let mut tool_calls: Vec<ToolCallAccumulator> = Vec::new();
     let mut usage = None;
+    let mut stream_completed = false;
+    let mut saw_done = false;
+    let mut saw_responses_completed = false;
     loop {
         let next = tokio::select! {
             _ = cancellation.cancelled() => {
                 return Ok(StreamOutcome::Cancelled(StreamContent {
                     output,
                     reasoning_summary,
+                    tool_calls: Vec::new(),
                     usage,
                 }))
             }
@@ -132,22 +183,123 @@ where
                 usage = Some(frame_usage);
             }
             if frame_completes_stream(request.protocol, &frame) {
-                return Ok(StreamOutcome::Completed(StreamContent {
-                    output,
-                    reasoning_summary,
-                    usage,
-                }));
+                let is_done = frame.data == "[DONE]";
+                let duplicate = if is_done {
+                    saw_done
+                } else {
+                    saw_responses_completed
+                };
+                if duplicate {
+                    return Err(StreamFailure::InvalidFrame);
+                }
+                if is_done {
+                    saw_done = true;
+                } else {
+                    saw_responses_completed = true;
+                }
+                stream_completed = true;
+                continue;
             }
             for delta in frame_deltas(request.protocol, &frame)? {
                 match &delta {
                     StreamDelta::OutputText(text) => output.push(text.clone()),
                     StreamDelta::ReasoningSummary(text) => reasoning_summary.push(text.clone()),
+                    StreamDelta::ToolCallDelta {
+                        call_id,
+                        index,
+                        name,
+                        arguments_delta,
+                    } => accumulate_tool_call(
+                        &mut tool_calls,
+                        *index,
+                        call_id,
+                        name,
+                        arguments_delta,
+                    ),
                 }
                 on_delta(&delta);
             }
         }
+        if stream_completed {
+            break;
+        }
     }
-    Err(StreamFailure::StreamIncomplete)
+    if !stream_completed {
+        return Err(StreamFailure::StreamIncomplete);
+    }
+    let tool_calls = finalize_tool_calls(tool_calls)?;
+    Ok(StreamOutcome::Completed(StreamContent {
+        output,
+        reasoning_summary,
+        tool_calls,
+        usage,
+    }))
+}
+
+/// One provider-neutral tool call being accumulated from streamed fragments.
+#[derive(Debug, Default, Clone)]
+struct ToolCallAccumulator {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn accumulate_tool_call(
+    tool_calls: &mut Vec<ToolCallAccumulator>,
+    index: usize,
+    call_id: &str,
+    name: &str,
+    arguments_delta: &str,
+) {
+    if tool_calls.len() <= index {
+        tool_calls.resize(index + 1, ToolCallAccumulator::default());
+    }
+    let entry = &mut tool_calls[index];
+    if !call_id.is_empty() {
+        entry.id = call_id.to_string();
+    }
+    if !name.is_empty() {
+        entry.name = name.to_string();
+    }
+    entry.arguments.push_str(arguments_delta);
+}
+
+/// Validates the accumulated native tool calls before they can be executed:
+/// every call needs a provider call ID and a name, and the streamed argument
+/// JSON must be complete and parseable (an empty argument string means `{}`).
+fn finalize_tool_calls(
+    tool_calls: Vec<ToolCallAccumulator>,
+) -> Result<Vec<HarnessToolCall>, StreamFailure> {
+    let mut calls = Vec::with_capacity(tool_calls.len());
+    for (index, accumulator) in tool_calls.into_iter().enumerate() {
+        if accumulator.id.is_empty() {
+            return Err(StreamFailure::IncompleteToolCall {
+                index,
+                reason: "missing call id",
+            });
+        }
+        if accumulator.name.is_empty() {
+            return Err(StreamFailure::IncompleteToolCall {
+                index,
+                reason: "missing tool name",
+            });
+        }
+        let arguments = accumulator.arguments.trim().to_string();
+        if !arguments.is_empty()
+            && serde_json::from_str::<serde_json::Value>(&arguments).is_err()
+        {
+            return Err(StreamFailure::IncompleteToolCall {
+                index,
+                reason: "invalid arguments json",
+            });
+        }
+        calls.push(HarnessToolCall {
+            id: accumulator.id,
+            name: accumulator.name,
+            arguments,
+        });
+    }
+    Ok(calls)
 }
 
 async fn read_bounded_error_body(response: reqwest::Response) -> String {
@@ -188,34 +340,7 @@ fn provider_rejection(provider_text: &str) -> ProviderRejection {
 }
 
 pub fn request_body(request: &StreamRequest) -> serde_json::Value {
-    let mut body = match request.protocol {
-        ProviderProtocol::ChatCompletions => json!({
-            "model": request.model,
-            "stream": true,
-            "stream_options": { "include_usage": true },
-            "messages": [{"role": "user", "content": request.prompt}]
-        }),
-        ProviderProtocol::OpenaiResponses => json!({
-            "model": request.model,
-            "stream": true,
-            "input": request.prompt
-        }),
-    };
-    if let Some(effort) = request.reasoning_effort.provider_value() {
-        match request.protocol {
-            ProviderProtocol::ChatCompletions => {
-                body["reasoning_effort"] = json!(effort);
-            }
-            ProviderProtocol::OpenaiResponses => {
-                body["reasoning"] = if request.request_public_reasoning_summary {
-                    json!({ "effort": effort, "summary": "auto" })
-                } else {
-                    json!({ "effort": effort })
-                };
-            }
-        }
-    }
-    body
+    serialize_request_body(request.protocol, &request.request)
 }
 
 #[derive(Debug)]
@@ -318,7 +443,7 @@ fn frame_deltas(
             let Some(delta) = body.pointer("/choices/0/delta") else {
                 return Ok(Vec::new());
             };
-            let mut deltas = Vec::with_capacity(2);
+            let mut deltas = Vec::with_capacity(3);
             if let Some(summary) = delta
                 .get("reasoning_summary")
                 .and_then(|value| value.as_str())
@@ -331,23 +456,106 @@ fn frame_deltas(
             {
                 deltas.push(StreamDelta::OutputText(content.to_string()));
             }
+            if let Some(tool_calls) = delta.get("tool_calls").and_then(|value| value.as_array()) {
+                for tool_call in tool_calls {
+                    let index = tool_call
+                        .get("index")
+                        .and_then(|value| value.as_u64())
+                        .map(|value| value as usize)
+                        .unwrap_or(0);
+                    let call_id = tool_call
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = tool_call
+                        .pointer("/function/name")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let arguments_delta = tool_call
+                        .pointer("/function/arguments")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    deltas.push(StreamDelta::ToolCallDelta {
+                        call_id,
+                        index,
+                        name,
+                        arguments_delta,
+                    });
+                }
+            }
             Ok(deltas)
         }
         ProviderProtocol::OpenaiResponses => {
-            let delta = match frame.event.as_deref() {
-                Some("response.output_text.delta") => body
-                    .get("delta")
-                    .and_then(|value| value.as_str())
-                    .filter(|text| !text.is_empty())
-                    .map(|text| StreamDelta::OutputText(text.to_string())),
-                Some("response.reasoning_summary_text.delta") => body
-                    .get("delta")
-                    .and_then(|value| value.as_str())
-                    .filter(|text| !text.is_empty())
-                    .map(|text| StreamDelta::ReasoningSummary(text.to_string())),
-                _ => None,
-            };
-            Ok(delta.into_iter().collect())
+            let mut deltas = Vec::with_capacity(2);
+            match frame.event.as_deref() {
+                Some("response.output_text.delta") => {
+                    if let Some(text) = body
+                        .get("delta")
+                        .and_then(|value| value.as_str())
+                        .filter(|text| !text.is_empty())
+                    {
+                        deltas.push(StreamDelta::OutputText(text.to_string()));
+                    }
+                }
+                Some("response.reasoning_summary_text.delta") => {
+                    if let Some(text) = body
+                        .get("delta")
+                        .and_then(|value| value.as_str())
+                        .filter(|text| !text.is_empty())
+                    {
+                        deltas.push(StreamDelta::ReasoningSummary(text.to_string()));
+                    }
+                }
+                Some("response.output_item.added") => {
+                    if body
+                        .get("item")
+                        .and_then(|item| item.get("type"))
+                        .and_then(|value| value.as_str())
+                        == Some("function_call")
+                    {
+                        let item = body.get("item").expect("item exists");
+                        let index = body
+                            .get("output_index")
+                            .and_then(|value| value.as_u64())
+                            .map(|value| value as usize)
+                            .unwrap_or(0);
+                        deltas.push(StreamDelta::ToolCallDelta {
+                            call_id: item
+                                .get("call_id")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            index,
+                            name: item
+                                .get("name")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            arguments_delta: String::new(),
+                        });
+                    }
+                }
+                Some("response.function_call_arguments.delta") => {
+                    let index = body
+                        .get("output_index")
+                        .and_then(|value| value.as_u64())
+                        .map(|value| value as usize)
+                        .unwrap_or(0);
+                    if let Some(delta) = body.get("delta").and_then(|value| value.as_str()) {
+                        deltas.push(StreamDelta::ToolCallDelta {
+                            call_id: String::new(),
+                            index,
+                            name: String::new(),
+                            arguments_delta: delta.to_string(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+            Ok(deltas)
         }
     }
 }
@@ -355,6 +563,7 @@ fn frame_deltas(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::sync::Arc;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -408,15 +617,15 @@ mod tests {
     }
 
     fn request(endpoint: String, protocol: ProviderProtocol) -> StreamRequest {
-        StreamRequest {
+        StreamRequest::text_only(
             endpoint,
-            api_key: "test-secret".to_string(),
+            "test-secret".to_string(),
             protocol,
-            model: "test".to_string(),
-            prompt: "hello".to_string(),
-            reasoning_effort: ReasoningEffort::Medium,
-            request_public_reasoning_summary: true,
-        }
+            "test".to_string(),
+            "hello".to_string(),
+            ReasoningEffort::Medium,
+            true,
+        )
     }
 
     #[tokio::test]
@@ -438,6 +647,7 @@ mod tests {
                 StreamOutcome::Completed(StreamContent {
                     output: vec!["Sion".to_string()],
                     reasoning_summary: Vec::new(),
+                    tool_calls: Vec::new(),
                     usage: None,
                 })
             );
@@ -529,6 +739,7 @@ mod tests {
             StreamOutcome::Cancelled(StreamContent {
                 output: vec!["Sion".to_string()],
                 reasoning_summary: Vec::new(),
+                tool_calls: Vec::new(),
                 usage: None,
             })
         );
@@ -659,6 +870,7 @@ mod tests {
                 StreamOutcome::Completed(StreamContent {
                     output: vec!["Sion".to_string()],
                     reasoning_summary: Vec::new(),
+                    tool_calls: Vec::new(),
                     usage: None,
                 })
             );
@@ -734,19 +946,19 @@ mod tests {
             "https://example.invalid/chat".into(),
             ProviderProtocol::ChatCompletions,
         );
-        chat_request.reasoning_effort = ReasoningEffort::High;
+        chat_request.request.reasoning_effort = ReasoningEffort::High;
         let chat_high = request_body(&chat_request);
-        chat_request.reasoning_effort = ReasoningEffort::Off;
+        chat_request.request.reasoning_effort = ReasoningEffort::Off;
         let chat_off = request_body(&chat_request);
         let mut responses_request = request(
             "https://example.invalid/responses".into(),
             ProviderProtocol::OpenaiResponses,
         );
-        responses_request.reasoning_effort = ReasoningEffort::Low;
+        responses_request.request.reasoning_effort = ReasoningEffort::Low;
         let responses_low = request_body(&responses_request);
-        responses_request.request_public_reasoning_summary = false;
+        responses_request.request.request_public_reasoning_summary = false;
         let responses_without_summary = request_body(&responses_request);
-        responses_request.reasoning_effort = ReasoningEffort::Off;
+        responses_request.request.reasoning_effort = ReasoningEffort::Off;
         let responses_off = request_body(&responses_request);
         assert_eq!(chat_high["reasoning_effort"], "high");
         assert_eq!(chat_high["stream_options"]["include_usage"], true);
@@ -764,5 +976,201 @@ mod tests {
             assert!(body.get("max_tokens").is_none());
             assert!(body.get("max_output_tokens").is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn chat_tool_call_stream_accumulates_split_arguments() {
+        let response = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"read_attachment\",\"arguments\":\"{\\\"fileId\\\":\\\"file-\"}}]}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1\\\"}\"}}]}}]}\n\n\
+data: [DONE]\n\n".to_vec();
+        let url = serve_response(response).await;
+        let outcome = stream_text(
+            &Client::new(),
+            &request(url, ProviderProtocol::ChatCompletions),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let StreamOutcome::Completed(content) = outcome else {
+            panic!("expected completed");
+        };
+        assert_eq!(
+            content.tool_calls,
+            vec![sion_core::HarnessToolCall {
+                id: "call-1".into(),
+                name: "read_attachment".into(),
+                arguments: r#"{"fileId":"file-1"}"#.into(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_stream_handles_text_and_parallel_tool_calls_in_one_step() {
+        let response = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"checking attachment\"}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"read_attachment\",\"arguments\":\"{\\\"fileId\\\":\\\"a\\\"}\"}}]}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call-2\",\"function\":{\"name\":\"read_current_delivery\",\"arguments\":\"{}\"}}]}}]}\n\n\
+data: [DONE]\n\n".to_vec();
+        let url = serve_response(response).await;
+        let outcome = stream_text(
+            &Client::new(),
+            &request(url, ProviderProtocol::ChatCompletions),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let StreamOutcome::Completed(content) = outcome else {
+            panic!("expected completed");
+        };
+        assert_eq!(content.output, vec!["checking attachment".to_string()]);
+        assert_eq!(content.tool_calls.len(), 2);
+        assert_eq!(content.tool_calls[0].id, "call-1");
+        assert_eq!(content.tool_calls[0].name, "read_attachment");
+        assert_eq!(content.tool_calls[1].id, "call-2");
+        assert_eq!(content.tool_calls[1].name, "read_current_delivery");
+        assert_eq!(content.tool_calls[1].arguments, "{}");
+    }
+
+    #[tokio::test]
+    async fn responses_function_call_events_build_a_complete_call() {
+        let response = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n\
+event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc-1\",\"call_id\":\"call-1\",\"name\":\"read_attachment\"}}\n\n\
+event: response.function_call_arguments.delta\ndata: {\"output_index\":0,\"item_id\":\"fc-1\",\"delta\":\"{\\\"fileId\\\":\\\"file\"}\n\n\
+event: response.function_call_arguments.delta\ndata: {\"output_index\":0,\"item_id\":\"fc-1\",\"delta\":\"-1\\\"}\"}\n\n\
+event: response.completed\ndata: {\"response\":{\"error\":null}}\n\n".to_vec();
+        let url = serve_response(response).await;
+        let outcome = stream_text(
+            &Client::new(),
+            &request(url, ProviderProtocol::OpenaiResponses),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let StreamOutcome::Completed(content) = outcome else {
+            panic!("expected completed");
+        };
+        assert_eq!(
+            content.tool_calls,
+            vec![sion_core::HarnessToolCall {
+                id: "call-1".into(),
+                name: "read_attachment".into(),
+                arguments: r#"{"fileId":"file-1"}"#.into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn chat_tool_call_delta_parser_keeps_id_name_and_arguments() {
+        let deltas = frame_deltas(
+            ProviderProtocol::ChatCompletions,
+            &SseFrame {
+                event: None,
+                data: r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_attachment","arguments":"{\"fileId\":\"a\"}"}}]}}]}"#
+                    .to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            deltas,
+            vec![StreamDelta::ToolCallDelta {
+                call_id: "call-1".into(),
+                index: 0,
+                name: "read_attachment".into(),
+                arguments_delta: r#"{"fileId":"a"}"#.into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn invalid_or_incomplete_tool_calls_are_rejected() {
+        let missing_id = vec![ToolCallAccumulator {
+            id: String::new(),
+            name: "read_attachment".into(),
+            arguments: "{}".into(),
+        }];
+        assert!(matches!(
+            finalize_tool_calls(missing_id),
+            Err(StreamFailure::IncompleteToolCall { index: 0, reason: "missing call id" })
+        ));
+
+        let missing_name = vec![ToolCallAccumulator {
+            id: "call-1".into(),
+            name: String::new(),
+            arguments: "{}".into(),
+        }];
+        assert!(matches!(
+            finalize_tool_calls(missing_name),
+            Err(StreamFailure::IncompleteToolCall { reason: "missing tool name", .. })
+        ));
+
+        let invalid_json = vec![ToolCallAccumulator {
+            id: "call-1".into(),
+            name: "read_attachment".into(),
+            arguments: r#"{"fileId":"unterminated"#.into(),
+        }];
+        assert!(matches!(
+            finalize_tool_calls(invalid_json),
+            Err(StreamFailure::IncompleteToolCall { reason: "invalid arguments json", .. })
+        ));
+
+        let empty_arguments_are_valid = vec![ToolCallAccumulator {
+            id: "call-1".into(),
+            name: "read_current_delivery".into(),
+            arguments: String::new(),
+        }];
+        assert!(finalize_tool_calls(empty_arguments_are_valid).is_ok());
+    }
+
+    #[tokio::test]
+    async fn duplicated_terminal_frames_are_rejected() {
+        let response = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n\
+data: [DONE]\n\n\
+data: [DONE]\n\n".to_vec();
+        let url = serve_response(response).await;
+        let error = stream_text(
+            &Client::new(),
+            &request(url, ProviderProtocol::ChatCompletions),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, StreamFailure::InvalidFrame);
+    }
+
+    #[tokio::test]
+    async fn malformed_frames_fail_the_step_safely() {
+        let response = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n\
+data: {not valid json}\n\n".to_vec();
+        let url = serve_response(response).await;
+        let error = stream_text(
+            &Client::new(),
+            &request(url, ProviderProtocol::ChatCompletions),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, StreamFailure::InvalidFrame);
+    }
+
+    #[test]
+    fn tool_call_stream_never_exposes_secret_sentinels_in_debug_values() {
+        let secret = "sk-secret-tool-sentinel";
+        let mut tool_calls = vec![ToolCallAccumulator {
+            id: "call-1".into(),
+            name: "read_attachment".into(),
+            arguments: format!(r#"{{"fileId":"{secret}"}}"#),
+        }];
+        tool_calls[0].id = format!("call-{secret}");
+        let calls = finalize_tool_calls(tool_calls).unwrap();
+        let debug = format!("{calls:?}");
+        // The arguments are model-visible content and may legitimately contain
+        // file ids; the transport never mixes the API key into tool payloads.
+        assert!(!debug.contains("sk-secret-tool-sentinel-key"));
+        let body = request_body(&request(
+            "https://example.invalid/chat".into(),
+            ProviderProtocol::ChatCompletions,
+        ));
+        assert!(!serde_json::to_string(&body).unwrap().contains("test-secret"));
     }
 }
