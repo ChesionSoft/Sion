@@ -680,6 +680,16 @@ impl ProjectStore {
         read_json(&index)
     }
 
+    /// Resolves one project file by its trusted index ID. Traversal-like IDs
+    /// simply do not match the index, so a forged ID can never escape the
+    /// project's own file index.
+    pub fn file(&self, file_id: &str) -> Result<ProjectFile> {
+        self.list_files()?
+            .into_iter()
+            .find(|file| file.id == file_id)
+            .ok_or_else(|| StorageError::ProjectFileNotFound(file_id.to_string()))
+    }
+
     /// Copies an import source into the project and stores a separately
     /// extracted UTF-8 companion when its format has a supported extractor.
     pub fn import_file(&self, source: &Path, now: String) -> Result<ProjectFile> {

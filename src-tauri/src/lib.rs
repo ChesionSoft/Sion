@@ -35,6 +35,8 @@ use tokio_util::sync::CancellationToken;
 mod conversation_runtime;
 mod dependency_context;
 mod harness_scope;
+mod harness_search;
+mod harness_tools;
 mod turn_runtime;
 use conversation_runtime::{EffectiveAgentRules, compose_effective_agent_rules};
 
