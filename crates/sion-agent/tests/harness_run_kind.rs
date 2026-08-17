@@ -16,6 +16,21 @@ fn harness_kind_serializes_and_deserializes_as_harness() {
 }
 
 #[test]
+fn harness_execution_kind_serializes_and_is_a_conversation_run() {
+    assert_eq!(
+        serde_json::to_value(AgentRunKind::HarnessExecution).unwrap(),
+        "harness_execution"
+    );
+    assert_eq!(
+        serde_json::from_value::<AgentRunKind>(serde_json::json!("harness_execution")).unwrap(),
+        AgentRunKind::HarnessExecution
+    );
+    assert!(AgentRunKind::HarnessExecution.is_conversation_run());
+    assert!(AgentRunKind::Harness.is_conversation_run());
+    assert!(!AgentRunKind::ExportBlueprint.is_conversation_run());
+}
+
+#[test]
 fn legacy_kinds_keep_their_exact_wire_names() {
     for (kind, wire) in [
         (AgentRunKind::Conversation, "conversation"),

@@ -181,6 +181,8 @@ impl HarnessEventBridge {
             harness: Some(HarnessTurnState {
                 proposals: live.proposals.clone(),
                 diagnostics: None,
+                execution_plan: None,
+                execution: None,
             }),
             started_at: self.started_at.clone(),
             finished_at: None,
@@ -688,6 +690,8 @@ pub(crate) fn persist_harness_send(
         harness: Some(HarnessTurnState {
             proposals: Vec::new(),
             diagnostics: None,
+            execution_plan: None,
+            execution: None,
         }),
         started_at: now.clone(),
         finished_at: None,
@@ -811,6 +815,8 @@ fn complete_harness_run(
         harness: Some(HarnessTurnState {
             proposals: durable_proposals,
             diagnostics: Some(diagnostics.clone()),
+            execution_plan: None,
+            execution: None,
         }),
         started_at: run.created_at.clone(),
         finished_at: Some(finished_at.clone()),

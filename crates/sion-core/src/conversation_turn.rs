@@ -311,6 +311,8 @@ mod tests {
                 limit_reached: None,
                 tool_traces: Vec::new(),
             }),
+            execution_plan: None,
+            execution: None,
         };
         let turn = ConversationTurn {
             id: "turn-1".into(),

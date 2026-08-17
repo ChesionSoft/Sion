@@ -201,8 +201,136 @@ pub struct HarnessProposal {
     pub latest_rule_digest: Option<String>,
 }
 
+/// Lifecycle of a durable pending execution plan. A plan is created by a
+/// completed planning Harness turn and authorizes exactly one execution turn
+/// after a valid natural-language confirmation. Consumption and invalidation
+/// are terminal; a plan is never recreated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessPlanStatus {
+    /// Published with the planning turn; may still be confirmed.
+    Pending,
+    /// Atomically consumed by a valid confirmation; the execution turn started.
+    Consumed,
+    /// Terminal invalidation (expiry, node change, cancel, restart, ambiguity).
+    Invalidated,
+}
+
+/// Why a pending execution plan can no longer be consumed. Kept as a public,
+/// safe label for the audit card; never a raw error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessPlanInvalidReason {
+    /// The plan outlived its bounded expiry window.
+    Expired,
+    /// The current node revision moved after the plan was recorded.
+    NodeChanged,
+    /// The owning session was deleted.
+    SessionDeleted,
+    /// The user cancelled the pending plan.
+    Cancelled,
+    /// The application restarted; an active plan is never replayed.
+    Restarted,
+    /// The reply was not a narrow affirmative (ambiguous confirmation).
+    AmbiguousConfirmation,
+    /// Another successful node save invalidated the plan.
+    ManualEdit,
+}
+
+/// A durable pending execution plan created by a completed planning Harness
+/// turn. It pins the ownership (project/node/session), the plan's own turn and
+/// assistant message, the base node revision the plan was recorded against, and
+/// a bounded public summary. The summary is the only model-authored content;
+/// prompts, raw tool arguments, thinking, paths, and secrets never appear here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessExecutionPlan {
+    /// Opaque generated plan ID; never supplied by the model or frontend.
+    pub id: String,
+    pub project_id: String,
+    pub node_id: WorkflowNodeId,
+    pub session_id: String,
+    /// The completed planning turn that published this plan.
+    pub plan_turn_id: String,
+    /// The assistant message id that explicitly requested confirmation.
+    pub plan_message_id: String,
+    /// Node revision the plan was recorded against; the confirmation must see
+    /// the same revision or the plan is invalidated.
+    pub base_revision: u64,
+    /// Bounded public summary of the intended document changes.
+    pub summary: String,
+    pub status: HarnessPlanStatus,
+    pub created_at: String,
+    pub expires_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invalidated_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invalid_reason: Option<HarnessPlanInvalidReason>,
+}
+
+/// Status of one execution run, persisted as a public audit record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessExecutionStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    /// Interrupted by restart; never replayed and never reported as success.
+    Interrupted,
+}
+
+/// Public summary of one saved current-node write during an execution run.
+/// Contains only the saved revision, a bounded summary, and the save time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessExecutionWrite {
+    pub revision: u64,
+    pub summary: String,
+    pub saved_at: String,
+}
+
+/// Durable public audit of a completed, failed, cancelled, or interrupted
+/// execution run. It carries public status, saved write summaries, and a safe
+/// public error label; never prompts, raw tool arguments, or document bodies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessExecutionRecord {
+    pub run_id: String,
+    pub turn_id: String,
+    pub started_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    pub status: HarnessExecutionStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<HarnessExecutionWrite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_error: Option<String>,
+}
+
+/// Result of one `apply_current_delivery_change` execution write. This is the
+/// safe, bounded outcome sent back to the model; it carries only the new
+/// revision or a public failure label, never paths or internal errors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum HarnessExecutionWriteResult {
+    /// The node was atomically saved with the given revision.
+    Saved { revision: u64 },
+    /// CAS conflict: the node changed since the plan; no write occurred.
+    Conflict { expected_revision: u64, actual_revision: u64 },
+    /// The validated change produced no document difference.
+    Unchanged,
+    /// The change failed Markdown validation; nothing was written.
+    ValidationFailed { public_error: String },
+    /// The execution turn was cancelled before the write could be attempted.
+    Cancelled,
+}
+
 /// Explicit Harness marker/state stored on a `ConversationTurn`. Legacy turns
-/// leave this `None`; new Harness turns carry proposals and bounded diagnostics.
+/// leave this `None`; new Harness turns carry proposals, bounded diagnostics,
+/// an optional pending execution plan, and an optional execution audit record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessTurnState {
@@ -210,6 +338,12 @@ pub struct HarnessTurnState {
     pub proposals: Vec<HarnessProposal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<HarnessDiagnostics>,
+    /// Durable pending execution plan published by a completed planning turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_plan: Option<HarnessExecutionPlan>,
+    /// Durable public audit of an execution run that this turn participated in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<HarnessExecutionRecord>,
 }
 
 impl HarnessTurnState {
@@ -318,6 +452,128 @@ pub fn authorize_latest_user_message(message: &str) -> TurnMessageAuthorization 
         agent_rule_proposal: requests_agent_rule_change(&text),
         complete_delivery_rewrite: requests_complete_delivery_rewrite(&text),
     }
+}
+
+/// Terms that mark an assistant reply as an explicit request for user
+/// confirmation of a planned document execution. Only an assistant message that
+/// both carries a durable pending execution plan and matches these terms can
+/// put the following user reply into the confirmation window.
+const EXPLICIT_CONFIRMATION_REQUEST_TERMS: &[&str] = &[
+    "请确认",
+    "是否继续",
+    "可以继续吗",
+    "可以执行吗",
+    "确认后",
+    "确认执行",
+    "回复继续",
+    "回复“继续”",
+    "回复\"继续\"",
+    "请回复",
+    "请继续",
+    "继续执行",
+    "确认后开始",
+    "确认后执行",
+    "please confirm",
+    "confirm before",
+    "confirm to execute",
+    "reply continue",
+    "shall i continue",
+    "continue?",
+];
+
+/// Returns whether the assistant message explicitly asks the user to confirm a
+/// planned document execution. Used only as one input to the trusted
+/// confirmation predicate; a durable pending plan is still required.
+pub fn requests_execution_confirmation(message: &str) -> bool {
+    let text = message.trim();
+    if text.is_empty() {
+        return false;
+    }
+    EXPLICIT_CONFIRMATION_REQUEST_TERMS
+        .iter()
+        .any(|term| text.contains(term))
+}
+
+/// Narrow affirmative reply terms. A confirmation is accepted only when the
+/// reply consists of one of these exact tokens (ignoring surrounding
+/// whitespace/punctuation) and contains no negation. Anything longer or more
+/// elaborate fails closed and starts a normal read-only Harness turn.
+const AFFIRMATIVE_CONFIRMATION_TERMS: &[&str] = &[
+    "继续",
+    "可以",
+    "确认",
+    "执行",
+    "同意",
+    "好的",
+    "好",
+    "行",
+    "ok",
+    "okay",
+    "yes",
+    "yeah",
+    "sure",
+    "confirm",
+    "proceed",
+    "continue",
+    "go ahead",
+    "do it",
+];
+
+/// Negation words that invalidate a confirmation reply even if an affirmative
+/// token is present. A reply containing any of these fails closed.
+const NEGATIVE_CONFIRMATION_TERMS: &[&str] = &[
+    "不要",
+    "不用",
+    "不行",
+    "别",
+    "取消",
+    "停止",
+    "暂缓",
+    "等一下",
+    "等等",
+    "算了",
+    "no",
+    "not",
+    "never",
+    "cancel",
+    "stop",
+    "wait",
+    "don't",
+    "dont",
+];
+
+/// Pure, fail-closed predicate over the latest user reply that decides whether
+/// it is a narrow affirmative confirmation of a pending execution plan. It
+/// never authorizes anything by itself: the storage layer still requires a
+/// live, matching, unconsumed plan and current node revision.
+pub fn is_execution_confirmation(reply: &str) -> bool {
+    let trimmed = reply.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    if NEGATIVE_CONFIRMATION_TERMS
+        .iter()
+        .any(|term| lower.contains(term))
+    {
+        return false;
+    }
+    let normalized = lower
+        .chars()
+        .filter(|character| {
+            !matches!(
+                character,
+                '，' | '。' | '！' | '？' | '、' | ',' | '.' | '!' | '?' | '；' | ';' | '：' | ':'
+            )
+        })
+        .collect::<String>();
+    let normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return false;
+    }
+    AFFIRMATIVE_CONFIRMATION_TERMS
+        .iter()
+        .any(|term| normalized == *term)
 }
 
 /// Stable SHA-256 digest of the exact current Agent-override state for the
@@ -535,5 +791,213 @@ mod tests {
             authorize_latest_user_message("请整篇重写交付稿，并更新本节点的 Agent 规则");
         assert!(authorization.complete_delivery_rewrite);
         assert!(authorization.agent_rule_proposal);
+    }
+
+    #[test]
+    fn explicit_confirmation_requests_are_detected() {
+        for message in [
+            "请确认后我将执行上述修改。",
+            "是否继续执行？请回复“继续”。",
+            "以上修改已就绪，确认执行后开始。",
+            "计划如下，请确认。",
+            "Please confirm before I execute the changes.",
+            "可以执行吗？",
+            "回复继续即可开始。",
+        ] {
+            assert!(
+                requests_execution_confirmation(message),
+                "must detect confirmation request: {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_confirmation_requests_are_rejected() {
+        for message in [
+            "我已经完成了分析。",
+            "这是当前交付稿的摘要。",
+            "hello there",
+            "",
+            "   ",
+            "请告诉我你的想法",
+        ] {
+            assert!(
+                !requests_execution_confirmation(message),
+                "must not detect confirmation request: {message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_affirmatives_are_confirmations() {
+        for reply in ["继续", "可以", "确认", "执行", "同意", "好的", "好", "行", "OK", "okay", "yes", "sure", "confirm", "proceed", "go ahead", " 继续 ", "继续。", "可以！"] {
+            assert!(
+                is_execution_confirmation(reply),
+                "must accept narrow affirmative: {reply:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn negatives_and_ambiguous_replies_fail_closed() {
+        for reply in [
+            "不要",
+            "不用",
+            "不行",
+            "取消",
+            "停止",
+            "等一下",
+            "算了",
+            "no",
+            "not",
+            "cancel",
+            "stop",
+            "wait",
+            "don't",
+            "可以的，但是等一下",
+            "好，先别执行",
+            "继续吧，但我还要想想",
+            "今天天气不错",
+            "好的，我们再讨论一下需求",
+            "嗯，我需要更多信息",
+            "123",
+            "??",
+        ] {
+            assert!(
+                !is_execution_confirmation(reply),
+                "must fail closed for {reply:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn confirmation_reply_cannot_authorize_agent_rule_or_other_targets() {
+        // The predicate only says "this is an affirmative"; authorization still
+        // requires a durable plan whose target is exactly the current node.
+        assert!(is_execution_confirmation("可以"));
+        // A reply that mentions a rule change is not a narrow confirmation.
+        assert!(!is_execution_confirmation("可以，修改规则"));
+    }
+
+    #[test]
+    fn execution_plan_round_trips_with_lifecycle() {
+        let plan = HarnessExecutionPlan {
+            id: "plan-1".into(),
+            project_id: "project-1".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: "session-1".into(),
+            plan_turn_id: "turn-1".into(),
+            plan_message_id: "message-1".into(),
+            base_revision: 3,
+            summary: "补充建设目标与验收标准".into(),
+            status: HarnessPlanStatus::Pending,
+            created_at: "now".into(),
+            expires_at: "later".into(),
+            consumed_at: None,
+            invalidated_at: None,
+            invalid_reason: None,
+        };
+        let value = serde_json::to_value(&plan).unwrap();
+        assert_eq!(value["status"], "pending");
+        assert_eq!(value["nodeId"], "goals");
+        assert_eq!(value["baseRevision"], 3);
+        assert!(value.get("consumedAt").is_none());
+        assert!(value.get("invalidReason").is_none());
+        assert_eq!(
+            serde_json::from_value::<HarnessExecutionPlan>(value).unwrap(),
+            plan
+        );
+
+        let consumed = HarnessExecutionPlan {
+            status: HarnessPlanStatus::Consumed,
+            consumed_at: Some("consumed".into()),
+            invalidated_at: None,
+            invalid_reason: None,
+            ..plan.clone()
+        };
+        let value = serde_json::to_value(&consumed).unwrap();
+        assert_eq!(value["status"], "consumed");
+        assert_eq!(value["consumedAt"], "consumed");
+
+        let invalidated = HarnessExecutionPlan {
+            status: HarnessPlanStatus::Invalidated,
+            consumed_at: None,
+            invalidated_at: Some("invalid".into()),
+            invalid_reason: Some(HarnessPlanInvalidReason::NodeChanged),
+            ..plan
+        };
+        let value = serde_json::to_value(&invalidated).unwrap();
+        assert_eq!(value["status"], "invalidated");
+        assert_eq!(value["invalidReason"], "node_changed");
+        assert_eq!(
+            serde_json::from_value::<HarnessExecutionPlan>(value).unwrap(),
+            invalidated
+        );
+    }
+
+    #[test]
+    fn execution_record_and_write_result_round_trip_without_content() {
+        let record = HarnessExecutionRecord {
+            run_id: "run-1".into(),
+            turn_id: "turn-1".into(),
+            started_at: "start".into(),
+            finished_at: Some("finish".into()),
+            status: HarnessExecutionStatus::Completed,
+            writes: vec![HarnessExecutionWrite {
+                revision: 4,
+                summary: "保存建设目标章节".into(),
+                saved_at: "saved".into(),
+            }],
+            public_error: None,
+        };
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["writes"][0]["revision"], 4);
+        assert!(value.get("publicError").is_none());
+        assert_eq!(
+            serde_json::from_value::<HarnessExecutionRecord>(value).unwrap(),
+            record
+        );
+
+        let saved = HarnessExecutionWriteResult::Saved { revision: 4 };
+        let value = serde_json::to_value(&saved).unwrap();
+        assert_eq!(value["kind"], "saved");
+        assert_eq!(value["revision"], 4);
+        assert_eq!(
+            serde_json::from_value::<HarnessExecutionWriteResult>(value).unwrap(),
+            saved
+        );
+
+        let conflict = HarnessExecutionWriteResult::Conflict {
+            expected_revision: 3,
+            actual_revision: 5,
+        };
+        let value = serde_json::to_value(&conflict).unwrap();
+        assert_eq!(value["kind"], "conflict");
+        assert_eq!(value["actualRevision"], 5);
+    }
+
+    #[test]
+    fn harness_turn_state_defaults_plan_and_execution_to_absent() {
+        let state = HarnessTurnState {
+            proposals: Vec::new(),
+            diagnostics: None,
+            execution_plan: None,
+            execution: None,
+        };
+        let value = serde_json::to_value(&state).unwrap();
+        assert!(value.get("proposals").is_none());
+        assert!(value.get("diagnostics").is_none());
+        assert!(value.get("executionPlan").is_none());
+        assert!(value.get("execution").is_none());
+        // A legacy state with only proposals/diagnostics still loads.
+        let legacy = serde_json::json!({
+            "proposals": [],
+            "diagnostics": { "modelSteps": 1, "toolCalls": 0, "validationRetries": 0 }
+        });
+        let loaded: HarnessTurnState = serde_json::from_value(legacy).unwrap();
+        assert!(loaded.execution_plan.is_none());
+        assert!(loaded.execution.is_none());
+        assert_eq!(loaded.diagnostics.unwrap().model_steps, 1);
     }
 }

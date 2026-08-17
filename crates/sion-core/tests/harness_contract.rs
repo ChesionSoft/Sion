@@ -214,6 +214,8 @@ fn harness_turn_state_defaults_and_round_trips() {
     let state = HarnessTurnState {
         proposals: Vec::new(),
         diagnostics: None,
+        execution_plan: None,
+        execution: None,
     };
     let value = serde_json::to_value(&state).unwrap();
     assert!(value.get("proposals").is_none());
@@ -296,6 +298,8 @@ fn new_harness_turn_serializes_without_delivery_outcome() {
         harness: Some(HarnessTurnState {
             proposals: Vec::new(),
             diagnostics: None,
+            execution_plan: None,
+            execution: None,
         }),
         started_at: "started".into(),
         finished_at: Some("finished".into()),

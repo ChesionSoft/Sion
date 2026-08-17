@@ -42,6 +42,9 @@ pub enum AgentRunKind {
     /// Multi-step native-tool-calling node conversation run. Replaces new node
     /// chats' fixed `Conversation -> DeliveryDecision` handoff.
     Harness,
+    /// A bounded direct-write execution run authorized by a confirmed pending
+    /// execution plan. Owns exactly one current-node write tool.
+    HarnessExecution,
     /// Generate or regenerate the export blueprint.
     ExportBlueprint,
     /// Generate or regenerate the formal draft.
@@ -62,6 +65,7 @@ impl AgentRunKind {
                 | Self::DeliveryRetry
                 | Self::DeliveryRegeneration
                 | Self::Harness
+                | Self::HarnessExecution
         )
     }
 }

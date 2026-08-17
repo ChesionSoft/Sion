@@ -128,6 +128,8 @@ fn turn_with_proposals(session_id: &str, turn_id: &str, proposals: Vec<HarnessPr
                 limit_reached: None,
                 tool_traces: Vec::new(),
             }),
+            execution_plan: None,
+            execution: None,
         }),
         started_at: "started".into(),
         finished_at: None,
