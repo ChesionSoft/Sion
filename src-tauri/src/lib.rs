@@ -360,6 +360,11 @@ fn recover_interrupted_runs(app: &tauri::AppHandle) {
         let store = ProjectStore::at(&project.root_path);
         let _ = export_runtime::recover_interrupted_export_run(&store, &now);
         recover_interrupted_conversation_runs(&store, &now);
+        // Replay pending Harness checkpoint/proposal journals idempotently.
+        for node_id in WorkflowNodeId::ALL {
+            let _ = store.recover_pending_harness(node_id);
+            let _ = store.recover_pending_proposal_resolution(node_id);
+        }
     }
 }
 
@@ -374,16 +379,12 @@ fn recover_interrupted_conversation_runs(store: &ProjectStore, now: &str) {
         return;
     };
     for run in runs {
-        if matches!(
-            run.kind,
-            sion_agent::AgentRunKind::Conversation
-                | sion_agent::AgentRunKind::DeliveryDecision
-                | sion_agent::AgentRunKind::DeliveryRetry
-                | sion_agent::AgentRunKind::DeliveryRegeneration
-        ) && matches!(
-            run.status,
-            sion_agent::AgentRunStatus::Queued | sion_agent::AgentRunStatus::Running
-        ) {
+        if run.kind.is_conversation_run()
+            && matches!(
+                run.status,
+                sion_agent::AgentRunStatus::Queued | sion_agent::AgentRunStatus::Running
+            )
+        {
             let mut updated = run.clone();
             updated.status = sion_agent::AgentRunStatus::Interrupted;
             updated.finished_at = Some(now.to_string());

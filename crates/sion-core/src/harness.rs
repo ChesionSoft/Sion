@@ -192,6 +192,13 @@ pub struct HarnessProposal {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<String>,
+    /// Latest node revision at the time the proposal was marked stale, needed
+    /// for the UI to explain the revision mismatch and show the latest source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_revision: Option<u64>,
+    /// Latest override digest when an Agent-rule proposal was marked stale.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_rule_digest: Option<String>,
 }
 
 /// Explicit Harness marker/state stored on a `ConversationTurn`. Legacy turns
@@ -203,6 +210,15 @@ pub struct HarnessTurnState {
     pub proposals: Vec<HarnessProposal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<HarnessDiagnostics>,
+}
+
+impl HarnessTurnState {
+    /// Returns a mutable handle to a proposal by id, for resolution transitions.
+    pub fn proposal_mut(&mut self, proposal_id: &str) -> Option<&mut HarnessProposal> {
+        self.proposals
+            .iter_mut()
+            .find(|proposal| proposal.id == proposal_id)
+    }
 }
 
 /// Turn-scoped authorization derived from the latest user message. Both flags
@@ -422,6 +438,8 @@ mod tests {
             validation_summary: Some("校验通过".into()),
             created_at: "now".into(),
             resolved_at: None,
+            latest_revision: None,
+            latest_rule_digest: None,
         };
         let value = serde_json::to_value(&proposal).unwrap();
         assert_eq!(value["kind"], "delivery");
@@ -451,6 +469,8 @@ mod tests {
             validation_summary: None,
             created_at: "now".into(),
             resolved_at: None,
+            latest_revision: None,
+            latest_rule_digest: None,
         };
         let value = serde_json::to_value(&proposal).unwrap();
         assert_eq!(value["kind"], "agent_rule");

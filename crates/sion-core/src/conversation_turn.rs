@@ -301,6 +301,8 @@ mod tests {
                 validation_summary: Some("校验通过".into()),
                 created_at: "now".into(),
                 resolved_at: None,
+                latest_revision: None,
+                latest_rule_digest: None,
             }],
             diagnostics: Some(crate::HarnessDiagnostics {
                 model_steps: 1,

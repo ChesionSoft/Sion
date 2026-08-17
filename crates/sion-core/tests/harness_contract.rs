@@ -107,6 +107,8 @@ fn proposal_contract_round_trips_delivery_and_agent_rule_kinds() {
         validation_summary: Some("校验通过".into()),
         created_at: "now".into(),
         resolved_at: None,
+        latest_revision: None,
+        latest_rule_digest: None,
     };
     let value = serde_json::to_value(&delivery).unwrap();
     assert_eq!(value["kind"], "delivery");
@@ -132,6 +134,8 @@ fn proposal_contract_round_trips_delivery_and_agent_rule_kinds() {
         validation_summary: None,
         created_at: "now".into(),
         resolved_at: Some("later".into()),
+        latest_revision: None,
+        latest_rule_digest: None,
     };
     let value = serde_json::to_value(&rule).unwrap();
     assert_eq!(value["kind"], "agent_rule");
@@ -323,6 +327,8 @@ fn workflow_node_ids_serialize_kebab_case_inside_proposals() {
             validation_summary: None,
             created_at: "now".into(),
             resolved_at: None,
+            latest_revision: None,
+            latest_rule_digest: None,
         };
         let value = serde_json::to_value(&proposal).unwrap();
         assert_eq!(value["nodeId"], node.as_str());

@@ -11,15 +11,85 @@ use serde::Serialize;
 use sion_agent::AgentRun;
 use sion_core::{
     ChatMessage, ChatModelSelection, ChatSession, ConversationTurn, CumulativeTokenUsage,
-    FileExtractionStatus, NodeStatus, PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind,
-    ProjectManifest, TurnActivityStatus, TurnStatus, WorkflowNode, WorkflowNodeId,
-    aggregate_message_usage, aggregate_usages, default_nodes,
+    FileExtractionStatus, HarnessProposal, HarnessProposalKind, HarnessProposalStatus, NodeStatus,
+    PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind, ProjectManifest, TurnActivityStatus,
+    TurnStatus, WorkflowNode, WorkflowNodeId, aggregate_message_usage, aggregate_usages,
+    agent_override_digest, default_nodes, validate_agent_rule_override,
+    validate_delivery_markdown,
 };
 use thiserror::Error;
 use uuid::Uuid;
 
 mod export_store;
 pub use export_store::*;
+
+/// Test-only support for simulating crash points in integration tests. Not part
+/// of the stable API; it mirrors the internal journals so tests can write them
+/// directly and verify idempotent recovery.
+#[doc(hidden)]
+pub mod harness_testing {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct HarnessCheckpointJournalForTest {
+        pub session_id: String,
+        pub document: ConversationDocument,
+        pub run: Option<AgentRun>,
+        pub updated_at: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, serde::Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    pub enum ProposalResolutionJournalForTest {
+        Delivery {
+            session_id: String,
+            turn_id: String,
+            proposal_id: String,
+            expected_revision: u64,
+            proposed_markdown: String,
+        },
+        AgentRule {
+            session_id: String,
+            turn_id: String,
+            proposal_id: String,
+            expected_digest: String,
+            proposed_markdown: String,
+        },
+    }
+
+    pub fn conversation_document_for_test(
+        store: &ProjectStore,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+    ) -> ConversationDocument {
+        read_conversation_document(&store.messages_path(node_id, session_id).unwrap()).unwrap()
+    }
+
+    pub fn write_harness_journal_for_test(
+        store: &ProjectStore,
+        node_id: WorkflowNodeId,
+        journal: &HarnessCheckpointJournalForTest,
+    ) {
+        atomic_write_json(&store.harness_journal_path(node_id), journal).unwrap();
+    }
+
+    pub fn write_proposal_journal_for_test(
+        store: &ProjectStore,
+        node_id: WorkflowNodeId,
+        journal: &ProposalResolutionJournalForTest,
+    ) {
+        atomic_write_json(&store.proposal_journal_path(node_id), journal).unwrap();
+    }
+
+    pub fn conversation_path_for_test(
+        store: &ProjectStore,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+    ) -> std::path::PathBuf {
+        store.messages_path(node_id, session_id).unwrap()
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -39,6 +109,8 @@ pub enum StorageError {
     MessageCountOverflow,
     #[error("turn {turn_id} does not belong to session {session_id}")]
     TurnPathMismatch { turn_id: String, session_id: String },
+    #[error("harness proposal {0} is not available in the stored turn")]
+    HarnessProposalUnavailable(String),
     #[error("file path has no usable filename: {0}")]
     InvalidFileName(PathBuf),
     #[error("project file {0} does not exist")]
@@ -104,6 +176,38 @@ pub enum SaveAgentOverrideResult {
     },
 }
 
+/// Outcome of applying a ready delivery proposal. The returned proposal carries
+/// its resolved status so the UI can render applied/stale states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryProposalApplyResult {
+    Applied {
+        saved_node: WorkflowNode,
+        proposal: HarnessProposal,
+    },
+    Stale {
+        latest_node: WorkflowNode,
+        proposal: HarnessProposal,
+    },
+    NotFound,
+    NotReady,
+}
+
+/// Outcome of applying a ready Agent-rule proposal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleProposalApplyResult {
+    Applied {
+        saved_override: Option<String>,
+        proposal: HarnessProposal,
+    },
+    Stale {
+        latest_digest: String,
+        latest_markdown: Option<String>,
+        proposal: HarnessProposal,
+    },
+    NotFound,
+    NotReady,
+}
+
 /// A bounded, metadata-preserving preview of a project attachment's extracted
 /// text. `text` is `None` when the file had no extractor; `truncated` is true
 /// when the preview was cut short of the full extracted text.
@@ -117,11 +221,11 @@ pub struct FilePreview {
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ConversationDocument {
+pub struct ConversationDocument {
     #[serde(default)]
-    messages: Vec<ChatMessage>,
+    pub messages: Vec<ChatMessage>,
     #[serde(default)]
-    turns: Vec<ConversationTurn>,
+    pub turns: Vec<ConversationTurn>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -137,6 +241,41 @@ struct PendingConversationWrite {
     session_id: String,
     document: ConversationDocument,
     updated_at: String,
+}
+
+/// Write-ahead journal for Harness turn checkpoints. It carries the full
+/// conversation document, session metadata, and the linked run so a crash
+/// between the journal write and the document/run writes cannot leave a
+/// half-record; recovery replays it idempotently.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HarnessCheckpointJournal {
+    session_id: String,
+    document: ConversationDocument,
+    run: Option<AgentRun>,
+    updated_at: String,
+}
+
+/// Write-ahead journal for Harness proposal resolution. It records the intent
+/// (proposal, expected revision/digest, and proposed content) so recovery can
+/// reconcile a node or override already saved before the conversation update.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ProposalResolutionJournal {
+    Delivery {
+        session_id: String,
+        turn_id: String,
+        proposal_id: String,
+        expected_revision: u64,
+        proposed_markdown: String,
+    },
+    AgentRule {
+        session_id: String,
+        turn_id: String,
+        proposal_id: String,
+        expected_digest: String,
+        proposed_markdown: String,
+    },
 }
 
 fn read_conversation_document(path: &Path) -> Result<ConversationDocument> {
@@ -660,14 +799,568 @@ impl ProjectStore {
         Ok(())
     }
 
+    /// Begins a Harness turn by persisting the user message, the queued/running
+    /// Harness turn, and the linked run as one recoverable transaction. A crash
+    /// may leave a journal, never a missing half-record after recovery.
+    pub fn begin_harness_turn(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        user_message: ChatMessage,
+        turn: ConversationTurn,
+        run: &AgentRun,
+        now: String,
+    ) -> Result<ChatSession> {
+        self.manifest()?;
+        self.recover_pending_harness(node_id)?;
+        self.require_session(node_id, session_id)?;
+        if turn.node_id != node_id || turn.session_id != session_id {
+            return Err(StorageError::TurnPathMismatch {
+                turn_id: turn.id,
+                session_id: session_id.to_string(),
+            });
+        }
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        if !document
+            .messages
+            .iter()
+            .any(|item| item.id == user_message.id)
+        {
+            document.messages.push(user_message);
+        }
+        if !document.turns.iter().any(|item| item.id == turn.id) {
+            document.turns.push(turn);
+        }
+        self.persist_harness_checkpoint(node_id, session_id, &document, Some(run), now)
+    }
+
+    /// Completes a Harness turn by persisting the assistant message, the
+    /// terminal turn (with durable proposals and bounded diagnostics), and the
+    /// terminal run record in one recoverable transaction. Intermediate tool
+    /// steps are never written to disk.
+    pub fn complete_harness_turn(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        assistant_message: ChatMessage,
+        turn: ConversationTurn,
+        run: &AgentRun,
+        now: String,
+    ) -> Result<()> {
+        self.manifest()?;
+        self.recover_pending_harness(node_id)?;
+        self.require_session(node_id, session_id)?;
+        if turn.node_id != node_id || turn.session_id != session_id {
+            return Err(StorageError::TurnPathMismatch {
+                turn_id: turn.id,
+                session_id: session_id.to_string(),
+            });
+        }
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        if !document
+            .messages
+            .iter()
+            .any(|item| item.id == assistant_message.id)
+        {
+            document.messages.push(assistant_message);
+        }
+        match document.turns.iter_mut().find(|item| item.id == turn.id) {
+            Some(existing) => *existing = turn.clone(),
+            None => document.turns.push(turn.clone()),
+        }
+        self.persist_harness_checkpoint(node_id, session_id, &document, Some(run), now)?;
+        Ok(())
+    }
+
+    fn persist_harness_checkpoint(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        document: &ConversationDocument,
+        run: Option<&AgentRun>,
+        now: String,
+    ) -> Result<ChatSession> {
+        let journal = HarnessCheckpointJournal {
+            session_id: session_id.to_string(),
+            document: document.clone(),
+            run: run.cloned(),
+            updated_at: now.clone(),
+        };
+        atomic_write_json(&self.harness_journal_path(node_id), &journal)?;
+        write_conversation_document(&self.messages_path(node_id, session_id)?, document)?;
+        let session =
+            self.update_session_metadata(node_id, session_id, document.messages.len(), now)?;
+        if let Some(run) = run {
+            self.save_run(run)?;
+        }
+        fs::remove_file(self.harness_journal_path(node_id)).map_err(|source| StorageError::Io {
+            path: self.harness_journal_path(node_id),
+            source,
+        })?;
+        Ok(session)
+    }
+
+    /// Replays a pending Harness checkpoint journal idempotently so a crash
+    /// between the journal write and the document/run writes cannot leave a
+    /// half-record.
+    pub fn recover_pending_harness(&self, node_id: WorkflowNodeId) -> Result<()> {
+        let journal_path = self.harness_journal_path(node_id);
+        if !journal_path.exists() {
+            return Ok(());
+        }
+        let journal: HarnessCheckpointJournal = read_json(&journal_path)?;
+        self.require_session(node_id, &journal.session_id)?;
+        write_conversation_document(
+            &self.messages_path(node_id, &journal.session_id)?,
+            &journal.document,
+        )?;
+        self.update_session_metadata(
+            node_id,
+            &journal.session_id,
+            journal.document.messages.len(),
+            journal.updated_at,
+        )?;
+        if let Some(run) = journal.run {
+            self.save_run(&run)?;
+        }
+        fs::remove_file(&journal_path).map_err(|source| StorageError::Io {
+            path: journal_path.clone(),
+            source,
+        })?;
+        Ok(())
+    }
+
+    /// Applies a ready delivery proposal through the node CAS and marks it
+    /// applied, or marks it stale with the latest node when the revision moved.
+    /// The intent is journaled so recovery reconciles a node already saved
+    /// before the conversation update; content is never force-applied.
+    pub fn apply_delivery_proposal(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        proposal_id: &str,
+        now: String,
+    ) -> Result<DeliveryProposalApplyResult> {
+        self.manifest()?;
+        self.require_session(node_id, session_id)?;
+        let document = read_conversation_document(&self.messages_path(node_id, session_id)?)?;
+        let Some(proposal) = document
+            .turns
+            .iter()
+            .find(|turn| turn.id == turn_id)
+            .and_then(|turn| turn.harness.as_ref())
+            .and_then(|harness| harness.proposals.iter().find(|p| p.id == proposal_id))
+        else {
+            return Ok(DeliveryProposalApplyResult::NotFound);
+        };
+        if proposal.kind != HarnessProposalKind::Delivery {
+            return Ok(DeliveryProposalApplyResult::NotFound);
+        }
+        if proposal.status != HarnessProposalStatus::Ready {
+            return Ok(DeliveryProposalApplyResult::NotReady);
+        }
+        let expected_revision = proposal.base_revision.unwrap_or(0);
+        let proposed_markdown = proposal.proposed_content.clone();
+        let journal = ProposalResolutionJournal::Delivery {
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+            expected_revision,
+            proposed_markdown: proposed_markdown.clone(),
+        };
+        atomic_write_json(&self.proposal_journal_path(node_id), &journal)?;
+        let result = self.apply_delivery_proposal_inner(
+            node_id,
+            session_id,
+            turn_id,
+            proposal_id,
+            expected_revision,
+            &proposed_markdown,
+            &now,
+        );
+        let _ = fs::remove_file(self.proposal_journal_path(node_id));
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_delivery_proposal_inner(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        proposal_id: &str,
+        expected_revision: u64,
+        proposed_markdown: &str,
+        now: &str,
+    ) -> Result<DeliveryProposalApplyResult> {
+        let latest_node = self.node(node_id)?;
+        if latest_node.revision == expected_revision.saturating_add(1)
+            && latest_node.markdown == proposed_markdown
+        {
+            // The node was already saved before the conversation update.
+            let proposal = self.update_proposal_state(
+                node_id,
+                session_id,
+                turn_id,
+                proposal_id,
+                HarnessProposalStatus::Applied,
+                now,
+                None,
+                None,
+            )?;
+            return Ok(DeliveryProposalApplyResult::Applied {
+                saved_node: latest_node,
+                proposal,
+            });
+        }
+        if latest_node.revision != expected_revision {
+            let proposal = self.update_proposal_state(
+                node_id,
+                session_id,
+                turn_id,
+                proposal_id,
+                HarnessProposalStatus::Stale,
+                now,
+                Some(latest_node.revision),
+                None,
+            )?;
+            return Ok(DeliveryProposalApplyResult::Stale {
+                latest_node,
+                proposal,
+            });
+        }
+        if validate_delivery_markdown(proposed_markdown.to_string(), node_id).is_err() {
+            let proposal = self.update_proposal_state(
+                node_id,
+                session_id,
+                turn_id,
+                proposal_id,
+                HarnessProposalStatus::Stale,
+                now,
+                Some(latest_node.revision),
+                None,
+            )?;
+            return Ok(DeliveryProposalApplyResult::Stale {
+                latest_node,
+                proposal,
+            });
+        }
+        match self.save_node_if_revision(
+            node_id,
+            expected_revision,
+            proposed_markdown.to_string(),
+            NodeStatus::Generated,
+            now.to_string(),
+        )? {
+            SaveNodeResult::Saved(saved_node) => {
+                let proposal = self.update_proposal_state(
+                    node_id,
+                    session_id,
+                    turn_id,
+                    proposal_id,
+                    HarnessProposalStatus::Applied,
+                    now,
+                    None,
+                    None,
+                )?;
+                Ok(DeliveryProposalApplyResult::Applied {
+                    saved_node,
+                    proposal,
+                })
+            }
+            SaveNodeResult::Conflict { latest } => {
+                let proposal = self.update_proposal_state(
+                    node_id,
+                    session_id,
+                    turn_id,
+                    proposal_id,
+                    HarnessProposalStatus::Stale,
+                    now,
+                    Some(latest.revision),
+                    None,
+                )?;
+                Ok(DeliveryProposalApplyResult::Stale {
+                    latest_node: latest,
+                    proposal,
+                })
+            }
+        }
+    }
+
+    /// Applies a ready Agent-rule proposal through the override digest CAS and
+    /// marks it applied, or marks it stale with the latest digest when the
+    /// override state moved. The intent is journaled for recovery.
+    pub fn apply_agent_rule_proposal(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        proposal_id: &str,
+        now: String,
+    ) -> Result<RuleProposalApplyResult> {
+        self.manifest()?;
+        self.require_session(node_id, session_id)?;
+        let document = read_conversation_document(&self.messages_path(node_id, session_id)?)?;
+        let Some(proposal) = document
+            .turns
+            .iter()
+            .find(|turn| turn.id == turn_id)
+            .and_then(|turn| turn.harness.as_ref())
+            .and_then(|harness| harness.proposals.iter().find(|p| p.id == proposal_id))
+        else {
+            return Ok(RuleProposalApplyResult::NotFound);
+        };
+        if proposal.kind != HarnessProposalKind::AgentRule {
+            return Ok(RuleProposalApplyResult::NotFound);
+        }
+        if proposal.status != HarnessProposalStatus::Ready {
+            return Ok(RuleProposalApplyResult::NotReady);
+        }
+        let expected_digest = proposal.base_rule_digest.clone().unwrap_or_default();
+        let proposed_markdown = proposal.proposed_content.clone();
+        let journal = ProposalResolutionJournal::AgentRule {
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+            expected_digest: expected_digest.clone(),
+            proposed_markdown: proposed_markdown.clone(),
+        };
+        atomic_write_json(&self.proposal_journal_path(node_id), &journal)?;
+        let result = self.apply_agent_rule_proposal_inner(
+            node_id,
+            session_id,
+            turn_id,
+            proposal_id,
+            &expected_digest,
+            &proposed_markdown,
+            &now,
+        );
+        let _ = fs::remove_file(self.proposal_journal_path(node_id));
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_agent_rule_proposal_inner(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        proposal_id: &str,
+        expected_digest: &str,
+        proposed_markdown: &str,
+        now: &str,
+    ) -> Result<RuleProposalApplyResult> {
+        let current = self.agent_override(node_id)?;
+        let current_digest = agent_override_digest(current.as_deref());
+        if current_digest != expected_digest {
+            if current.as_deref() == Some(proposed_markdown) {
+                // The override was already saved before the conversation update.
+                let proposal = self.update_proposal_state(
+                    node_id,
+                    session_id,
+                    turn_id,
+                    proposal_id,
+                    HarnessProposalStatus::Applied,
+                    now,
+                    None,
+                    None,
+                )?;
+                return Ok(RuleProposalApplyResult::Applied {
+                    saved_override: current,
+                    proposal,
+                });
+            }
+            let proposal = self.update_proposal_state(
+                node_id,
+                session_id,
+                turn_id,
+                proposal_id,
+                HarnessProposalStatus::Stale,
+                now,
+                None,
+                Some(current_digest.clone()),
+            )?;
+            return Ok(RuleProposalApplyResult::Stale {
+                latest_digest: current_digest.clone(),
+                latest_markdown: current,
+                proposal,
+            });
+        }
+        if validate_agent_rule_override(proposed_markdown).is_err() {
+            let proposal = self.update_proposal_state(
+                node_id,
+                session_id,
+                turn_id,
+                proposal_id,
+                HarnessProposalStatus::Stale,
+                now,
+                None,
+                Some(current_digest.clone()),
+            )?;
+            return Ok(RuleProposalApplyResult::Stale {
+                latest_digest: current_digest,
+                latest_markdown: current,
+                proposal,
+            });
+        }
+        match self.save_agent_override_if_digest(
+            node_id,
+            expected_digest,
+            proposed_markdown.to_string(),
+        )? {
+            SaveAgentOverrideResult::Saved(saved) => {
+                let proposal = self.update_proposal_state(
+                    node_id,
+                    session_id,
+                    turn_id,
+                    proposal_id,
+                    HarnessProposalStatus::Applied,
+                    now,
+                    None,
+                    None,
+                )?;
+                Ok(RuleProposalApplyResult::Applied {
+                    saved_override: saved,
+                    proposal,
+                })
+            }
+            SaveAgentOverrideResult::Conflict {
+                latest_digest,
+                latest_markdown,
+            } => {
+                let proposal = self.update_proposal_state(
+                    node_id,
+                    session_id,
+                    turn_id,
+                    proposal_id,
+                    HarnessProposalStatus::Stale,
+                    now,
+                    None,
+                    Some(latest_digest.clone()),
+                )?;
+                Ok(RuleProposalApplyResult::Stale {
+                    latest_digest,
+                    latest_markdown,
+                    proposal,
+                })
+            }
+        }
+    }
+
+    /// Rejects a durable proposal: only the proposal state changes; node and
+    /// rule content are never touched. Uses the existing recoverable
+    /// conversation append journal.
+    pub fn reject_harness_proposal(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        proposal_id: &str,
+        now: String,
+    ) -> Result<HarnessProposal> {
+        self.update_proposal_state(
+            node_id,
+            session_id,
+            turn_id,
+            proposal_id,
+            HarnessProposalStatus::Rejected,
+            &now,
+            None,
+            None,
+        )
+    }
+
+    /// Replays a pending proposal-resolution journal idempotently. Recovery
+    /// never re-runs a model/tool or force-applies; it reconciles an already
+    /// written node/override or marks the proposal stale.
+    pub fn recover_pending_proposal_resolution(&self, node_id: WorkflowNodeId) -> Result<()> {
+        let journal_path = self.proposal_journal_path(node_id);
+        if !journal_path.exists() {
+            return Ok(());
+        }
+        let journal: ProposalResolutionJournal = read_json(&journal_path)?;
+        match journal {
+            ProposalResolutionJournal::Delivery {
+                session_id,
+                turn_id,
+                proposal_id,
+                expected_revision,
+                proposed_markdown,
+            } => {
+                let _ = self.apply_delivery_proposal_inner(
+                    node_id,
+                    &session_id,
+                    &turn_id,
+                    &proposal_id,
+                    expected_revision,
+                    &proposed_markdown,
+                    "recovery",
+                )?;
+            }
+            ProposalResolutionJournal::AgentRule {
+                session_id,
+                turn_id,
+                proposal_id,
+                expected_digest,
+                proposed_markdown,
+            } => {
+                let _ = self.apply_agent_rule_proposal_inner(
+                    node_id,
+                    &session_id,
+                    &turn_id,
+                    &proposal_id,
+                    &expected_digest,
+                    &proposed_markdown,
+                    "recovery",
+                )?;
+            }
+        }
+        let _ = fs::remove_file(&journal_path);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_proposal_state(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        proposal_id: &str,
+        status: HarnessProposalStatus,
+        resolved_at: &str,
+        latest_revision: Option<u64>,
+        latest_rule_digest: Option<String>,
+    ) -> Result<HarnessProposal> {
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        let Some(turn) = document.turns.iter_mut().find(|turn| turn.id == turn_id) else {
+            return Err(StorageError::HarnessProposalUnavailable(proposal_id.to_string()));
+        };
+        let Some(harness) = turn.harness.as_mut() else {
+            return Err(StorageError::HarnessProposalUnavailable(proposal_id.to_string()));
+        };
+        let Some(proposal) = harness.proposal_mut(proposal_id) else {
+            return Err(StorageError::HarnessProposalUnavailable(proposal_id.to_string()));
+        };
+        proposal.status = status;
+        proposal.resolved_at = Some(resolved_at.to_string());
+        proposal.latest_revision = latest_revision;
+        proposal.latest_rule_digest = latest_rule_digest;
+        let updated = proposal.clone();
+        self.save_turn(node_id, session_id, turn.clone())?;
+        Ok(updated)
+    }
+
     fn persist_conversation(
         &self,
         node_id: WorkflowNodeId,
         session_id: &str,
         document: &ConversationDocument,
         updated_at: String,
-    ) -> Result<ChatSession> {
-        let journal = PendingConversationWrite {
+    ) -> Result<ChatSession> {        let journal = PendingConversationWrite {
             session_id: session_id.to_string(),
             document: document.clone(),
             updated_at: updated_at.clone(),
@@ -1095,6 +1788,12 @@ impl ProjectStore {
     }
     fn append_journal_path(&self, id: WorkflowNodeId) -> PathBuf {
         self.chat_node_dir(id).join(".append-journal.json")
+    }
+    fn harness_journal_path(&self, id: WorkflowNodeId) -> PathBuf {
+        self.chat_node_dir(id).join(".harness-journal.json")
+    }
+    fn proposal_journal_path(&self, id: WorkflowNodeId) -> PathBuf {
+        self.chat_node_dir(id).join(".proposal-journal.json")
     }
     fn files_dir(&self) -> PathBuf {
         self.project_root.join("files")

@@ -49,6 +49,22 @@ pub enum AgentRunKind {
     ExportReview,
 }
 
+impl AgentRunKind {
+    /// Whether this run kind is a node-conversation run that startup recovery
+    /// should mark interrupted after an unclean shutdown. Export runs have
+    /// their own recovery path.
+    pub fn is_conversation_run(self) -> bool {
+        matches!(
+            self,
+            Self::Conversation
+                | Self::DeliveryDecision
+                | Self::DeliveryRetry
+                | Self::DeliveryRegeneration
+                | Self::Harness
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRun {

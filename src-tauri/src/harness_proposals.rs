@@ -420,6 +420,8 @@ impl<'a> ProposalService<'a> {
                 validation_summary: Some(candidate.validation_summary.clone()),
                 created_at: now.to_string(),
                 resolved_at,
+                latest_revision: None,
+                latest_rule_digest: None,
             });
         }
         proposals
