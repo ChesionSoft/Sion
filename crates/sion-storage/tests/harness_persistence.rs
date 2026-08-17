@@ -254,7 +254,7 @@ fn complete_harness_turn_persists_assistant_terminal_turn_and_run_together() {
         .complete_harness_turn(
             WorkflowNodeId::Goals,
             &session.id,
-            message("assistant-1", ChatRole::Assistant, "已补充目标"),
+            Some(message("assistant-1", ChatRole::Assistant, "已补充目标")),
             turn.clone(),
             &end_run,
             "finished".into(),

@@ -58,6 +58,9 @@ pub struct ResolvedModel {
     pub protocol: String,
     pub model: String,
     pub context_window_tokens: u64,
+    /// Whether the model advertises native tool calling. Harness chat requires
+    /// this; export flows may still use non-tool models.
+    pub tool_calling: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +234,7 @@ pub fn resolve_model(
         protocol: provider.protocol.clone(),
         model: model.name.clone(),
         context_window_tokens,
+        tool_calling: model.tool_calling,
     })
 }
 

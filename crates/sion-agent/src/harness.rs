@@ -142,7 +142,7 @@ struct TurnBudget {
 /// input; `run` returns a terminal result.
 pub struct HarnessRunner<'a> {
     provider: &'a dyn HarnessModelClient,
-    tools: Arc<dyn HarnessToolExecutor>,
+    tools: Arc<dyn HarnessToolExecutor + Send + Sync + 'a>,
     input: HarnessRunInput,
     limits: sion_core::HarnessLimits,
     cancellation: CancellationToken,
@@ -153,7 +153,7 @@ pub struct HarnessRunner<'a> {
 impl<'a> HarnessRunner<'a> {
     pub fn new(
         provider: &'a dyn HarnessModelClient,
-        tools: Arc<dyn HarnessToolExecutor>,
+        tools: Arc<dyn HarnessToolExecutor + Send + Sync + 'a>,
         input: HarnessRunInput,
         limits: sion_core::HarnessLimits,
         cancellation: CancellationToken,
@@ -337,6 +337,17 @@ impl<'a> HarnessRunner<'a> {
                                 step.output.clone(),
                                 step.tool_calls.clone(),
                             ));
+                            // Validate the entire batch before executing any
+                            // call; a failed batch is refused as a whole.
+                            if let Err(error) = self.tools.validate_batch(&step.tool_calls) {
+                                for call in &step.tool_calls {
+                                    messages.push(ProtocolMessage::tool(
+                                        call.id.clone(),
+                                        format!("批量校验未通过：{}", error.message),
+                                    ));
+                                }
+                                continue;
+                            }
                             for call in &step.tool_calls {
                                 executed_calls.insert((
                                     call.name.clone(),
@@ -344,7 +355,7 @@ impl<'a> HarnessRunner<'a> {
                                 ));
                             }
                             // run_tool_batch returns results in provider order.
-                            let results = self.run_tool_batch(&step.tool_calls).await;
+                            let results = self.run_tool_batch(&step.tool_calls);
                             for result in &results {
                                 if let Some(proposal) = &result.ready_proposal
                                     && !ready_proposals
@@ -407,43 +418,12 @@ impl<'a> HarnessRunner<'a> {
         }
     }
 
-    /// Executes a validated tool batch. Write-proposal calls run sequentially;
-    /// independent read calls run concurrently and results are returned in
-    /// provider order. After cancellation no new result is emitted.
-    async fn run_tool_batch(&self, calls: &[HarnessToolCall]) -> Vec<HarnessToolResult> {
-        let mut results: Vec<Option<HarnessToolResult>> = vec![None; calls.len()];
-        let mut reads = Vec::new();
-        for (index, call) in calls.iter().enumerate() {
-            if self.tools.is_write_proposal(call) {
-                let result = self.tools.execute(call);
-                results[index] = Some(result);
-            } else {
-                let tools = self.tools.clone();
-                let call = call.clone();
-                reads.push((
-                    index,
-                    tokio::task::spawn_blocking(move || tools.execute(&call)),
-                ));
-            }
-        }
-        for (index, task) in reads {
-            let fallback = HarnessToolResult {
-                call_id: String::new(),
-                name: String::new(),
-                content: "工具执行失败".to_string(),
-                summary: "工具执行失败".to_string(),
-                status: HarnessToolStatus::Error,
-                ready_proposal: None,
-            };
-            results[index] = match task.await {
-                Ok(result) => Some(result),
-                Err(_) => Some(fallback),
-            };
-        }
-        results
-            .into_iter()
-            .map(|result| result.expect("every tool call has a result"))
-            .collect()
+    /// Executes a validated tool batch. The whole batch has already passed
+    /// policy validation; write-proposal calls run sequentially and independent
+    /// reads execute in provider order. Results are returned in provider order;
+    /// after cancellation no new result is emitted by the caller.
+    fn run_tool_batch(&self, calls: &[HarnessToolCall]) -> Vec<HarnessToolResult> {
+        calls.iter().map(|call| self.tools.execute(call)).collect()
     }
 
     /// Issues one final no-tools completion request asking for a concise

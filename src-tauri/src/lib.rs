@@ -35,6 +35,7 @@ use tokio_util::sync::CancellationToken;
 mod conversation_runtime;
 mod dependency_context;
 mod harness_proposals;
+mod harness_runtime;
 mod harness_scope;
 mod harness_search;
 mod harness_tools;
@@ -56,6 +57,7 @@ fn elapsed_ms(started: Instant) -> u64 {
 struct AgentState {
     scheduler: Mutex<sion_agent::RunScheduler>,
     jobs: Mutex<HashMap<String, AgentJob>>,
+    harness_jobs: Mutex<HashMap<String, harness_runtime::HarnessJob>>,
     regenerations: Mutex<HashMap<String, RegenerationJob>>,
     export_jobs: Mutex<HashMap<String, CancellationToken>>,
     client: reqwest::Client,
@@ -71,6 +73,7 @@ impl Default for AgentState {
         Self {
             scheduler: Mutex::new(sion_agent::RunScheduler::default()),
             jobs: Mutex::new(HashMap::new()),
+            harness_jobs: Mutex::new(HashMap::new()),
             regenerations: Mutex::new(HashMap::new()),
             export_jobs: Mutex::new(HashMap::new()),
             client: reqwest::Client::new(),
@@ -449,6 +452,7 @@ struct ProviderList {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct AgentRunStartRequest {
     #[serde(flatten)]
     version: VersionedRequest,
@@ -840,6 +844,7 @@ fn provider_delete(
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct PreparedSend {
     resolved: provider_settings::ResolvedModel,
     selection: ChatModelSelection,
@@ -851,6 +856,7 @@ struct PreparedSend {
     session_id: String,
 }
 
+#[allow(dead_code)]
 impl PreparedSend {
     fn run_request(
         &self,
@@ -875,12 +881,14 @@ impl PreparedSend {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct SendPersistenceError {
     message: String,
     promoted: Vec<sion_agent::AgentRun>,
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn persist_prepared_send(
     store: &ProjectStore,
     scheduler: &mut sion_agent::RunScheduler,
@@ -958,6 +966,7 @@ fn persist_prepared_send(
     Ok(AgentRunStartResult { run, turn })
 }
 
+#[allow(dead_code)]
 fn prepare_agent_send(
     provider_root: &Path,
     store: &ProjectStore,
@@ -1021,9 +1030,11 @@ fn agent_run_start(
     let app_data_root = sion_root(&app)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let store = ProjectStore::at(&project_root);
-    let prepared = prepare_agent_send(
+    let prepared = harness_runtime::prepare_harness_send(
         &app_data_root,
         &store,
+        project_root.clone(),
+        request.project_id.clone(),
         request.node_id,
         &request.session_id,
         &request.message,
@@ -1061,64 +1072,54 @@ fn agent_run_start(
             )
             .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
     }
-    let run_request = prepared.run_request(
-        request.project_id.clone(),
-        request.node_id,
-        request.now.clone(),
-    );
     let mut scheduler = state
         .scheduler
         .lock()
         .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?;
-    let start_result = match persist_prepared_send(
+    let start_result = harness_runtime::persist_harness_send(
         &store,
         &mut scheduler,
-        run_request,
+        &prepared,
+        request.project_id.clone(),
         request.node_id,
-        &request.session_id,
-        prepared.user_message.clone(),
-        prepared.turn_id.clone(),
-        request.expected_revision,
-        request.delivery_write_allowed,
         request.now.clone(),
-    ) {
-        Ok(start_result) => start_result,
-        Err(error) => {
-            drop(scheduler);
-            spawn_promoted_runs(app.clone(), state.inner().clone(), error.promoted);
-            return Err(ApiError::CheckFailed(error.message));
-        }
-    };
-    let job = AgentJob {
+    )
+    .map_err(ApiError::CheckFailed)?;
+    let job = harness_runtime::HarnessJob {
         project_root,
         project_id: request.project_id.clone(),
         node_id: request.node_id,
         session_id: request.session_id.clone(),
-        prompt: prepared.prompt.clone(),
+        turn_id: prepared.turn_id.clone(),
+        run_id: start_result.0.id.clone(),
+        scope: prepared.scope.clone(),
         model: prepared.resolved.clone(),
         reasoning_effort: prepared.selection.reasoning_effort,
         cancellation: CancellationToken::new(),
-        turn_id: start_result.turn.id.clone(),
-        expected_revision: request.expected_revision,
-        delivery_write_allowed: request.delivery_write_allowed,
-        base_markdown: String::new(),
         started_instant: Instant::now(),
     };
     state
-        .jobs
+        .harness_jobs
         .lock()
-        .map_err(|_| ApiError::CheckFailed("agent job lock is poisoned".to_string()))?
-        .insert(start_result.run.id.clone(), job.clone());
-    let should_spawn = start_result.run.status == sion_agent::AgentRunStatus::Running;
+        .map_err(|_| ApiError::CheckFailed("harness job lock is poisoned".to_string()))?
+        .insert(start_result.0.id.clone(), job.clone());
+    let should_spawn = start_result.0.status == sion_agent::AgentRunStatus::Running;
     drop(scheduler);
     if should_spawn {
-        spawn_agent_run(app, state.inner().clone(), start_result.run.clone(), job);
+        harness_runtime::spawn_harness_run(
+            app,
+            state.inner().clone(),
+            start_result.0.clone(),
+            job,
+            prepared.initial_messages.clone(),
+            prepared.limits,
+        );
     }
     Ok(VersionedResponse {
         api_version: API_VERSION,
         payload: AgentRunStartOutcome::Started {
-            run: Box::new(start_result.run),
-            turn: Box::new(start_result.turn),
+            run: Box::new(start_result.0),
+            turn: Box::new(start_result.1),
         },
     })
 }
@@ -1300,6 +1301,14 @@ fn conversation_turn_retry_delivery(
         .into_iter()
         .find(|turn| turn.id == request.turn_id)
         .ok_or_else(|| ApiError::CheckFailed("会话轮次未找到".to_string()))?;
+    // Harness turns never enter the fixed delivery pipeline; retrying the
+    // delivery decision of a Harness turn is rejected (the command is removed
+    // entirely after historical rendering is verified).
+    if turn.harness.is_some() {
+        return Err(ApiError::CheckFailed(
+            "该轮次使用文档 Harness 完成，不支持旧的交付判断重试".to_string(),
+        ));
+    }
     if !delivery_outcome_can_retry(turn.delivery_outcome.as_ref()) {
         return Err(ApiError::CheckFailed(
             "该轮次的交付结果不可重新判断".to_string(),
@@ -1761,6 +1770,69 @@ fn agent_run_cancel(
     };
     validate_run_project(&run, &request.project_id)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+
+    // Harness runs live in a separate job map; cancel the whole turn by
+    // signalling the shared cancellation token. Queued Harness runs are
+    // cancelled through the scheduler and their turn marked cancelled.
+    let harness_job = state
+        .harness_jobs
+        .lock()
+        .map_err(|_| ApiError::CheckFailed("harness job lock is poisoned".to_string()))?
+        .get(&request.run_id)
+        .cloned();
+    if let Some(harness_job) = harness_job {
+        let store = ProjectStore::at(&project_root);
+        if run.status == sion_agent::AgentRunStatus::Queued {
+            let cancelled_turn = store
+                .turns(harness_job.node_id, &harness_job.session_id)
+                .ok()
+                .and_then(|turns| turns.into_iter().find(|turn| turn.id == harness_job.turn_id))
+                .map(|mut turn| {
+                    turn.status = TurnStatus::Cancelled;
+                    turn.finished_at = Some(request.now.clone());
+                    turn
+                });
+            let mut scheduler = state
+                .scheduler
+                .lock()
+                .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?;
+            let promoted = scheduler
+                .cancel(&request.run_id, request.now.clone(), Some("用户取消".to_string()))
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+            if let Some(cancelled_turn) = cancelled_turn {
+                let _ = store.save_turn(harness_job.node_id, &harness_job.session_id, cancelled_turn.clone());
+                let _ = app.emit(
+                    "conversation-turn-updated",
+                    ConversationTurnEvent {
+                        turn: cancelled_turn,
+                        saved_node: None,
+                    },
+                );
+            }
+            if let Some(cancelled_run) = scheduler.get(&request.run_id) {
+                let _ = store.save_run(cancelled_run);
+            }
+            drop(scheduler);
+            state
+                .harness_jobs
+                .lock()
+                .map_err(|_| ApiError::CheckFailed("harness job lock is poisoned".to_string()))?
+                .remove(&request.run_id);
+            spawn_promoted_runs(app, state.inner().clone(), promoted);
+            return Ok(VersionedResponse {
+                api_version: API_VERSION,
+                payload: run,
+            });
+        }
+        // Running Harness turn: cancel the whole loop; the loop's terminal
+        // handler persists the cancelled state and releases the reservation.
+        harness_job.cancellation.cancel();
+        return Ok(VersionedResponse {
+            api_version: API_VERSION,
+            payload: run,
+        });
+    }
+
     let job = state
         .jobs
         .lock()

@@ -843,7 +843,7 @@ impl ProjectStore {
         &self,
         node_id: WorkflowNodeId,
         session_id: &str,
-        assistant_message: ChatMessage,
+        assistant_message: Option<ChatMessage>,
         turn: ConversationTurn,
         run: &AgentRun,
         now: String,
@@ -859,10 +859,11 @@ impl ProjectStore {
         }
         let path = self.messages_path(node_id, session_id)?;
         let mut document = read_conversation_document(&path)?;
-        if !document
-            .messages
-            .iter()
-            .any(|item| item.id == assistant_message.id)
+        if let Some(assistant_message) = assistant_message
+            && !document
+                .messages
+                .iter()
+                .any(|item| item.id == assistant_message.id)
         {
             document.messages.push(assistant_message);
         }

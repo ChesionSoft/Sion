@@ -208,6 +208,92 @@ impl<'a> ProposalService<'a> {
         }
     }
 
+    /// Validates one proposal tool call (schema + turn authorization) without
+    /// executing it, so the whole provider batch can be refused before any
+    /// call runs.
+    pub(crate) fn validate(&self, call: &HarnessToolCall) -> Result<(), ToolError> {
+        match call.name.as_str() {
+            "propose_delivery_change" => {
+                let arguments =
+                    validate_tool_arguments(&tool_by_name("propose_delivery_change"), &call.arguments)?;
+                serde_json::from_value::<DeliveryProposeArgs>(arguments)
+                    .map_err(|error| {
+                        ToolError::InvalidArguments(format!("changes 结构无效：{error}"))
+                    })?;
+                Ok(())
+            }
+            "revise_delivery_proposal" => {
+                let arguments =
+                    validate_tool_arguments(&tool_by_name("revise_delivery_proposal"), &call.arguments)?;
+                serde_json::from_value::<DeliveryReviseArgs>(arguments)
+                    .map_err(|error| {
+                        ToolError::InvalidArguments(format!("changes 结构无效：{error}"))
+                    })?;
+                Ok(())
+            }
+            "discard_delivery_proposal" => {
+                let arguments =
+                    validate_tool_arguments(&tool_by_name("discard_delivery_proposal"), &call.arguments)?;
+                serde_json::from_value::<DiscardArgs>(arguments)
+                    .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+                Ok(())
+            }
+            "propose_agent_rule_override" => {
+                self.require_rule_authorized()?;
+                let arguments = validate_tool_arguments(
+                    &tool_by_name("propose_agent_rule_override"),
+                    &call.arguments,
+                )?;
+                let payload: RuleProposeArgs = serde_json::from_value(arguments)
+                    .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+                let _ = validate_agent_rule_override(&payload.markdown)
+                    .map_err(ToolError::InvalidArguments)?;
+                Ok(())
+            }
+            "revise_agent_rule_proposal" => {
+                self.require_rule_authorized()?;
+                let arguments =
+                    validate_tool_arguments(&tool_by_name("revise_agent_rule_proposal"), &call.arguments)?;
+                let payload: RuleReviseArgs = serde_json::from_value(arguments)
+                    .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+                let _ = validate_agent_rule_override(&payload.markdown)
+                    .map_err(ToolError::InvalidArguments)?;
+                Ok(())
+            }
+            "discard_agent_rule_proposal" => {
+                self.require_rule_authorized()?;
+                let arguments = validate_tool_arguments(
+                    &tool_by_name("discard_agent_rule_proposal"),
+                    &call.arguments,
+                )?;
+                serde_json::from_value::<DiscardArgs>(arguments)
+                    .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+                Ok(())
+            }
+            other => Err(ToolError::InvalidArguments(format!("未知提案工具：{other}"))),
+        }
+    }
+
+    /// Number of validation retries consumed this turn, reported in diagnostics.
+    pub(crate) fn validation_retries(&self) -> u32 {
+        self.delivery_retries.saturating_add(self.rule_retries)
+    }
+
+    /// Whether rule proposal tools are advertised this turn.
+    pub(crate) fn rule_authorized(&self) -> bool {
+        self.scope.rule_write_authorized
+    }
+
+    /// Ready (reviewable) proposal records for live turn snapshots during the
+    /// loop. These are in-memory only until the terminal checkpoint.
+    pub(crate) fn ready_proposals(&self, now: &str) -> Vec<HarnessProposal> {
+        self.candidates
+            .values()
+            .filter(|candidate| candidate.status == CandidateStatus::Ready)
+            .map(|candidate| self.build_proposal(candidate, now))
+            .collect()
+    }
+
     fn propose_delivery(&mut self, args: &str) -> Result<ToolExecution, ToolError> {
         let arguments =
             validate_tool_arguments(&tool_by_name("propose_delivery_change"), args)?;
@@ -397,34 +483,39 @@ impl<'a> ProposalService<'a> {
                     (HarnessProposalStatus::Rejected, Some(now.to_string()))
                 }
             };
-            let (base_revision, base_rule_digest) = match candidate.kind {
-                HarnessProposalKind::Delivery => {
-                    (Some(self.scope.expected_node_revision), None)
-                }
-                HarnessProposalKind::AgentRule => {
-                    (None, Some(self.scope.rule_snapshot.digest.clone()))
-                }
-            };
-            proposals.push(HarnessProposal {
-                id: candidate.id.clone(),
-                kind: candidate.kind,
-                status,
-                project_id: self.scope.project_id.clone(),
-                node_id: self.scope.node_id,
-                turn_id: String::new(),
-                base_revision,
-                base_rule_digest,
-                base_content: candidate.base_content.clone(),
-                proposed_content: candidate.proposed_content.clone(),
-                reason: candidate.reason.clone(),
-                validation_summary: Some(candidate.validation_summary.clone()),
-                created_at: now.to_string(),
-                resolved_at,
-                latest_revision: None,
-                latest_rule_digest: None,
-            });
+            let mut proposal = self.build_proposal(candidate, now);
+            proposal.status = status;
+            proposal.resolved_at = resolved_at;
+            proposals.push(proposal);
         }
         proposals
+    }
+
+    fn build_proposal(&self, candidate: &ProposalCandidate, now: &str) -> HarnessProposal {
+        let (base_revision, base_rule_digest) = match candidate.kind {
+            HarnessProposalKind::Delivery => (Some(self.scope.expected_node_revision), None),
+            HarnessProposalKind::AgentRule => {
+                (None, Some(self.scope.rule_snapshot.digest.clone()))
+            }
+        };
+        HarnessProposal {
+            id: candidate.id.clone(),
+            kind: candidate.kind,
+            status: HarnessProposalStatus::Ready,
+            project_id: self.scope.project_id.clone(),
+            node_id: self.scope.node_id,
+            turn_id: String::new(),
+            base_revision,
+            base_rule_digest,
+            base_content: candidate.base_content.clone(),
+            proposed_content: candidate.proposed_content.clone(),
+            reason: candidate.reason.clone(),
+            validation_summary: Some(candidate.validation_summary.clone()),
+            created_at: now.to_string(),
+            resolved_at: None,
+            latest_revision: None,
+            latest_rule_digest: None,
+        }
     }
 
     fn insert_delivery_candidate(&mut self, _change: &DeliveryProposalChange, proposed: String, reason: String) {

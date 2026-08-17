@@ -523,46 +523,30 @@ pub(crate) fn build_harness_initial_context(
     context_window_tokens: u64,
     calculated_at: &str,
 ) -> Result<PreparedHarnessContext, String> {
-    let node = store
-        .node(scope.node_id)
-        .map_err(|_| "当前节点交付稿读取失败".to_string())?;
-    let dependency_manifest = dependency_context::load_manifest(store, scope.node_id)?;
-    let files = store.list_files().map_err(|_| "项目附件读取失败".to_string())?;
-    let selected: std::collections::HashSet<&str> =
-        selected_file_ids.iter().map(String::as_str).collect();
-
-    let protocol = format!(
-        "{HARNESS_PROTOCOL}\n\n{budget}\n\n{tools}",
-        budget = budget_block(limits),
-        tools = tool_schemas_block(&tool_definitions),
-    );
-    let rules = scope.rule_snapshot.effective_markdown.clone();
-    let dependency_nodes = format!(
-        "# 只读依赖节点交付稿清单\n以下节点的章节正文可通过 read_dependency_section 读取；它们只读，不得被任何提案修改。\n\n{}",
-        dependency_manifest_block(&dependency_manifest)
-    );
-    let attachments = format!(
-        "# 当前项目附件清单\n以下附件只读，正文通过 read_attachment 按 fileId 读取。“selected” 为 true 的文件是本轮用户明确选择的资料。\n\n{}",
-        attachment_manifest_block(&files, &selected)
-    );
-    let node_label = scope.node_id.as_str().to_string();
-    let node_markdown = format!(
-        "# 当前可写节点\n{node_label} (revision {})\n\n# 当前 Markdown\n{}",
-        node.revision, node.markdown
-    );
+    let sections = build_harness_sections(
+        store,
+        scope,
+        selected_file_ids,
+        &tool_definitions,
+        limits,
+    )?;
     let transcript = full_transcript(messages, "");
-
     let prompt = format!(
         "{}\n\n# 本节点规则\n{}\n\n{}\n\n{}\n\n{}\n\n# 会话\n{}",
-        protocol, rules, dependency_nodes, attachments, node_markdown, transcript,
+        sections.protocol,
+        sections.rules,
+        sections.dependency_nodes,
+        sections.attachments,
+        sections.node_markdown,
+        transcript,
     );
     let breakdown = ContextUsageBreakdown {
-        protocol_tokens: estimate_input_tokens(&protocol),
-        rules_tokens: estimate_input_tokens(&rules),
-        dependency_node_tokens: estimate_input_tokens(&dependency_nodes),
-        node_markdown_tokens: estimate_input_tokens(&node_markdown),
+        protocol_tokens: estimate_input_tokens(&sections.protocol),
+        rules_tokens: estimate_input_tokens(&sections.rules),
+        dependency_node_tokens: estimate_input_tokens(&sections.dependency_nodes),
+        node_markdown_tokens: estimate_input_tokens(&sections.node_markdown),
         conversation_tokens: estimate_input_tokens(&transcript),
-        attachment_tokens: estimate_input_tokens(&attachments),
+        attachment_tokens: estimate_input_tokens(&sections.attachments),
     };
     let prepared = PreparedPrompt {
         prompt,
@@ -579,6 +563,122 @@ pub(crate) fn build_harness_initial_context(
         snapshot,
         tool_definitions,
     })
+}
+
+/// Per-section Harness context used both for the full single-prompt estimate
+/// and for the structured tool-calling messages.
+pub(crate) struct HarnessContextSections {
+    pub(crate) protocol: String,
+    pub(crate) rules: String,
+    pub(crate) dependency_nodes: String,
+    pub(crate) attachments: String,
+    pub(crate) node_markdown: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_harness_sections(
+    store: &ProjectStore,
+    scope: &HarnessScope,
+    selected_file_ids: &[String],
+    tool_definitions: &[HarnessToolDefinition],
+    limits: HarnessLimits,
+) -> Result<HarnessContextSections, String> {
+    let node = store
+        .node(scope.node_id)
+        .map_err(|_| "当前节点交付稿读取失败".to_string())?;
+    let dependency_manifest = dependency_context::load_manifest(store, scope.node_id)?;
+    let files = store.list_files().map_err(|_| "项目附件读取失败".to_string())?;
+    let selected: std::collections::HashSet<&str> =
+        selected_file_ids.iter().map(String::as_str).collect();
+
+    let protocol = format!(
+        "{HARNESS_PROTOCOL}\n\n{budget}\n\n{tools}",
+        budget = budget_block(limits),
+        tools = tool_schemas_block(tool_definitions),
+    );
+    let rules = scope.rule_snapshot.effective_markdown.clone();
+    let dependency_nodes = format!(
+        "# 只读依赖节点交付稿清单\n以下节点的章节正文可通过 read_dependency_section 读取；它们只读，不得被任何提案修改。\n\n{}",
+        dependency_manifest_block(&dependency_manifest)
+    );
+    let attachments = format!(
+        "# 当前项目附件清单\n以下附件只读，正文通过 read_attachment 按 fileId 读取。“selected” 为 true 的文件是本轮用户明确选择的资料。\n\n{}",
+        attachment_manifest_block(&files, &selected)
+    );
+    let node_label = scope.node_id.as_str().to_string();
+    let node_markdown = format!(
+        "# 当前可写节点\n{node_label} (revision {})\n\n# 当前 Markdown\n{}",
+        node.revision, node.markdown
+    );
+    Ok(HarnessContextSections {
+        protocol,
+        rules,
+        dependency_nodes,
+        attachments,
+        node_markdown,
+    })
+}
+
+/// Builds the structured tool-calling messages for the first Harness step: a
+/// system message with the protocol/rules/manifests, the conversation history
+/// as user/assistant messages, and the current user message. The snapshot
+/// estimates the whole initial request including tool schemas.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_harness_initial_messages(
+    store: &ProjectStore,
+    scope: &HarnessScope,
+    messages: &[ChatMessage],
+    selected_file_ids: &[String],
+    tool_definitions: &[HarnessToolDefinition],
+    limits: HarnessLimits,
+    context_window_tokens: u64,
+    calculated_at: &str,
+) -> Result<(Vec<sion_agent::model_protocol::ProtocolMessage>, ConversationContextSnapshot), String> {
+    let sections = build_harness_sections(store, scope, selected_file_ids, tool_definitions, limits)?;
+    let system_content = format!(
+        "{}\n\n# 本节点规则\n{}\n\n{}\n\n{}\n\n{}",
+        sections.protocol,
+        sections.rules,
+        sections.dependency_nodes,
+        sections.attachments,
+        sections.node_markdown,
+    );
+    let mut protocol_messages =
+        vec![sion_agent::model_protocol::ProtocolMessage::system(system_content)];
+    for message in messages {
+        let role_message = match message.role {
+            ChatRole::User => sion_agent::model_protocol::ProtocolMessage::user(&message.content),
+            ChatRole::Assistant => {
+                sion_agent::model_protocol::ProtocolMessage::assistant(&message.content)
+            }
+            ChatRole::System => sion_agent::model_protocol::ProtocolMessage::system(&message.content),
+        };
+        protocol_messages.push(role_message);
+    }
+    // Snapshot estimate for the whole initial request.
+    let mut estimate_text = String::new();
+    for message in &protocol_messages {
+        estimate_text.push_str(&message.content);
+        estimate_text.push('\n');
+    }
+    let breakdown = ContextUsageBreakdown {
+        protocol_tokens: estimate_input_tokens(&sections.protocol),
+        rules_tokens: estimate_input_tokens(&sections.rules),
+        dependency_node_tokens: estimate_input_tokens(&sections.dependency_nodes),
+        node_markdown_tokens: estimate_input_tokens(&sections.node_markdown),
+        conversation_tokens: estimate_input_tokens(&estimate_text),
+        attachment_tokens: estimate_input_tokens(&sections.attachments),
+    };
+    let prepared = PreparedPrompt {
+        prompt: estimate_text,
+        breakdown,
+    };
+    let snapshot = prepared.snapshot(
+        context_window_tokens,
+        aggregate_message_usage(messages),
+        calculated_at,
+    );
+    Ok((protocol_messages, snapshot))
 }
 
 #[cfg(test)]

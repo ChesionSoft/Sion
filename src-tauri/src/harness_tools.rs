@@ -39,9 +39,9 @@ pub(crate) struct ToolExecution {
 }
 
 /// A safe, redacted tool error. The message never contains storage paths,
-/// internal error text, or secrets.
+/// internal error text, or secrets. Shared with the proposal service.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ToolError {
+pub(crate) enum ToolError {
     InvalidArguments(String),
     Unauthorized(String),
     NotFound(String),
@@ -49,7 +49,7 @@ enum ToolError {
 }
 
 impl ToolError {
-    fn into_execution(self) -> ToolExecution {
+    pub(crate) fn into_execution(self) -> ToolExecution {
         let (status, content, summary) = match self {
             Self::InvalidArguments(message) => (
                 HarnessToolStatus::Error,
@@ -206,6 +206,73 @@ impl<'a> HarnessToolRegistry<'a> {
         match result {
             Ok(execution) => execution,
             Err(error) => error.into_execution(),
+        }
+    }
+
+    /// Validates one read tool call against its schema and the frozen scope
+    /// without executing it. Used for whole-batch validation before any call
+    /// in a provider step runs.
+    pub(crate) fn validate(&self, call: &HarnessToolCall) -> Result<(), ToolError> {
+        match call.name.as_str() {
+            "list_project_attachments" => {
+                validate_tool_arguments(&tool_by_name("list_project_attachments"), &call.arguments)?;
+                Ok(())
+            }
+            "read_attachment" => {
+                let arguments =
+                    validate_tool_arguments(&tool_by_name("read_attachment"), &call.arguments)?;
+                let file_id = required_string(&arguments, "fileId")?;
+                if !self.scope.attachment_ids.iter().any(|id| id == file_id) {
+                    return Err(ToolError::Unauthorized(
+                        "该附件不属于当前项目".to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            "list_dependency_sections" => {
+                let arguments = validate_tool_arguments(
+                    &tool_by_name("list_dependency_sections"),
+                    &call.arguments,
+                )?;
+                let node_id = required_node_id(&arguments, "nodeId")?;
+                self.require_dependency(&node_id)
+            }
+            "read_dependency_section" => {
+                let arguments = validate_tool_arguments(
+                    &tool_by_name("read_dependency_section"),
+                    &call.arguments,
+                )?;
+                let node_id = required_node_id(&arguments, "nodeId")?;
+                self.require_dependency(&node_id)?;
+                let heading = required_string(&arguments, "heading")?;
+                if heading.chars().count() > MAX_QUERY_CHARS {
+                    return Err(ToolError::InvalidArguments("章节标题过长".to_string()));
+                }
+                Ok(())
+            }
+            "search_allowed_context" => {
+                let arguments = validate_tool_arguments(
+                    &tool_by_name("search_allowed_context"),
+                    &call.arguments,
+                )?;
+                let query = required_string(&arguments, "query")?;
+                if query.trim().is_empty() {
+                    return Err(ToolError::InvalidArguments("搜索词不能为空".to_string()));
+                }
+                if query.chars().count() > MAX_QUERY_CHARS {
+                    return Err(ToolError::InvalidArguments("搜索词过长".to_string()));
+                }
+                Ok(())
+            }
+            "read_current_delivery" => {
+                validate_tool_arguments(&tool_by_name("read_current_delivery"), &call.arguments)?;
+                Ok(())
+            }
+            "read_effective_agent_rule" => {
+                validate_tool_arguments(&tool_by_name("read_effective_agent_rule"), &call.arguments)?;
+                Ok(())
+            }
+            other => Err(ToolError::InvalidArguments(format!("未知工具：{other}"))),
         }
     }
 
@@ -537,8 +604,8 @@ fn required_node_id(arguments: &serde_json::Value, name: &str) -> Result<Workflo
 /// Validates tool arguments against the tool's strict JSON schema: the payload
 /// must be a JSON object, unknown fields are rejected (`additionalProperties:
 /// false`), required fields must be present, and string fields must respect
-/// their declared max length.
-fn validate_tool_arguments(
+/// their declared max length. Shared with the proposal service.
+pub(crate) fn validate_tool_arguments(
     definition: &HarnessToolDefinition,
     args: &str,
 ) -> Result<serde_json::Value, ToolError> {
