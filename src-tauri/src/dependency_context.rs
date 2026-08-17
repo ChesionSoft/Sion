@@ -18,6 +18,74 @@ pub(crate) struct DependencyNodeContext {
     pub(crate) markdown: String,
 }
 
+/// Bounded manifest entry for one authorized dependency node. It carries IDs,
+/// status, revision, and section headings only; bodies are read through tools.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DependencyManifestEntry {
+    pub(crate) id: WorkflowNodeId,
+    pub(crate) title: &'static str,
+    pub(crate) status: NodeStatus,
+    pub(crate) revision: u64,
+    pub(crate) section_headings: Vec<String>,
+}
+
+/// Returns the level-two section headings of a Markdown document, ignoring
+/// fenced code blocks. Used to render the bounded dependency manifest.
+pub(crate) fn markdown_section_headings(markdown: &str) -> Vec<String> {
+    let mut headings = Vec::new();
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence
+            && let Some(title) = trimmed.strip_prefix("## ")
+            && !title.trim_end().is_empty()
+        {
+            headings.push(title.trim_end().to_string());
+        }
+    }
+    headings
+}
+
+/// Returns the body of an exact level-two section (`heading`), or `None` when
+/// the section does not exist. The body runs from the heading line to the next
+/// level-two heading, excluding fenced code blocks from heading detection.
+#[allow(dead_code)] // read_dependency_section gains its caller in Task 4
+pub(crate) fn dependency_section_body(markdown: &str, heading: &str) -> Option<String> {
+    let mut sections: Vec<(String, usize, usize)> = Vec::new();
+    let mut offset = 0;
+    let mut in_fence = false;
+    for line in markdown.split_inclusive('\n') {
+        let line_without_newline = line
+            .strip_suffix('\n')
+            .unwrap_or(line)
+            .strip_suffix('\r')
+            .unwrap_or(line);
+        let trimmed = line_without_newline.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+        } else if !in_fence
+            && let Some(title) = trimmed.strip_prefix("## ")
+        {
+            let title = title.trim_end();
+            if let Some(previous) = sections.last_mut() {
+                previous.2 = offset;
+            }
+            if !title.is_empty() {
+                sections.push((title.to_string(), offset + line.len(), markdown.len()));
+            }
+        }
+        offset += line.len();
+    }
+    sections
+        .into_iter()
+        .find(|(title, _, _)| title == heading)
+        .map(|(_, start, end)| markdown[start..end].trim().to_string())
+}
+
 fn has_meaningful_body(markdown: &str) -> bool {
     markdown.lines().any(|line| {
         let line = line.trim();
@@ -61,6 +129,31 @@ pub(crate) fn load(
                 .filter(|node| has_meaningful_body(&node.markdown))
                 .collect()
         })
+}
+
+/// Loads the bounded manifest for the direct `depends_on` nodes of `current`,
+/// in workflow order. Bodies are deliberately excluded; the model reads them
+/// through `read_dependency_section` and cannot widen this set.
+pub(crate) fn load_manifest(
+    store: &ProjectStore,
+    current: WorkflowNodeId,
+) -> Result<Vec<DependencyManifestEntry>, String> {
+    readable_dependency_ids(current)
+        .into_iter()
+        .map(|id| {
+            let definition = workflow_definition(id);
+            let node = store
+                .node(id)
+                .map_err(|_| format!("依赖节点“{}”交付稿读取失败", definition.title))?;
+            Ok(DependencyManifestEntry {
+                id,
+                title: definition.title,
+                status: node.status,
+                revision: node.revision,
+                section_headings: markdown_section_headings(&node.markdown),
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn format(nodes: &[DependencyNodeContext]) -> String {
@@ -175,5 +268,49 @@ mod tests {
         assert_eq!(error, "依赖节点“需求背景与建设目标”交付稿读取失败");
         assert!(!error.contains("/nodes/"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn manifest_lists_section_headings_without_bodies() {
+        let (root, store) = fixture();
+        save_body(
+            &store,
+            WorkflowNodeId::BasicInfo,
+            "# 项目基本信息\n\n## 基础信息表\n基础正文\n\n## 项目边界\n边界正文",
+            NodeStatus::Confirmed,
+        );
+        let manifest = load_manifest(&store, WorkflowNodeId::Goals).unwrap();
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].id, WorkflowNodeId::BasicInfo);
+        assert_eq!(manifest[0].revision, 1);
+        assert_eq!(
+            manifest[0].section_headings,
+            vec!["基础信息表".to_string(), "项目边界".to_string()]
+        );
+        assert!(!format!("{manifest:?}").contains("基础正文"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn section_headings_and_bodies_ignore_fenced_code_blocks() {
+        let markdown = "# 标题\n\n## 章节甲\n正文甲\n\n## 章节乙\n正文乙\n";
+        assert_eq!(
+            markdown_section_headings(markdown),
+            vec!["章节甲".to_string(), "章节乙".to_string()]
+        );
+        assert_eq!(dependency_section_body(markdown, "章节甲").unwrap(), "正文甲");
+        assert_eq!(dependency_section_body(markdown, "章节乙").unwrap(), "正文乙");
+        assert_eq!(dependency_section_body(markdown, "不存在的章节"), None);
+
+        // Fenced code blocks are not treated as document headings.
+        let fenced = "# 标题\n\n```\n## 伪装标题\n```\n\n## 真实标题\n正文";
+        assert_eq!(
+            markdown_section_headings(fenced),
+            vec!["真实标题".to_string()]
+        );
+        assert_eq!(
+            dependency_section_body(fenced, "真实标题").unwrap(),
+            "正文"
+        );
     }
 }

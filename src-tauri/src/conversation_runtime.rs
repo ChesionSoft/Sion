@@ -2,14 +2,20 @@
 //! loading, and deterministic input-context estimation. The prompt built here
 //! is the exact string used both for context estimation and for the real run.
 
+// The Harness initial-context helpers gain their orchestration callers in Task 8;
+// remove this allowance once every helper has a non-test caller.
+#![allow(dead_code)]
+
 use sion_core::{
     ChatMessage, ChatRole, ContextUsageBreakdown, ConversationContextSnapshot,
-    CumulativeTokenUsage, MessageAttachmentRef, WorkflowNode, WorkflowNodeId, agent_rule,
-    aggregate_message_usage, estimate_context, estimate_input_tokens, workflow_definition,
+    CumulativeTokenUsage, HarnessLimits, HarnessToolDefinition, MessageAttachmentRef, ProjectFile,
+    WorkflowNode, WorkflowNodeId, agent_rule, aggregate_message_usage, estimate_context,
+    estimate_input_tokens, workflow_definition,
 };
 use sion_storage::ProjectStore;
 
-use crate::dependency_context::{self, DependencyNodeContext};
+use crate::dependency_context::{self, DependencyManifestEntry, DependencyNodeContext};
+use crate::harness_scope::HarnessScope;
 
 const PROTOCOL: &str = "你是 Sion 桌面应用中负责项目设计文档的助手。不要浏览网页、不要声称调用过外部搜索。请基于当前节点、选定文件和会话，给出可直接用于设计文档的中文建议。不要输出隐藏思维链。只回复可见的中文说明，不要输出 JSON、代码围栏或任何交付块；是否更新交付稿由后续步骤单独判断。";
 
@@ -395,6 +401,184 @@ pub fn prepare_conversation(
         prepared.snapshot.cumulative_usage = cumulative_usage;
     }
     Ok(prepared)
+}
+
+/// The Harness protocol and immutable security policy for the first model step.
+/// Tool results are governed by the shared budget; later tool steps do not
+/// rebuild this section.
+const HARNESS_PROTOCOL: &str = "你是 Sion 桌面应用中负责项目设计文档的 Agent Harness。你的工作范围仅限于当前项目内的文档：当前节点交付稿、当前节点的有效 Agent 规则、当前项目的附件、以及直接依赖节点的交付稿。你没有浏览器、搜索网页、shell、代码执行或任意文件系统访问能力；所有工具参数都是项目内部 ID，绝不能构造、猜测或推断任何路径。\n\n本轮你可以：\n1. 直接回答——当无需任何文档操作时，直接给出简洁的中文回复即可结束本轮，不需要特殊结束标记。\n2. 使用只读工具查看当前交付稿、有效规则、附件正文、依赖节点章节正文。\n3. 当讨论得出明确、值得写入当前交付稿的结论时，主动使用交付提案工具创建补丁；默认只修改当前节点现有章节，只有用户明确要求整篇重写时才使用整篇重写。\n4. 只有用户在本轮明确要求修改当前节点 Agent 规则时，才会看到规则提案工具；普通对话只能阅读规则，不得以提案以外的形式改写规则。\n\n安全边界（不可违反）：\n- 只能读取当前项目内且由工具授权的内容。\n- 附件和依赖节点一律只读，不得提出修改它们的提案。\n- 不得修改其他节点、其他项目、全局配置、内置规则或安全策略。\n- 不得输出 API 密钥、文件路径、内部错误或隐藏思维链。\n- 每个工具调用必须是有意义的文档操作；不要重复提交完全相同的调用。\n- 一个工具结果返回后，继续根据结果决定下一步；达到预算上限时按要求直接总结结论。";
+
+/// The initial context assembled for the first Harness model step: the frozen
+/// scope's current delivery/rules plus bounded manifests and tool schemas.
+/// Attachment bodies and dependency section bodies are deliberately absent;
+/// they are read through tools only.
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedHarnessContext {
+    pub(crate) prompt: String,
+    pub(crate) breakdown: ContextUsageBreakdown,
+    pub(crate) snapshot: ConversationContextSnapshot,
+    pub(crate) tool_definitions: Vec<HarnessToolDefinition>,
+}
+
+fn tool_schemas_block(tools: &[HarnessToolDefinition]) -> String {
+    if tools.is_empty() {
+        return String::new();
+    }
+    let schemas = tools
+        .iter()
+        .map(|tool| {
+            serde_json::to_string(tool).unwrap_or_else(|_| tool.name.clone())
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!(
+        "# 可用工具（JSON Schema）\n以下工具可按需调用。参数必须严格符合每个工具的 JSON Schema；出现额外字段、错误类型或未知 ID 会被拒绝并返回结构化错误。一个助手步骤中可以并行调用多个只读工具；写入提案按顺序执行。\n\n{schemas}"
+    )
+}
+
+fn dependency_manifest_block(nodes: &[DependencyManifestEntry]) -> String {
+    if nodes.is_empty() {
+        return "（无）".to_string();
+    }
+    nodes
+        .iter()
+        .map(|node| {
+            let status = match node.status {
+                sion_core::NodeStatus::NotStarted => "not_started",
+                sion_core::NodeStatus::Draft => "draft",
+                sion_core::NodeStatus::Generated => "generated",
+                sion_core::NodeStatus::Confirmed => "confirmed",
+                sion_core::NodeStatus::NeedsConfirmation => "needs_confirmation",
+            };
+            let headings = if node.section_headings.is_empty() {
+                "（无章节）".to_string()
+            } else {
+                node.section_headings
+                    .iter()
+                    .map(|heading| format!("- ## {heading}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            format!(
+                "<dependency-node id=\"{}\" title=\"{}\" status=\"{}\" revision=\"{}\" read-only=\"true\">\n{headings}\n</dependency-node>",
+                node.id.as_str(),
+                node.title,
+                status,
+                node.revision,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn attachment_manifest_block(
+    files: &[ProjectFile],
+    selected_ids: &std::collections::HashSet<&str>,
+) -> String {
+    if files.is_empty() {
+        return "（无附件）".to_string();
+    }
+    files
+        .iter()
+        .map(|file| {
+            let kind = file
+                .kind
+                .as_ref()
+                .map(|kind| format!("{kind:?}").to_lowercase())
+                .unwrap_or_else(|| "unknown".to_string());
+            let status = file
+                .extraction_status
+                .as_ref()
+                .map(|status| format!("{status:?}").to_lowercase())
+                .unwrap_or_else(|| "unsupported".to_string());
+            let selected = selected_ids.contains(file.id.as_str());
+            format!(
+                "<attachment id=\"{}\" name=\"{}\" kind=\"{}\" extraction=\"{}\" selected=\"{}\" />",
+                file.id, file.original_name, kind, status, selected
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn budget_block(limits: HarnessLimits) -> String {
+    format!(
+        "# 本轮预算\n- 模型步数上限：{}\n- 工具调用上限：{}\n- 每个提案的自动校验重试上限：{}\n- 整轮共享上下文/输出预算，超限时你会收到一次总结结论的请求。",
+        limits.max_model_steps, limits.max_tool_calls, limits.max_validation_retries
+    )
+}
+
+/// Builds the initial model context and context snapshot for a Harness turn.
+/// The current delivery and effective rules are preloaded because they are the
+/// primary working documents; attachment bodies and dependency section bodies
+/// are intentionally not included.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_harness_initial_context(
+    store: &ProjectStore,
+    scope: &HarnessScope,
+    messages: &[ChatMessage],
+    selected_file_ids: &[String],
+    tool_definitions: Vec<HarnessToolDefinition>,
+    limits: HarnessLimits,
+    context_window_tokens: u64,
+    calculated_at: &str,
+) -> Result<PreparedHarnessContext, String> {
+    let node = store
+        .node(scope.node_id)
+        .map_err(|_| "当前节点交付稿读取失败".to_string())?;
+    let dependency_manifest = dependency_context::load_manifest(store, scope.node_id)?;
+    let files = store.list_files().map_err(|_| "项目附件读取失败".to_string())?;
+    let selected: std::collections::HashSet<&str> =
+        selected_file_ids.iter().map(String::as_str).collect();
+
+    let protocol = format!(
+        "{HARNESS_PROTOCOL}\n\n{budget}\n\n{tools}",
+        budget = budget_block(limits),
+        tools = tool_schemas_block(&tool_definitions),
+    );
+    let rules = scope.rule_snapshot.effective_markdown.clone();
+    let dependency_nodes = format!(
+        "# 只读依赖节点交付稿清单\n以下节点的章节正文可通过 read_dependency_section 读取；它们只读，不得被任何提案修改。\n\n{}",
+        dependency_manifest_block(&dependency_manifest)
+    );
+    let attachments = format!(
+        "# 当前项目附件清单\n以下附件只读，正文通过 read_attachment 按 fileId 读取。“selected” 为 true 的文件是本轮用户明确选择的资料。\n\n{}",
+        attachment_manifest_block(&files, &selected)
+    );
+    let node_label = scope.node_id.as_str().to_string();
+    let node_markdown = format!(
+        "# 当前可写节点\n{node_label} (revision {})\n\n# 当前 Markdown\n{}",
+        node.revision, node.markdown
+    );
+    let transcript = full_transcript(messages, "");
+
+    let prompt = format!(
+        "{}\n\n# 本节点规则\n{}\n\n{}\n\n{}\n\n{}\n\n# 会话\n{}",
+        protocol, rules, dependency_nodes, attachments, node_markdown, transcript,
+    );
+    let breakdown = ContextUsageBreakdown {
+        protocol_tokens: estimate_input_tokens(&protocol),
+        rules_tokens: estimate_input_tokens(&rules),
+        dependency_node_tokens: estimate_input_tokens(&dependency_nodes),
+        node_markdown_tokens: estimate_input_tokens(&node_markdown),
+        conversation_tokens: estimate_input_tokens(&transcript),
+        attachment_tokens: estimate_input_tokens(&attachments),
+    };
+    let prepared = PreparedPrompt {
+        prompt,
+        breakdown,
+    };
+    let snapshot = prepared.snapshot(
+        context_window_tokens,
+        aggregate_message_usage(messages),
+        calculated_at,
+    );
+    Ok(PreparedHarnessContext {
+        prompt: prepared.prompt,
+        breakdown: prepared.breakdown,
+        snapshot,
+        tool_definitions,
+    })
 }
 
 #[cfg(test)]
@@ -857,5 +1041,192 @@ mod tests {
                 .prompt
                 .contains("# 本次重新生成的最新用户要求（最高内容优先级）\n先补充登录流程")
         );
+    }
+
+    #[test]
+    fn harness_initial_context_contains_protocol_manifests_and_no_bodies() {
+        use sion_core::{HarnessLimits, HarnessToolDefinition};
+        use sion_storage::{CreateProjectInput, SaveNodeResult};
+        use std::path::PathBuf;
+
+        let root =
+            std::env::temp_dir().join(format!("sion-harness-context-{}", uuid::Uuid::new_v4()));
+        let projects = root.join("projects");
+        sion_storage::ProjectStore::create_in(
+            &projects,
+            CreateProjectInput {
+                id: "project-1".into(),
+                name: "项目".into(),
+                customer_name: "客户".into(),
+                author_name: "作者".into(),
+                now: "now".into(),
+            },
+        )
+        .unwrap();
+        let store = sion_storage::ProjectStore::at(projects.join("project-1"));
+        assert!(matches!(
+            store
+                .save_node_if_revision(
+                    WorkflowNodeId::BasicInfo,
+                    0,
+                    "# 项目基本信息\n\n## 基础信息表\n依赖正文哨兵".into(),
+                    sion_core::NodeStatus::Confirmed,
+                    "now".into(),
+                )
+                .unwrap(),
+            SaveNodeResult::Saved(_)
+        ));
+        assert!(matches!(
+            store
+                .save_node_if_revision(
+                    WorkflowNodeId::Goals,
+                    0,
+                    "# 需求背景与建设目标\n\n## 需求背景\n目标正文哨兵".into(),
+                    sion_core::NodeStatus::Generated,
+                    "now".into(),
+                )
+                .unwrap(),
+            SaveNodeResult::Saved(_)
+        ));
+        let session = store
+            .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+            .unwrap();
+        let scope = crate::harness_scope::freeze_harness_scope(
+            &store,
+            projects.join("project-1"),
+            "project-1".into(),
+            WorkflowNodeId::Goals,
+            &session.id,
+            "请查看附件",
+            sion_core::ChatModelSelection {
+                provider_id: "provider-1".into(),
+                model: "model-1".into(),
+                reasoning_effort: sion_core::ReasoningEffort::Medium,
+            },
+        )
+        .unwrap();
+        let tools = vec![HarnessToolDefinition {
+            name: "read_attachment".into(),
+            description: "读取附件".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "fileId": { "type": "string" } },
+                "required": ["fileId"],
+                "additionalProperties": false
+            }),
+        }];
+        let messages = vec![ChatMessage {
+            id: "m-1".into(),
+            role: ChatRole::User,
+            content: "请查看附件".into(),
+            reasoning_content: None,
+            sources: None,
+            created_at: "now".into(),
+            turn_id: None,
+            reasoning_duration_ms: None,
+            usage: None,
+            attachments: Vec::new(),
+            model_execution: None,
+        }];
+        let prepared = build_harness_initial_context(
+            &store,
+            &scope,
+            &messages,
+            &[],
+            tools,
+            HarnessLimits::default(),
+            128_000,
+            "now",
+        )
+        .unwrap();
+
+        assert!(prepared.prompt.contains("Agent Harness"));
+        assert!(prepared.prompt.contains("read_attachment"));
+        assert!(prepared.prompt.contains("# 只读依赖节点交付稿清单"));
+        assert!(prepared.prompt.contains("basic-info"));
+        assert!(prepared.prompt.contains("基础信息表"));
+        assert!(prepared.prompt.contains("目标正文哨兵"));
+        assert!(prepared.prompt.contains("请查看附件"));
+        // Bodies are excluded from the initial context.
+        assert!(!prepared.prompt.contains("依赖正文哨兵"));
+        assert!(prepared.snapshot.breakdown.protocol_tokens > 0);
+        assert!(prepared.snapshot.breakdown.dependency_node_tokens > 0);
+        assert_eq!(prepared.tool_definitions.len(), 1);
+        assert_eq!(
+            prepared.snapshot.estimated_input_tokens,
+            estimate_input_tokens(&prepared.prompt)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn harness_initial_context_marks_selected_attachments_without_bodies() {
+        use sion_core::HarnessLimits;
+        use sion_storage::{CreateProjectInput, SaveNodeResult};
+
+        let root =
+            std::env::temp_dir().join(format!("sion-harness-context-{}", uuid::Uuid::new_v4()));
+        let projects = root.join("projects");
+        sion_storage::ProjectStore::create_in(
+            &projects,
+            CreateProjectInput {
+                id: "project-1".into(),
+                name: "项目".into(),
+                customer_name: "客户".into(),
+                author_name: "作者".into(),
+                now: "now".into(),
+            },
+        )
+        .unwrap();
+        let store = sion_storage::ProjectStore::at(projects.join("project-1"));
+        assert!(matches!(
+            store
+                .save_node_if_revision(
+                    WorkflowNodeId::Goals,
+                    0,
+                    "# 需求背景与建设目标\n\n## 需求背景\n正文".into(),
+                    sion_core::NodeStatus::Generated,
+                    "now".into(),
+                )
+                .unwrap(),
+            SaveNodeResult::Saved(_)
+        ));
+        let source = root.join("brief.md");
+        std::fs::write(&source, "附件正文哨兵").unwrap();
+        let imported = store.import_file(&source, "now".into()).unwrap();
+        let session = store
+            .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+            .unwrap();
+        let scope = crate::harness_scope::freeze_harness_scope(
+            &store,
+            projects.join("project-1"),
+            "project-1".into(),
+            WorkflowNodeId::Goals,
+            &session.id,
+            "请查看附件",
+            sion_core::ChatModelSelection {
+                provider_id: "provider-1".into(),
+                model: "model-1".into(),
+                reasoning_effort: sion_core::ReasoningEffort::Medium,
+            },
+        )
+        .unwrap();
+        let prepared = build_harness_initial_context(
+            &store,
+            &scope,
+            &[],
+            &[imported.id.clone()],
+            Vec::new(),
+            HarnessLimits::default(),
+            128_000,
+            "now",
+        )
+        .unwrap();
+        assert!(prepared.prompt.contains(&imported.id));
+        assert!(prepared.prompt.contains(&imported.original_name));
+        assert!(prepared.prompt.contains("selected=\"true\""));
+        // Attachment bodies never enter the initial context.
+        assert!(!prepared.prompt.contains("附件正文哨兵"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

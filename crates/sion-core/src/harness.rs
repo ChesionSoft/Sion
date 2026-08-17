@@ -304,6 +304,24 @@ pub fn authorize_latest_user_message(message: &str) -> TurnMessageAuthorization 
     }
 }
 
+/// Stable SHA-256 digest of the exact current Agent-override state for the
+/// current node. `None` (no override) has a distinct, stable representation so
+/// a rule proposal can detect concurrent override changes with a digest CAS.
+pub fn agent_override_digest(custom_markdown: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    match custom_markdown {
+        Some(markdown) => {
+            hasher.update(b"sion-agent-override:");
+            hasher.update(markdown.trim());
+        }
+        None => {
+            hasher.update(b"sion-agent-override:absent");
+        }
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +333,17 @@ mod tests {
         assert_eq!(limits.max_tool_calls, 12);
         assert_eq!(limits.max_validation_retries, 2);
         assert!(limits.max_wall_clock_ms > 0);
+    }
+
+    #[test]
+    fn agent_override_digest_is_stable_and_distinct_for_no_override() {
+        let absent = agent_override_digest(None);
+        let present = agent_override_digest(Some("只使用确认的目标。"));
+        assert_eq!(absent, agent_override_digest(None));
+        assert_eq!(present, agent_override_digest(Some("只使用确认的目标。")));
+        assert_ne!(absent, present);
+        assert_eq!(absent.len(), 64);
+        assert!(absent.chars().all(|character| character.is_ascii_hexdigit()));
     }
 
     #[test]
