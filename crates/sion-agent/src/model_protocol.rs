@@ -132,6 +132,26 @@ impl ModelRequest {
     pub fn has_tools(&self) -> bool {
         !self.tools.is_empty()
     }
+
+    /// Convenience constructor for the Harness loop: a model request with
+    /// ordered messages, native tools, and tool-choice mode.
+    pub fn harness(
+        model: String,
+        messages: Vec<ProtocolMessage>,
+        tools: Vec<HarnessToolDefinition>,
+        tool_choice: ToolChoice,
+        reasoning_effort: ReasoningEffort,
+        request_public_reasoning_summary: bool,
+    ) -> Self {
+        Self {
+            model,
+            messages,
+            tools,
+            tool_choice,
+            reasoning_effort,
+            request_public_reasoning_summary,
+        }
+    }
 }
 
 /// Serializes the request body exactly as the transport sends it. This is the

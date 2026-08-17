@@ -10,6 +10,7 @@ use sion_core::{ConversationContextSnapshot, ReasoningEffort, TurnTokenUsage, Wo
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod harness;
 pub mod model_protocol;
 pub mod model_stream;
 
