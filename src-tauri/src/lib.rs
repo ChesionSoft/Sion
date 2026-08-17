@@ -34,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 
 mod conversation_runtime;
 mod dependency_context;
+mod harness_proposals;
 mod harness_scope;
 mod harness_search;
 mod harness_tools;

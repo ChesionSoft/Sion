@@ -92,6 +92,18 @@ pub enum SaveNodeResult {
     Conflict { latest: WorkflowNode },
 }
 
+/// Result of a digest-CAS Agent-override save used by Harness proposal
+/// resolution. `Saved(None)` means the override was cleared back to bundled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SaveAgentOverrideResult {
+    Saved(Option<String>),
+    Conflict {
+        latest_digest: String,
+        latest_markdown: Option<String>,
+    },
+}
+
 /// A bounded, metadata-preserving preview of a project attachment's extracted
 /// text. `text` is `None` when the file had no extractor; `truncated` is true
 /// when the preview was cut short of the full extracted text.
@@ -849,6 +861,28 @@ impl ProjectStore {
         }
         atomic_write_bytes(&path, markdown.as_bytes())?;
         Ok(Some(markdown))
+    }
+
+    /// CAS save for Harness Agent-rule proposal resolution. Persists the
+    /// override only when the exact current override state still has
+    /// `expected_digest`; otherwise returns `Conflict` with the latest state so
+    /// the proposal can be marked stale and never force-applied.
+    pub fn save_agent_override_if_digest(
+        &self,
+        node_id: WorkflowNodeId,
+        expected_digest: &str,
+        markdown: String,
+    ) -> Result<SaveAgentOverrideResult> {
+        let current = self.agent_override(node_id)?;
+        let current_digest = sion_core::agent_override_digest(current.as_deref());
+        if current_digest != expected_digest {
+            return Ok(SaveAgentOverrideResult::Conflict {
+                latest_digest: current_digest,
+                latest_markdown: current,
+            });
+        }
+        let saved = self.save_agent_override(node_id, markdown)?;
+        Ok(SaveAgentOverrideResult::Saved(saved))
     }
 
     /// Persists diagnostic-only run state. Token counts and public summaries may
@@ -2266,6 +2300,60 @@ mod tests {
                 .unwrap(),
             None
         );
+        assert_eq!(store.agent_override(WorkflowNodeId::Goals).unwrap(), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_override_digest_cas_saves_or_conflicts_without_force_apply() {
+        let root = temp_project();
+        fs::create_dir_all(&root).unwrap();
+        ProjectStore::create_in(&root, input()).unwrap();
+        let store = ProjectStore::at(root.join("project-1"));
+
+        // Absent-override digest CAS saves a new override.
+        let absent = sion_core::agent_override_digest(None);
+        assert!(matches!(
+            store
+                .save_agent_override_if_digest(
+                    WorkflowNodeId::Goals,
+                    &absent,
+                    "只使用确认的目标。".into(),
+                )
+                .unwrap(),
+            SaveAgentOverrideResult::Saved(Some(_))
+        ));
+
+        // A stale digest never overwrites newer content.
+        let stale = sion_core::agent_override_digest(None);
+        assert!(matches!(
+            store.save_agent_override_if_digest(
+                WorkflowNodeId::Goals,
+                &stale,
+                "越权新内容".into(),
+            ),
+            Ok(SaveAgentOverrideResult::Conflict {
+                latest_digest,
+                latest_markdown: Some(_)
+            }) if latest_digest == sion_core::agent_override_digest(Some("只使用确认的目标。"))
+        ));
+        assert_eq!(
+            store.agent_override(WorkflowNodeId::Goals).unwrap(),
+            Some("只使用确认的目标。".to_string())
+        );
+
+        // The correct digest clears the override back to bundled.
+        let current = sion_core::agent_override_digest(Some("只使用确认的目标。"));
+        assert!(matches!(
+            store
+                .save_agent_override_if_digest(
+                    WorkflowNodeId::Goals,
+                    &current,
+                    " \n ".into(),
+                )
+                .unwrap(),
+            SaveAgentOverrideResult::Saved(None)
+        ));
         assert_eq!(store.agent_override(WorkflowNodeId::Goals).unwrap(), None);
         let _ = fs::remove_dir_all(root);
     }
