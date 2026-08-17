@@ -388,15 +388,19 @@ fn recover_interrupted_conversation_runs(store: &ProjectStore, now: &str) {
     }
 }
 
-fn delivery_outcome_can_retry(outcome: &DeliveryOutcome) -> bool {
+fn delivery_outcome_can_retry(outcome: Option<&DeliveryOutcome>) -> bool {
     matches!(
         outcome,
-        DeliveryOutcome::AwaitingManualDraftResolution { .. }
-            | DeliveryOutcome::Conflict { .. }
-            | DeliveryOutcome::Failed {
-                stage: DeliveryStage::Decision | DeliveryStage::Validation | DeliveryStage::Save,
-                ..
-            }
+        Some(
+            DeliveryOutcome::AwaitingManualDraftResolution { .. }
+                | DeliveryOutcome::Conflict { .. }
+                | DeliveryOutcome::Failed {
+                    stage: DeliveryStage::Decision
+                        | DeliveryStage::Validation
+                        | DeliveryStage::Save,
+                    ..
+                }
+        )
     )
 }
 
@@ -926,8 +930,9 @@ fn persist_prepared_send(
             Vec::new()
         },
         reasoning_summary: None,
-        delivery_outcome: DeliveryOutcome::Pending,
+        delivery_outcome: Some(DeliveryOutcome::Pending),
         delivery_inspection: None,
+        harness: None,
         started_at: now.clone(),
         finished_at: None,
     };
@@ -1290,7 +1295,7 @@ fn conversation_turn_retry_delivery(
         .into_iter()
         .find(|turn| turn.id == request.turn_id)
         .ok_or_else(|| ApiError::CheckFailed("会话轮次未找到".to_string()))?;
-    if !delivery_outcome_can_retry(&turn.delivery_outcome) {
+    if !delivery_outcome_can_retry(turn.delivery_outcome.as_ref()) {
         return Err(ApiError::CheckFailed(
             "该轮次的交付结果不可重新判断".to_string(),
         ));
@@ -2912,8 +2917,9 @@ fn plan_conversation_completion(
             status: TurnStatus::Running,
             activities: Vec::new(),
             reasoning_summary: None,
-            delivery_outcome: DeliveryOutcome::Pending,
+            delivery_outcome: Some(DeliveryOutcome::Pending),
             delivery_inspection: None,
+            harness: None,
             started_at: finished_at.to_string(),
             finished_at: None,
         });
@@ -2943,7 +2949,7 @@ fn plan_conversation_completion(
         status: TurnStatus::Running,
         activities: turn_runtime::mid_delivery_activities(finished_at),
         reasoning_summary: reasoning_summary.clone(),
-        delivery_outcome: DeliveryOutcome::Pending,
+        delivery_outcome: Some(DeliveryOutcome::Pending),
         delivery_inspection: None,
         assistant_message_id: Some(assistant_id.clone()),
         finished_at: None,
@@ -2963,7 +2969,7 @@ fn plan_conversation_completion(
             status: TurnStatus::Failed,
             activities: turn_runtime::completed_activities(&outcome, finished_at),
             reasoning_summary: None,
-            delivery_outcome: outcome,
+            delivery_outcome: Some(outcome),
             delivery_inspection: None,
             assistant_message_id: Some(assistant_id),
             finished_at: Some(finished_at.to_string()),
@@ -3000,7 +3006,7 @@ fn plan_conversation_completion(
             status: TurnStatus::Failed,
             activities: turn_runtime::completed_activities(&outcome, finished_at),
             reasoning_summary: reasoning_summary.clone(),
-            delivery_outcome: outcome,
+            delivery_outcome: Some(outcome),
             delivery_inspection: None,
             assistant_message_id: Some(assistant_id.clone()),
             finished_at: Some(finished_at.to_string()),
@@ -3106,7 +3112,7 @@ fn plan_conversation_completion(
                     turn_runtime::queued_delivery_activities(finished_at)
                 },
         reasoning_summary: reasoning_summary.clone(),
-                delivery_outcome: DeliveryOutcome::Pending,
+                delivery_outcome: Some(DeliveryOutcome::Pending),
                 delivery_inspection: None,
         assistant_message_id: Some(assistant_id.clone()),
                 finished_at: None,
@@ -3168,8 +3174,9 @@ fn complete_agent_run(
             status: TurnStatus::Running,
             activities: Vec::new(),
             reasoning_summary: None,
-            delivery_outcome: DeliveryOutcome::Pending,
+            delivery_outcome: Some(DeliveryOutcome::Pending),
             delivery_inspection: None,
+            harness: None,
             started_at: finished_at.clone(),
             finished_at: None,
         });
@@ -3230,7 +3237,7 @@ fn complete_agent_run(
                     status: TurnStatus::Completed,
                     activities: turn_runtime::completed_activities(&delivery_outcome, &finished_at),
                     reasoning_summary: base_turn.reasoning_summary.clone(),
-                    delivery_outcome,
+                    delivery_outcome: Some(delivery_outcome),
                     delivery_inspection: Some(inspection),
                     assistant_message_id: base_turn.assistant_message_id.clone(),
                     finished_at: Some(finished_at.clone()),
@@ -3272,7 +3279,7 @@ fn complete_agent_run(
                         &DeliveryOutcome::Cancelled,
                         &finished_at,
                     ),
-                    delivery_outcome: DeliveryOutcome::Cancelled,
+                    delivery_outcome: Some(DeliveryOutcome::Cancelled),
                     delivery_inspection: inspection,
                     assistant_message_id: base_turn.assistant_message_id.clone(),
                     finished_at: Some(finished_at.clone()),
@@ -3319,7 +3326,7 @@ fn complete_agent_run(
                 let turn = ConversationTurn {
                     status: TurnStatus::Failed,
                     activities: turn_runtime::completed_activities(&delivery_outcome, &finished_at),
-                    delivery_outcome: delivery_outcome.clone(),
+                    delivery_outcome: Some(delivery_outcome.clone()),
                     delivery_inspection: inspection,
                     assistant_message_id: is_decision
                         .then(|| base_turn.assistant_message_id.clone())
@@ -4785,7 +4792,7 @@ mod tests {
         assert!(completion.decision_run.is_none());
         assert!(matches!(
             completion.turn.delivery_outcome,
-            DeliveryOutcome::Failed { stage: DeliveryStage::Decision, .. }
+            Some(DeliveryOutcome::Failed { stage: DeliveryStage::Decision, .. })
         ));
         assert_eq!(fixture.store.node(WorkflowNodeId::Goals).unwrap(), saved);
         assert!(fixture

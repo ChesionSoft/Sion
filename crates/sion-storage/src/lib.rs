@@ -1807,8 +1807,9 @@ mod tests {
             status,
             activities: Vec::new(),
             reasoning_summary: None,
-            delivery_outcome: sion_core::DeliveryOutcome::Pending,
+            delivery_outcome: Some(sion_core::DeliveryOutcome::Pending),
             delivery_inspection: None,
+            harness: None,
             started_at: "2026-07-18T00:00:00Z".into(),
             finished_at: None,
         }
@@ -1921,7 +1922,7 @@ mod tests {
         let mut completed = queued;
         completed.status = TurnStatus::Completed;
         completed.assistant_message_id = Some("assistant-turn-1".into());
-        completed.delivery_outcome = sion_core::DeliveryOutcome::Unchanged;
+        completed.delivery_outcome = Some(sion_core::DeliveryOutcome::Unchanged);
         completed.finished_at = Some("finished".into());
         store
             .complete_turn(

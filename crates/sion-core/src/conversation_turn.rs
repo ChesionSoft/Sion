@@ -1,6 +1,6 @@
 //! Durable conversation turn, activity, and delivery-outcome wire types.
 
-use crate::WorkflowNodeId;
+use crate::{HarnessTurnState, WorkflowNodeId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +14,10 @@ pub enum TurnStatus {
     Interrupted,
 }
 
+/// Fixed kinds used by the legacy pipeline plus the dynamic kinds a Harness
+/// turn produces. The four original kinds keep their exact wire names so
+/// historical turns deserialize unchanged; unknown future kinds fall back to
+/// `Other` instead of failing the whole document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnActivityKind {
@@ -21,6 +25,20 @@ pub enum TurnActivityKind {
     DeliveryCheck,
     DeliveryValidate,
     DeliverySave,
+    /// A safe read of an approved project document (current node, attachment,
+    /// or dependency section) requested by the model.
+    ToolRead,
+    /// An in-context literal/token search over approved project content.
+    Search,
+    /// A delivery or Agent-rule proposal being prepared or revised.
+    Proposal,
+    /// Deterministic validation of a proposal candidate.
+    Validation,
+    /// A valid proposal is ready for user review.
+    ProposalReady,
+    /// Fallback for unknown future kinds so historical documents stay readable.
+    #[serde(other)]
+    Other,
 }
 
 impl TurnActivityKind {
@@ -30,6 +48,12 @@ impl TurnActivityKind {
             Self::DeliveryCheck => "delivery_check",
             Self::DeliveryValidate => "delivery_validate",
             Self::DeliverySave => "delivery_save",
+            Self::ToolRead => "tool_read",
+            Self::Search => "search",
+            Self::Proposal => "proposal",
+            Self::Validation => "validation",
+            Self::ProposalReady => "proposal_ready",
+            Self::Other => "other",
         }
     }
 }
@@ -138,9 +162,17 @@ pub struct ConversationTurn {
     pub status: TurnStatus,
     pub activities: Vec<TurnActivity>,
     pub reasoning_summary: Option<String>,
-    pub delivery_outcome: DeliveryOutcome,
+    /// Legacy fixed-pipeline delivery outcome. Harness turns omit this field
+    /// and carry `harness` instead; `#[serde(default)]` keeps historical JSON
+    /// with a `deliveryOutcome` field deserializing unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_outcome: Option<DeliveryOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_inspection: Option<DeliveryDecisionInspection>,
+    /// Explicit Harness marker/state for new node conversations. Legacy turns
+    /// leave this `None` so no bulk rewrite is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessTurnState>,
     pub started_at: String,
     pub finished_at: Option<String>,
 }
@@ -166,12 +198,13 @@ mod tests {
                 "2026-07-18T00:00:00Z",
             )],
             reasoning_summary: Some("核对了当前章节与用户新增约束。".into()),
-            delivery_outcome: DeliveryOutcome::PatchApplied {
+            delivery_outcome: Some(DeliveryOutcome::PatchApplied {
                 previous_revision: 7,
                 revision: 8,
                 section_titles: vec!["建设目标".into()],
-            },
+            }),
             delivery_inspection: None,
+            harness: None,
             started_at: "2026-07-18T00:00:00Z".into(),
             finished_at: Some("2026-07-18T00:00:01Z".into()),
         };
@@ -200,16 +233,17 @@ mod tests {
             status: TurnStatus::Completed,
             activities: Vec::new(),
             reasoning_summary: None,
-            delivery_outcome: DeliveryOutcome::PatchApplied {
+            delivery_outcome: Some(DeliveryOutcome::PatchApplied {
                 previous_revision: 7,
                 revision: 8,
                 section_titles: vec!["建设目标".into()],
-            },
+            }),
             delivery_inspection: Some(DeliveryDecisionInspection {
                 raw_response: raw.into(),
                 base_markdown: base.into(),
                 proposed_markdown: Some(proposed.into()),
             }),
+            harness: None,
             started_at: "2026-07-18T00:00:00Z".into(),
             finished_at: Some("2026-07-18T00:00:01Z".into()),
         };
@@ -241,8 +275,86 @@ mod tests {
             "finishedAt": "2026-07-18T00:00:01Z"
         });
         let turn: ConversationTurn = serde_json::from_value(legacy).unwrap();
+        assert_eq!(turn.delivery_outcome, Some(DeliveryOutcome::Unchanged));
         assert_eq!(turn.delivery_inspection, None);
+        assert_eq!(turn.harness, None);
         let value = serde_json::to_value(&turn).unwrap();
         assert!(value.get("deliveryInspection").is_none());
+        assert!(value.get("harness").is_none());
+    }
+
+    #[test]
+    fn harness_turn_omits_legacy_delivery_fields_and_round_trips_its_state() {
+        let harness = crate::HarnessTurnState {
+            proposals: vec![crate::HarnessProposal {
+                id: "proposal-1".into(),
+                kind: crate::HarnessProposalKind::Delivery,
+                status: crate::HarnessProposalStatus::Ready,
+                project_id: "project-1".into(),
+                node_id: WorkflowNodeId::Goals,
+                turn_id: "turn-1".into(),
+                base_revision: Some(3),
+                base_rule_digest: None,
+                base_content: "旧".into(),
+                proposed_content: "新".into(),
+                reason: "用户要求补充".into(),
+                validation_summary: Some("校验通过".into()),
+                created_at: "now".into(),
+                resolved_at: None,
+            }],
+            diagnostics: Some(crate::HarnessDiagnostics {
+                model_steps: 1,
+                tool_calls: 1,
+                validation_retries: 0,
+                limit_reached: None,
+                tool_traces: Vec::new(),
+            }),
+        };
+        let turn = ConversationTurn {
+            id: "turn-1".into(),
+            project_id: "project-1".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            user_message_id: "user-1".into(),
+            assistant_message_id: Some("assistant-1".into()),
+            status: TurnStatus::Completed,
+            activities: Vec::new(),
+            reasoning_summary: None,
+            delivery_outcome: None,
+            delivery_inspection: None,
+            harness: Some(harness),
+            started_at: "2026-07-18T00:00:00Z".into(),
+            finished_at: Some("2026-07-18T00:00:01Z".into()),
+        };
+        let value = serde_json::to_value(&turn).unwrap();
+        assert!(value.get("deliveryOutcome").is_none());
+        assert!(value.get("deliveryInspection").is_none());
+        assert_eq!(value["harness"]["proposals"][0]["kind"], "delivery");
+        assert_eq!(value["harness"]["diagnostics"]["modelSteps"], 1);
+        assert_eq!(
+            serde_json::from_value::<ConversationTurn>(value).unwrap(),
+            turn
+        );
+    }
+
+    #[test]
+    fn a_turn_without_harness_or_delivery_fields_still_loads() {
+        let minimal = serde_json::json!({
+            "id": "turn-1",
+            "projectId": "project-1",
+            "nodeId": "goals",
+            "sessionId": "session-1",
+            "runId": "run-1",
+            "userMessageId": "user-1",
+            "status": "queued",
+            "activities": [],
+            "reasoningSummary": null,
+            "startedAt": "2026-07-18T00:00:00Z"
+        });
+        let turn: ConversationTurn = serde_json::from_value(minimal).unwrap();
+        assert_eq!(turn.delivery_outcome, None);
+        assert_eq!(turn.harness, None);
+        assert_eq!(turn.finished_at, None);
     }
 }

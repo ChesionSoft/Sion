@@ -412,7 +412,7 @@ pub fn prepare_retry_turn(
     } else {
         Vec::new()
     };
-    turn.delivery_outcome = DeliveryOutcome::Pending;
+    turn.delivery_outcome = Some(DeliveryOutcome::Pending);
     turn.finished_at = None;
 }
 
@@ -425,7 +425,7 @@ pub fn mark_turn_running(turn: &mut sion_core::ConversationTurn, now: &str) {
 pub fn mark_turn_cancelled(turn: &mut sion_core::ConversationTurn, now: &str) {
     turn.status = sion_core::TurnStatus::Cancelled;
     turn.activities = completed_activities(&DeliveryOutcome::Cancelled, now);
-    turn.delivery_outcome = DeliveryOutcome::Cancelled;
+    turn.delivery_outcome = Some(DeliveryOutcome::Cancelled);
     turn.finished_at = Some(now.to_string());
 }
 
@@ -436,7 +436,7 @@ pub fn mark_turn_start_failed(turn: &mut sion_core::ConversationTurn, now: &str)
     };
     turn.status = sion_core::TurnStatus::Failed;
     turn.activities = completed_activities(&outcome, now);
-    turn.delivery_outcome = outcome;
+    turn.delivery_outcome = Some(outcome);
     turn.finished_at = Some(now.to_string());
 }
 
@@ -656,10 +656,11 @@ mod tests {
             status: sion_core::TurnStatus::Completed,
             activities: Vec::new(),
             reasoning_summary: None,
-            delivery_outcome: DeliveryOutcome::AwaitingManualDraftResolution {
+            delivery_outcome: Some(DeliveryOutcome::AwaitingManualDraftResolution {
                 expected_revision: 7,
-            },
+            }),
             delivery_inspection: None,
+            harness: None,
             started_at: "started".into(),
             finished_at: Some("finished".into()),
         };
@@ -671,7 +672,10 @@ mod tests {
         );
         assert_eq!(original.run_id, "run-new");
         assert_eq!(original.status, sion_core::TurnStatus::Running);
-        assert_eq!(original.delivery_outcome, DeliveryOutcome::Pending);
+        assert_eq!(
+            original.delivery_outcome,
+            Some(DeliveryOutcome::Pending)
+        );
         assert_eq!(
             original.activities[0].status,
             sion_core::TurnActivityStatus::Running
@@ -695,8 +699,9 @@ mod tests {
             status: sion_core::TurnStatus::Queued,
             activities: Vec::new(),
             reasoning_summary: None,
-            delivery_outcome: DeliveryOutcome::Pending,
+            delivery_outcome: Some(DeliveryOutcome::Pending),
             delivery_inspection: None,
+            harness: None,
             started_at: "started".into(),
             finished_at: None,
         };
@@ -708,7 +713,10 @@ mod tests {
         );
         mark_turn_cancelled(&mut turn, "cancelled");
         assert_eq!(turn.status, sion_core::TurnStatus::Cancelled);
-        assert_eq!(turn.delivery_outcome, DeliveryOutcome::Cancelled);
+        assert_eq!(
+            turn.delivery_outcome,
+            Some(DeliveryOutcome::Cancelled)
+        );
         assert_eq!(turn.assistant_message_id.as_deref(), Some("assistant-1"));
         assert_eq!(turn.finished_at.as_deref(), Some("cancelled"));
         mark_turn_start_failed(&mut turn, "failed");

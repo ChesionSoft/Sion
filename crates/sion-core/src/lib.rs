@@ -9,10 +9,12 @@ mod conversation;
 mod conversation_telemetry;
 mod conversation_turn;
 mod export;
+mod harness;
 pub use conversation::*;
 pub use conversation_telemetry::*;
 pub use conversation_turn::*;
 pub use export::*;
+pub use harness::*;
 
 pub const PROJECT_SCHEMA_VERSION: u32 = 1;
 

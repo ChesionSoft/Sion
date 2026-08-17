@@ -37,6 +37,9 @@ pub enum AgentRunKind {
     DeliveryDecision,
     DeliveryRetry,
     DeliveryRegeneration,
+    /// Multi-step native-tool-calling node conversation run. Replaces new node
+    /// chats' fixed `Conversation -> DeliveryDecision` handoff.
+    Harness,
     /// Generate or regenerate the export blueprint.
     ExportBlueprint,
     /// Generate or regenerate the formal draft.
