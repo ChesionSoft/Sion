@@ -363,10 +363,12 @@ fn recover_interrupted_runs(app: &tauri::AppHandle) {
         let store = ProjectStore::at(&project.root_path);
         let _ = export_runtime::recover_interrupted_export_run(&store, &now);
         recover_interrupted_conversation_runs(&store, &now);
-        // Replay pending Harness checkpoint/proposal journals idempotently.
+        // Replay pending Harness checkpoint/proposal/execution journals
+        // idempotently and invalidate stale execution authorization.
         for node_id in WorkflowNodeId::ALL {
             let _ = store.recover_pending_harness(node_id);
             let _ = store.recover_pending_proposal_resolution(node_id);
+            let _ = store.recover_pending_execution(node_id, now.clone());
         }
     }
 }

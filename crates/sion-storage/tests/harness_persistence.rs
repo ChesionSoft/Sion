@@ -625,3 +625,30 @@ fn legacy_conversation_documents_load_unchanged() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn legacy_harness_turn_with_proposals_stays_read_compatible_with_execution_fields() {
+    // A historical Harness turn stores proposals + diagnostics only; the new
+    // execution plan/record fields must default to absent, and proposal
+    // resolution must keep working.
+    let (root, store) = fixture();
+    let session = store
+        .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+        .unwrap();
+    let path = sion_storage::harness_testing::conversation_path_for_test(
+        &store,
+        WorkflowNodeId::Goals,
+        &session.id,
+    );
+    let legacy_turn = format!(
+        r#"{{"messages":[{{"id":"m1","role":"user","content":"补充目标","createdAt":"now"}}],"turns":[{{"id":"old-harness","projectId":"project-1","nodeId":"goals","sessionId":"{}","runId":"run","userMessageId":"m1","status":"completed","activities":[],"reasoningSummary":null,"harness":{{"proposals":[],"diagnostics":{{"modelSteps":1,"toolCalls":0,"validationRetries":0}}}},"startedAt":"s","finishedAt":"f"}}]}}"#,
+        session.id
+    );
+    std::fs::write(&path, legacy_turn).unwrap();
+    let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
+    let harness = turns[0].harness.as_ref().unwrap();
+    assert!(harness.proposals.is_empty());
+    assert!(harness.execution_plan.is_none());
+    assert!(harness.execution.is_none());
+    std::fs::remove_dir_all(root).unwrap();
+}

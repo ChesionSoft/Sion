@@ -11,11 +11,11 @@ use serde::Serialize;
 use sion_agent::AgentRun;
 use sion_core::{
     ChatMessage, ChatModelSelection, ChatSession, ConversationTurn, CumulativeTokenUsage,
-    FileExtractionStatus, HarnessProposal, HarnessProposalKind, HarnessProposalStatus, NodeStatus,
-    PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind, ProjectManifest, TurnActivityStatus,
-    TurnStatus, WorkflowNode, WorkflowNodeId, aggregate_message_usage, aggregate_usages,
-    agent_override_digest, default_nodes, validate_agent_rule_override,
-    validate_delivery_markdown,
+    FileExtractionStatus, HarnessExecutionPlan, HarnessExecutionWrite, HarnessPlanInvalidReason,
+    HarnessPlanStatus, HarnessProposal, HarnessProposalKind, HarnessProposalStatus, NodeStatus, PROJECT_SCHEMA_VERSION, ProjectFile,
+    ProjectFileKind, ProjectManifest, TurnActivityStatus, TurnStatus, WorkflowNode, WorkflowNodeId,
+    aggregate_message_usage, aggregate_usages, agent_override_digest, default_nodes,
+    validate_agent_rule_override, validate_delivery_markdown,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -56,6 +56,33 @@ pub mod harness_testing {
             expected_digest: String,
             proposed_markdown: String,
         },
+    }
+
+    #[derive(Debug, Clone, Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ExecutionWriteJournalForTest {
+        pub session_id: String,
+        pub turn_id: String,
+        pub plan_id: String,
+        pub expected_revision: u64,
+        pub proposed_markdown: String,
+        pub summary: String,
+        pub now: String,
+    }
+
+    pub fn write_execution_journal_for_test(
+        store: &ProjectStore,
+        node_id: WorkflowNodeId,
+        journal: &ExecutionWriteJournalForTest,
+    ) {
+        atomic_write_json(&store.execution_journal_path(node_id), journal).unwrap();
+    }
+
+    pub fn execution_journal_exists_for_test(
+        store: &ProjectStore,
+        node_id: WorkflowNodeId,
+    ) -> bool {
+        store.execution_journal_path(node_id).exists()
     }
 
     pub fn conversation_document_for_test(
@@ -109,8 +136,14 @@ pub enum StorageError {
     MessageCountOverflow,
     #[error("turn {turn_id} does not belong to session {session_id}")]
     TurnPathMismatch { turn_id: String, session_id: String },
+    #[error("current node delivery is unavailable")]
+    NodeUnavailable,
     #[error("harness proposal {0} is not available in the stored turn")]
     HarnessProposalUnavailable(String),
+    #[error("an execution plan is already active for this project/node/session")]
+    ExecutionPlanAlreadyActive,
+    #[error("execution plan cannot be attached to turn {0}")]
+    ExecutionPlanTurnUnavailable(String),
     #[error("file path has no usable filename: {0}")]
     InvalidFileName(PathBuf),
     #[error("project file {0} does not exist")]
@@ -206,6 +239,77 @@ pub enum RuleProposalApplyResult {
     },
     NotFound,
     NotReady,
+}
+
+/// Why a pending execution plan could not be consumed. The reason is public and
+/// safe; it never carries paths, secrets, or model content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionPlanUnavailableReason {
+    /// No pending plan with that ID exists in this session.
+    NotFound,
+    /// The plan is no longer pending (already consumed or invalidated).
+    NotPending,
+    /// The plan outlived its expiry window.
+    Expired,
+    /// The current node revision no longer matches the plan's base revision.
+    NodeChanged,
+    /// The confirmation does not immediately follow the plan's assistant message.
+    OrderingMismatch,
+    /// The plan belongs to a different project/node/session.
+    OwnershipMismatch,
+    /// The user reply is not a narrow affirmative confirmation.
+    NotAffirmative,
+}
+
+/// Result of atomically consuming a pending execution plan.
+#[derive(Debug, Clone)]
+pub enum ConsumeExecutionPlanResult {
+    /// The plan was consumed and the execution turn/run persisted.
+    Consumed {
+        run: Box<AgentRun>,
+        turn: Box<ConversationTurn>,
+        plan: Box<HarnessExecutionPlan>,
+    },
+    /// The plan could not be consumed; the caller must start a normal planning
+    /// turn and may explain the safe public reason.
+    Unavailable {
+        reason: ExecutionPlanUnavailableReason,
+    },
+}
+
+/// Outcome of one execution-write CAS save on the current node.
+#[derive(Debug, Clone)]
+pub enum ExecutionWriteOutcome {
+    /// The validated change was atomically saved at the new revision.
+    Saved {
+        node: WorkflowNode,
+        write: HarnessExecutionWrite,
+    },
+    /// CAS conflict: the node moved since the expected revision; nothing wrote.
+    Conflict {
+        expected_revision: u64,
+        actual_revision: u64,
+    },
+    /// Validation rejected the proposed Markdown; nothing wrote.
+    ValidationFailed {
+        public_error: String,
+    },
+}
+
+/// Write-ahead journal for one execution write. It records the intent
+/// (expected revision and proposed Markdown) before the CAS save so a crash
+/// between the node write and the conversation/turn update can be reconciled
+/// without replaying the tool or provider.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecutionWriteJournal {
+    session_id: String,
+    turn_id: String,
+    plan_id: String,
+    expected_revision: u64,
+    proposed_markdown: String,
+    summary: String,
+    now: String,
 }
 
 /// A bounded, metadata-preserving preview of a project attachment's extracted
@@ -1323,6 +1427,466 @@ impl ProjectStore {
         Ok(())
     }
 
+    /// Publishes a durable pending execution plan onto its completed planning
+    /// turn. Enforces exactly one active pending plan per project/node/session,
+    /// links the plan to the planning turn and its assistant message, and uses
+    /// the recoverable conversation append journal. Never touches the node.
+    pub fn publish_execution_plan(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        plan: HarnessExecutionPlan,
+        now: String,
+    ) -> Result<()> {
+        self.manifest()?;
+        self.recover_pending_harness(node_id)?;
+        self.require_session(node_id, session_id)?;
+        if plan.node_id != node_id || plan.session_id != session_id {
+            return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+        }
+        let project_id = self.manifest()?.id;
+        if plan.project_id != project_id {
+            return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+        }
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        let already_active = document.turns.iter().any(|turn| {
+            turn.harness
+                .as_ref()
+                .and_then(|harness| harness.execution_plan.as_ref())
+                .is_some_and(|plan| plan.status == HarnessPlanStatus::Pending)
+        });
+        if already_active {
+            return Err(StorageError::ExecutionPlanAlreadyActive);
+        }
+        let Some(turn) = document.turns.iter_mut().find(|turn| turn.id == plan.plan_turn_id)
+        else {
+            return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+        };
+        if turn.status != TurnStatus::Completed
+            || turn.assistant_message_id.as_deref() != Some(plan.plan_message_id.as_str())
+        {
+            return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+        }
+        let Some(harness) = turn.harness.as_mut() else {
+            return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+        };
+        if harness.execution_plan.is_some() {
+            return Err(StorageError::ExecutionPlanAlreadyActive);
+        }
+        harness.execution_plan = Some(plan);
+        self.persist_conversation(node_id, session_id, &document, now)?;
+        Ok(())
+    }
+
+    /// Atomically consumes a pending execution plan while beginning the
+    /// execution turn: verifies the reply is a narrow affirmative, ownership,
+    /// expiry, pending status, current node revision, and assistant/user
+    /// ordering under the same recovery discipline as `begin_harness_turn`;
+    /// only then marks the plan consumed, appends the user message, adds the
+    /// execution turn, and saves the execution run. A duplicate or racing
+    /// confirmation finds the plan already non-pending and returns a safe
+    /// `Unavailable` without appending a second run.
+    #[allow(clippy::too_many_arguments)]
+    pub fn consume_execution_plan(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        plan_id: &str,
+        reply: &str,
+        user_message: ChatMessage,
+        turn: ConversationTurn,
+        run: &AgentRun,
+        now: String,
+    ) -> Result<ConsumeExecutionPlanResult> {
+        self.manifest()?;
+        self.recover_pending_harness(node_id)?;
+        self.require_session(node_id, session_id)?;
+        if turn.node_id != node_id || turn.session_id != session_id {
+            return Err(StorageError::TurnPathMismatch {
+                turn_id: turn.id,
+                session_id: session_id.to_string(),
+            });
+        }
+        if !sion_core::is_execution_confirmation(reply) {
+            return self
+                .invalidate_execution_plan(
+                    node_id,
+                    session_id,
+                    plan_id,
+                    HarnessPlanInvalidReason::AmbiguousConfirmation,
+                    now.clone(),
+                )
+                .and(Ok(ConsumeExecutionPlanResult::Unavailable {
+                    reason: ExecutionPlanUnavailableReason::NotAffirmative,
+                }));
+        }
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        let Some(plan_index) = document.turns.iter().position(|turn| {
+            turn.harness
+                .as_ref()
+                .and_then(|harness| harness.execution_plan.as_ref())
+                .is_some_and(|plan| plan.id == plan_id)
+        }) else {
+            return Ok(ConsumeExecutionPlanResult::Unavailable {
+                reason: ExecutionPlanUnavailableReason::NotFound,
+            });
+        };
+        let plan = document.turns[plan_index]
+            .harness
+            .as_ref()
+            .and_then(|harness| harness.execution_plan.clone());
+        let Some(plan) = plan else {
+            return Ok(ConsumeExecutionPlanResult::Unavailable {
+                reason: ExecutionPlanUnavailableReason::NotFound,
+            });
+        };
+        let project_id = self.manifest()?.id;
+        if plan.project_id != project_id
+            || plan.node_id != node_id
+            || plan.session_id != session_id
+        {
+            return Ok(ConsumeExecutionPlanResult::Unavailable {
+                reason: ExecutionPlanUnavailableReason::OwnershipMismatch,
+            });
+        }
+        if plan.status != HarnessPlanStatus::Pending {
+            return Ok(ConsumeExecutionPlanResult::Unavailable {
+                reason: ExecutionPlanUnavailableReason::NotPending,
+            });
+        }
+        if now > plan.expires_at {
+            return self
+                .invalidate_execution_plan(node_id, session_id, &plan.id, HarnessPlanInvalidReason::Expired, now)
+                .and(Ok(ConsumeExecutionPlanResult::Unavailable {
+                    reason: ExecutionPlanUnavailableReason::Expired,
+                }));
+        }
+        let latest_revision = self
+            .node(node_id)
+            .map_err(|_| StorageError::NodeUnavailable)?;
+        if latest_revision.revision != plan.base_revision {
+            return self
+                .invalidate_execution_plan(node_id, session_id, &plan.id, HarnessPlanInvalidReason::NodeChanged, now)
+                .and(Ok(ConsumeExecutionPlanResult::Unavailable {
+                    reason: ExecutionPlanUnavailableReason::NodeChanged,
+                }));
+        }
+        // The confirmation must immediately follow the plan's assistant message.
+        let last_message_id = document.messages.last().map(|message| message.id.as_str());
+        if last_message_id != Some(plan.plan_message_id.as_str()) {
+            return self
+                .invalidate_execution_plan(node_id, session_id, &plan.id, HarnessPlanInvalidReason::AmbiguousConfirmation, now)
+                .and(Ok(ConsumeExecutionPlanResult::Unavailable {
+                    reason: ExecutionPlanUnavailableReason::OrderingMismatch,
+                }));
+        }
+        // All checks pass: consume atomically with the turn/run checkpoint.
+        let consumed_plan = HarnessExecutionPlan {
+            status: HarnessPlanStatus::Consumed,
+            consumed_at: Some(now.clone()),
+            invalidated_at: None,
+            invalid_reason: None,
+            ..plan
+        };
+        if let Some(plan) = document.turns[plan_index]
+            .harness
+            .as_mut()
+            .and_then(|harness| harness.execution_plan.as_mut())
+        {
+            *plan = consumed_plan.clone();
+        }
+        if !document
+            .messages
+            .iter()
+            .any(|message| message.id == user_message.id)
+        {
+            document.messages.push(user_message);
+        }
+        if !document.turns.iter().any(|existing| existing.id == turn.id) {
+            document.turns.push(turn);
+        }
+        self.persist_harness_checkpoint(node_id, session_id, &document, Some(run), now)?;
+        let execution_turn_id = document
+            .turns
+            .iter()
+            .find(|candidate| {
+                candidate.harness.as_ref().and_then(|harness| harness.execution.as_ref()).is_some()
+            })
+            .map(|candidate| candidate.id.clone())
+            .unwrap_or_else(|| {
+                document
+                    .turns
+                    .last()
+                    .expect("execution turn was just appended")
+                    .id
+                    .clone()
+            });
+        Ok(ConsumeExecutionPlanResult::Consumed {
+            run: Box::new(run.clone()),
+            turn: Box::new(
+                document
+                    .turns
+                    .into_iter()
+                    .find(|turn| turn.id == execution_turn_id)
+                    .expect("execution turn was just appended"),
+            ),
+            plan: Box::new(consumed_plan),
+        })
+    }
+
+    /// Marks a pending execution plan invalidated with a public reason. Only
+    /// the plan state changes; node content is never touched.
+    pub fn invalidate_execution_plan(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        plan_id: &str,
+        reason: HarnessPlanInvalidReason,
+        now: String,
+    ) -> Result<()> {
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        let Some(turn) = document.turns.iter_mut().find(|turn| {
+            turn.harness
+                .as_ref()
+                .and_then(|harness| harness.execution_plan.as_ref())
+                .is_some_and(|plan| plan.id == plan_id)
+        }) else {
+            return Ok(());
+        };
+        let Some(plan) = turn
+            .harness
+            .as_mut()
+            .and_then(|harness| harness.execution_plan.as_mut())
+        else {
+            return Ok(());
+        };
+        if plan.status == HarnessPlanStatus::Pending {
+            plan.status = HarnessPlanStatus::Invalidated;
+            plan.invalidated_at = Some(now.clone());
+            plan.invalid_reason = Some(reason);
+            self.save_turn(node_id, session_id, turn.clone())?;
+        }
+        Ok(())
+    }
+
+    /// Applies one validated current-node execution write through the
+    /// execution-write journal and revision CAS. Records intent before the
+    /// save, reconciles a node already saved after a crash, and appends a
+    /// durable public audit summary for completed writes. A CAS conflict,
+    /// cancellation, or validation failure writes nothing and never overwrites
+    /// the latest document.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_execution_write(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        plan_id: &str,
+        expected_revision: u64,
+        proposed_markdown: String,
+        summary: String,
+        now: String,
+    ) -> Result<ExecutionWriteOutcome> {
+        self.manifest()?;
+        self.recover_pending_execution_write(node_id)?;
+        self.require_session(node_id, session_id)?;
+        let journal = ExecutionWriteJournal {
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            plan_id: plan_id.to_string(),
+            expected_revision,
+            proposed_markdown: proposed_markdown.clone(),
+            summary: summary.clone(),
+            now: now.clone(),
+        };
+        atomic_write_json(&self.execution_journal_path(node_id), &journal)?;
+        let result = self.apply_execution_write_inner(
+            node_id,
+            session_id,
+            turn_id,
+            plan_id,
+            expected_revision,
+            &proposed_markdown,
+            &summary,
+            &now,
+        );
+        let _ = fs::remove_file(self.execution_journal_path(node_id));
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_execution_write_inner(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        plan_id: &str,
+        expected_revision: u64,
+        proposed_markdown: &str,
+        summary: &str,
+        now: &str,
+    ) -> Result<ExecutionWriteOutcome> {
+        let latest_node = self.node(node_id)?;
+        if latest_node.revision == expected_revision.saturating_add(1)
+            && latest_node.markdown == proposed_markdown
+        {
+            // The node was already saved before the conversation update.
+            let write = HarnessExecutionWrite {
+                revision: latest_node.revision,
+                summary: summary.to_string(),
+                saved_at: now.to_string(),
+            };
+            self.record_execution_write(node_id, session_id, turn_id, plan_id, &write)?;
+            return Ok(ExecutionWriteOutcome::Saved {
+                node: latest_node,
+                write,
+            });
+        }
+        if latest_node.revision != expected_revision {
+            return Ok(ExecutionWriteOutcome::Conflict {
+                expected_revision,
+                actual_revision: latest_node.revision,
+            });
+        }
+        if validate_delivery_markdown(proposed_markdown.to_string(), node_id).is_err() {
+            return Ok(ExecutionWriteOutcome::ValidationFailed {
+                public_error: "交付稿校验未通过，未保存".to_string(),
+            });
+        }
+        match self.save_node_if_revision(
+            node_id,
+            expected_revision,
+            proposed_markdown.to_string(),
+            NodeStatus::Generated,
+            now.to_string(),
+        )? {
+            SaveNodeResult::Saved(saved_node) => {
+                let write = HarnessExecutionWrite {
+                    revision: saved_node.revision,
+                    summary: summary.to_string(),
+                    saved_at: now.to_string(),
+                };
+                self.record_execution_write(node_id, session_id, turn_id, plan_id, &write)?;
+                Ok(ExecutionWriteOutcome::Saved {
+                    node: saved_node,
+                    write,
+                })
+            }
+            SaveNodeResult::Conflict { latest } => Ok(ExecutionWriteOutcome::Conflict {
+                expected_revision,
+                actual_revision: latest.revision,
+            }),
+        }
+    }
+
+    /// Appends one public write summary to the execution turn's durable audit
+    /// record. Used for completed writes and crash reconciliation.
+    fn record_execution_write(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        plan_id: &str,
+        write: &HarnessExecutionWrite,
+    ) -> Result<()> {
+        let path = self.messages_path(node_id, session_id)?;
+        let mut document = read_conversation_document(&path)?;
+        let Some(turn) = document.turns.iter_mut().find(|turn| turn.id == turn_id) else {
+            return Ok(());
+        };
+        let Some(harness) = turn.harness.as_mut() else {
+            return Ok(());
+        };
+        let Some(execution) = harness.execution.as_mut() else {
+            return Ok(());
+        };
+        if execution.writes.iter().any(|existing| existing.revision == write.revision) {
+            return Ok(());
+        }
+        execution.writes.push(write.clone());
+        let _ = plan_id;
+        self.save_turn(node_id, session_id, turn.clone())
+    }
+
+    /// Replays a pending execution-write journal idempotently after a crash.
+    /// If the node was already saved with exactly the journaled content, the
+    /// write's public summary is reconciled onto the execution turn's audit
+    /// record. Recovery never re-runs a model call or tool and never
+    /// force-overwrites Markdown.
+    pub fn recover_pending_execution_write(&self, node_id: WorkflowNodeId) -> Result<()> {
+        let journal_path = self.execution_journal_path(node_id);
+        if !journal_path.exists() {
+            return Ok(());
+        }
+        let journal: ExecutionWriteJournal = read_json(&journal_path)?;
+        let latest_node = self.node(node_id)?;
+        if latest_node.revision == journal.expected_revision.saturating_add(1)
+            && latest_node.markdown == journal.proposed_markdown
+        {
+            let write = HarnessExecutionWrite {
+                revision: latest_node.revision,
+                summary: journal.summary.clone(),
+                saved_at: journal.now.clone(),
+            };
+            let _ = self.record_execution_write(
+                node_id,
+                &journal.session_id,
+                &journal.turn_id,
+                &journal.plan_id,
+                &write,
+            );
+        }
+        let _ = fs::remove_file(&journal_path);
+        Ok(())
+    }
+
+    /// Startup recovery for confirmed execution: reconciles any pending
+    /// execution-write journal and invalidates every pending execution plan so
+    /// an interrupted active run or stale authorization is never replayed.
+    pub fn recover_pending_execution(&self, node_id: WorkflowNodeId, now: String) -> Result<()> {
+        self.recover_pending_execution_write(node_id)?;
+        self.invalidate_pending_plans(node_id, HarnessPlanInvalidReason::Restarted, now)
+    }
+
+    /// Marks every pending execution plan in the session invalidated with a
+    /// public reason (cancellation, manual node save, session deletion, or
+    /// startup restart). Never touches node content.
+    pub fn invalidate_pending_plans(
+        &self,
+        node_id: WorkflowNodeId,
+        reason: HarnessPlanInvalidReason,
+        now: String,
+    ) -> Result<()> {
+        let sessions = self.list_sessions(node_id)?;
+        for session in sessions {
+            let path = self.messages_path(node_id, &session.id)?;
+            let mut document = read_conversation_document(&path)?;
+            let mut changed = false;
+            for turn in &mut document.turns {
+                let Some(plan) = turn
+                    .harness
+                    .as_mut()
+                    .and_then(|harness| harness.execution_plan.as_mut())
+                else {
+                    continue;
+                };
+                if plan.status == HarnessPlanStatus::Pending {
+                    plan.status = HarnessPlanStatus::Invalidated;
+                    plan.invalidated_at = Some(now.clone());
+                    plan.invalid_reason = Some(reason);
+                    changed = true;
+                }
+            }
+            if changed {
+                self.persist_conversation(node_id, &session.id, &document, now.clone())?;
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn update_proposal_state(
         &self,
@@ -1795,6 +2359,9 @@ impl ProjectStore {
     }
     fn proposal_journal_path(&self, id: WorkflowNodeId) -> PathBuf {
         self.chat_node_dir(id).join(".proposal-journal.json")
+    }
+    fn execution_journal_path(&self, id: WorkflowNodeId) -> PathBuf {
+        self.chat_node_dir(id).join(".execution-journal.json")
     }
     fn files_dir(&self) -> PathBuf {
         self.project_root.join("files")
