@@ -10,7 +10,7 @@ use sion_agent::harness::{
     HarnessTurnResult,
 };
 use sion_agent::model_protocol::{ModelRequest, ProtocolMessage};
-use sion_agent::model_stream::{StreamDelta, StreamFailure};
+use sion_agent::model_stream::StreamDelta;
 use sion_core::{
     HarnessLimitKind, HarnessLimits, HarnessProposal, HarnessProposalKind, HarnessProposalStatus,
     HarnessToolCall, HarnessToolDefinition, HarnessToolStatus, ModelCallCategory, ModelCallStatus,
@@ -90,19 +90,6 @@ impl ScriptedProvider {
     fn new(steps: Vec<HarnessModelStep>) -> Self {
         Self {
             steps: std::sync::Mutex::new(steps.into()),
-        }
-    }
-    fn failing() -> Self {
-        let mut steps = std::collections::VecDeque::new();
-        steps.push_back(HarnessModelStep {
-            reason: sion_core::HarnessModelStepReason::Failed,
-            output: String::new(),
-            reasoning_summary: Vec::new(),
-            tool_calls: Vec::new(),
-            usage: None,
-        });
-        Self {
-            steps: std::sync::Mutex::new(steps),
         }
     }
 }

@@ -35,7 +35,7 @@ Sion is built on Tauri 2: Rust owns project data, model connectivity, file extra
 |---|---|
 | **12-node design path** | Progress from project basics to the final document through 12 dependency-ordered nodes. |
 | **Per-node Agent chat** | Each node has its own rules, sessions, and context; model and reasoning effort are selectable per session. |
-| **Reviewable Agent deliveries** | Agent output is a validated `delivery` JSON patch, written only after preview and confirmation. |
+| **Reviewable Agent proposals** | Node chat uses native tool calling to inspect bounded document context and create draft or rule proposals; nothing is written until the user approves it. |
 | **Concurrency protection** | Node saves use revision/CAS; only one mutating Agent task may run per project node at a time. |
 | **Markdown working papers** | Node content is directly editable and versioned. |
 | **Project rule overrides** | Default Agent rules are bundled; per-project custom rules extend them without changing global defaults. |
@@ -95,6 +95,7 @@ npm run test:rust            # Tauri command-layer tests
 cargo test --workspace       # Rust domain and storage tests
 cargo clippy --workspace -- -D warnings
 npm run test:no-browser-runtime
+npm run test:harness-security
 ```
 
 ## Workflow
@@ -102,7 +103,7 @@ npm run test:no-browser-runtime
 1. Choose a project directory in **Settings** (once); create projects from the **Projects** hub — Sion creates a dedicated folder per project.
 2. Configure a provider and default model under **Settings → Models** (not required for offline editing).
 3. Open a project and add or switch design nodes in the sidebar: the center pane hosts the node's Agent conversation, the right-side **Draft** tab edits Markdown, and the **Attachments** tab manages local files.
-4. Chat with the current node's Agent, preview its delivery patch, and confirm to write it into the working paper.
+4. Chat with the current node's Agent. It can inspect the current draft, project attachments, and direct dependency nodes, then offer individually reviewable changes for approval or rejection.
 5. In the **Export Center**, generate the blueprint, formal draft, and formal Word in sequence; after review and approval, export engineering attachments or save the Word externally.
 
 ## Design Nodes
@@ -135,6 +136,7 @@ Configure under **Settings → Models**:
 | **Protocol** | Chat Completions for most compatible services; Responses only when the provider explicitly supports it |
 | **Model list** | Multiple models per provider, each with a name and context window; exactly one default |
 | **Context window** | A positive-integer input context window (tokens) is required per model; models without one cannot be selected |
+| **Native tool calling** | Required for node Agent chat; text-only Export Center generation does not require it |
 | **API Key** | Required for new providers; when editing, leave blank to keep the stored key or enter a new value to replace it. Never echoed in the UI after saving |
 
 **Base URL rule**: Sion appends the endpoint path according to the selected protocol.
@@ -162,13 +164,13 @@ Reference configurations:
 - During a reply, only the provider-supplied public reasoning summary is streamed (capped at 2,000 characters); hidden chain-of-thought is neither displayed nor persisted.
 - Models are used only for Agent runs and Export Center generation steps; Markdown editing, project management, and DOCX export work fully offline.
 
-> The Sion desktop runtime contains no browser search, browser automation, or web-fetching subsystem. Agents operate solely on the current node, selected attachments, and conversation context.
+> The Sion desktop runtime contains no browser search, browser automation, or web-fetching subsystem. Node Agents may read only the current draft, indexed attachments in the current project, and direct dependency nodes. They cannot access arbitrary paths, the network, commands, or other projects.
 
 ## Attachments and Agent Deliveries
 
-**Attachments**: Imported files are copied into the project's `files/` directory and managed together with their extracted text. Supported formats: TXT / Markdown / JSON / CSV / PDF / DOCX / XLSX; extraction failures are explicitly flagged. The attachments pane previews extracted text (plain text only; no web rendering). Previewing is independent of selecting a file as Agent context. The full text of checked files is injected only into the next user message and the selection is cleared after a successful send. File text is read locally through Tauri and never enters the frontend.
+**Attachments**: Imported files are copied into the project's `files/` directory and managed together with their extracted text. Supported formats: TXT / Markdown / JSON / CSV / PDF / DOCX / XLSX; extraction failures are explicitly flagged. The attachments pane previews extracted text (plain text only; no web rendering). Node Agents may inspect indexed attachments through bounded tools, but attachments are always read-only. Selecting a file raises its priority for the current message; it never expands permissions. File text is read locally through Tauri and never enters the frontend.
 
-**Deliveries**: Agent write output must be a constrained fenced `delivery` JSON block — by default, section patches against existing second-level headings; full rewrites require an explicit user request. The application validates node structure, shows a change preview, and saves with the current revision, so incomplete streaming content can never be written into a project.
+**Deliveries**: An Agent may answer directly, inspect permitted document context, or propose a change to the current node draft. Proposals pass structural validation, display a diff, and save through the current revision/CAS only after explicit user approval. A current-node project Agent-rule change follows the same separate proposal flow and affects only future conversations for that node. Tool reads and validation stay in memory, with no per-tool disk writes.
 
 ## Export Center
 

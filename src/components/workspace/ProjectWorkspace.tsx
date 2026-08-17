@@ -20,8 +20,9 @@ type ProjectWorkspaceProps = {
   messages: ChatMessage[];
   turns: ConversationTurn[];
   liveReasoningByRun: Record<string, string>;
-  liveDecisionRawByTurn: Record<string, string>;
   markdownDirty: boolean;
+  agentRulesDirty: boolean;
+  resolvingProposalIds: Record<string, true>;
   messageDraft: string;
   sendingMessage: boolean;
   rightSurface: RightSurface | null;
@@ -41,7 +42,8 @@ type ProjectWorkspaceProps = {
   onCreateSession: () => void;
   onDeleteSession: (sessionId: string) => Promise<void>;
   onCancelAgent: () => void;
-  onRetryDelivery: (turnId: string) => void;
+  onApproveProposal: (turnId: string, proposalId: string) => void;
+  onRejectProposal: (turnId: string, proposalId: string) => void;
   onOpenRunDetail: (runId: string) => void;
   onMessageDraft: (value: string) => void;
   onSendMessage: () => void;
@@ -127,15 +129,17 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             messages={props.messages}
             turns={props.turns}
             liveReasoningByRun={props.liveReasoningByRun}
-            liveDecisionRawByTurn={props.liveDecisionRawByTurn}
             markdownDirty={props.markdownDirty}
+            agentRulesDirty={props.agentRulesDirty}
+            resolvingProposalIds={props.resolvingProposalIds}
             activeRunId={props.activeRunId}
             sendingMessage={props.sendingMessage}
             messageDraft={props.messageDraft}
             onMessageDraft={props.onMessageDraft}
             onSend={props.onSendMessage}
             onCancel={props.onCancelAgent}
-            onRetryDelivery={props.onRetryDelivery}
+            onApproveProposal={props.onApproveProposal}
+            onRejectProposal={props.onRejectProposal}
             onOpenRunDetail={props.onOpenRunDetail}
             providers={props.providers}
             files={props.files}

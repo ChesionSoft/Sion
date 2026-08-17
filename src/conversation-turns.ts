@@ -97,8 +97,9 @@ export type DeliveryPresentation = {
 export function turnDeliveryPresentation(
   turn: ConversationTurn,
   dirty: boolean,
-): DeliveryPresentation {
+): DeliveryPresentation | null {
   const outcome = turn.deliveryOutcome;
+  if (!outcome) return null;
   switch (outcome.kind) {
     case "pending":
       return { kind: "pending", headline: "等待交付判断", tone: "pending", retryable: false };
@@ -265,9 +266,19 @@ export function groupConversation(
 export function turnHeadline(turn: ConversationTurn): string {
   if (turn.status === "cancelled") return "已取消，未保存未完成内容";
   if (turn.status === "interrupted") return "运行在应用退出前中断";
-  switch (turn.deliveryOutcome.kind) {
+  if (turn.harness) {
+    if (turn.status === "queued") return "Agent 已排队";
+    if (turn.status === "running") return "Sion 正在处理";
+    const ready = turn.harness.proposals.filter((proposal) => proposal.status === "ready").length;
+    if (ready > 0) return `已准备 ${ready} 项文稿提案`;
+    if (turn.status === "failed") return "文档 Harness 运行失败";
+    return "对话已完成";
+  }
+  const outcome = turn.deliveryOutcome;
+  if (!outcome) return turn.status === "failed" ? "对话运行失败" : "对话已完成";
+  switch (outcome.kind) {
     case "patch_applied":
-      return `交付稿已更新 · revision ${turn.deliveryOutcome.revision}`;
+      return `交付稿已更新 · revision ${outcome.revision}`;
     case "unchanged":
       return "已判断，无需更新交付稿";
     case "awaiting_manual_draft_resolution":
@@ -275,19 +286,12 @@ export function turnHeadline(turn: ConversationTurn): string {
     case "conflict":
       return "交付稿版本已变化，本次未覆盖";
     case "failed":
-      return turn.deliveryOutcome.stage === "response"
-        ? turn.deliveryOutcome.publicError
+      return outcome.stage === "response"
+        ? outcome.publicError
         : "回复已完成，交付稿更新失败";
     case "cancelled":
       return "已取消，未保存未完成内容";
     case "pending":
       return turn.status === "queued" ? "Agent 已排队" : "Sion 正在处理";
   }
-}
-
-export function turnCanRetryDelivery(turn: ConversationTurn, dirty: boolean): boolean {
-  if (dirty) return false;
-  return turn.deliveryOutcome.kind === "awaiting_manual_draft_resolution"
-    || turn.deliveryOutcome.kind === "conflict"
-    || (turn.deliveryOutcome.kind === "failed" && turn.deliveryOutcome.stage !== "response");
 }

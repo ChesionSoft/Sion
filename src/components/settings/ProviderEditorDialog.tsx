@@ -149,6 +149,14 @@ export function ProviderEditorDialog({
                   <input type="radio" name="default-model" checked={row.isDefault} onChange={() => setDefaultRow(row.id)} />
                   默认
                 </label>
+                <label className="provider-model-tool-calling">
+                  <input
+                    type="checkbox"
+                    checked={row.toolCalling}
+                    onChange={(event) => updateRow(row.id, { toolCalling: event.target.checked })}
+                  />
+                  支持原生工具调用
+                </label>
               </div>
               <Button variant="ghost" type="button" disabled={models.length <= 1} onClick={() => removeRow(row.id)}>删除</Button>
             </div>

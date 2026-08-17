@@ -10,6 +10,8 @@ import {
   deleteProvider,
   getConversationContext,
   getAgentRunDetail,
+  harnessProposalApply,
+  harnessProposalReject,
   deleteSession as deleteSessionApi,
   getAgentRules,
   getFilePreview,
@@ -25,7 +27,6 @@ import {
   listSessions,
   pickProjectsDirectory,
   revealProject,
-  retryConversationTurnDelivery,
   saveAgentOverride,
   saveNode,
   saveProvider,
@@ -48,10 +49,10 @@ import { FilePreviewTab } from "./components/workspace/FilePreviewTab";
 import { FilePoolWorkspace } from "./components/workspace/FilePoolWorkspace";
 import { RightWorkspacePane } from "./components/workspace/RightWorkspacePane";
 import { RunDetailDialog } from "./components/workspace/RunDetailDialog";
-import { NODES, type AgentFinishedEvent, type AgentReasoningSummaryEvent, type AgentRun, type AgentRunDetail, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryDecisionTokenEvent, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type ExportRunEvent, type ExportWorkspaceInvalidatedEvent, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
+import { NODES, type AgentFinishedEvent, type AgentReasoningSummaryEvent, type AgentRun, type AgentRunDetail, type AgentTokenEvent, type AppSettings, type ChatMessage, type ChatModelSelection, type ChatSession, type ConversationContextSnapshot, type DeliveryGeneration, type DeliveryGenerationTokenEvent, type DeliveryGenerationFinishedEvent, type ConversationTurn, type ConversationTurnEvent, type EffectiveAgentRules, type ExportRunEvent, type ExportWorkspaceInvalidatedEvent, type FilePreview, type MainDestination, type NodeId, type NoticeMessage, type ProjectFile, type Provider, type ProviderDraft, type RecentProject, type RightSurface, type UiSettings, type WorkflowNode, type WorkspaceView } from "./types";
 import { activeRunIdForContext, createSerialTaskQueue, durableUiSettings, initialProjectUi, initialUiSettings, initialWorkspaceView, isAgentRulesDirty, isLatestRequest, requestNavigationDecision, requestScope, resolveNavigationDecision, sanitizeUiSettings, selectNode, shouldChangeNode, shouldChangeProject, type NavigationIntent, type SaveResult } from "./ui-state.ts";
 
-import { conversationCanSend, defaultModelSelection } from "./conversation-controls";
+import { activeSessionForNode, conversationCanSend, defaultModelSelection } from "./conversation-controls";
 import { mergeTurnSnapshot } from "./conversation-turns.ts";
 import {
   appendDeliveryGenerationCandidate,
@@ -124,8 +125,8 @@ export function App() {
   const [exportProjectId, setExportProjectId] = useState<string | null>(null);
   const [exportRefreshByProject, setExportRefreshByProject] = useState<Record<string, number>>({});
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
+  const [resolvingProposalIds, setResolvingProposalIds] = useState<Record<string, true>>({});
   const [liveReasoningByRun, setLiveReasoningByRun] = useState<LiveReasoningByRun>({});
-  const [liveDecisionRawByTurn, setLiveDecisionRawByTurn] = useState<Record<string, string>>({});
   const [generationProgressByScope, setGenerationProgressByScope] = useState<DeliveryGenerationProgressByScope>({});
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<NavigationIntent | null>(null);
@@ -156,9 +157,11 @@ export function App() {
   const activeNodeId = projectUi?.activeNodeId ?? null;
   const activeRightTabId = projectUi?.activeRightTabId ?? null;
   const nodeId: NodeId = activeNodeId ?? "basic-info";
+  const activeSession = activeSessionForNode(sessions, sessionId, activeNodeId);
+  const activeSessionId = activeSession?.id ?? null;
   const nodeTitle = useMemo(() => NODES.find(([id]) => id === nodeId)?.[1] ?? "节点", [nodeId]);
-  const generationScope = project && sessionId
-    ? deliveryGenerationScope(project.id, nodeId, sessionId)
+  const generationScope = project && activeSessionId
+    ? deliveryGenerationScope(project.id, nodeId, activeSessionId)
     : null;
   const generationProgress = generationScope ? generationProgressByScope[generationScope] : undefined;
   const generation = generationProgress?.generation ?? null;
@@ -174,7 +177,7 @@ export function App() {
   const deliveryLocked = Boolean(activeRunId) || regenerating;
   const dismissNotice = useCallback(() => setNoticeState(null), []);
   workspaceScopeRef.current = requestScope(project?.id, activeNodeId);
-  messageScopeRef.current = requestScope(project?.id, activeNodeId, sessionId);
+  messageScopeRef.current = requestScope(project?.id, activeNodeId, activeSessionId);
   projectScopeRef.current = project?.id ?? null;
   uiRef.current = ui;
   nodeRef.current = node;
@@ -243,6 +246,8 @@ export function App() {
       setSessionId(null);
       setMessages([]);
       setTurns([]);
+      setResolvingProposalIds({});
+      setTurns([]);
     }
   }, [project, activeNodeId]);
 
@@ -267,22 +272,21 @@ export function App() {
   }, [project?.id]);
 
   useEffect(() => {
-    if (project && activeNodeId && sessionId) {
-      void loadMessages(project.id, activeNodeId, sessionId);
-      void loadTurns(project.id, activeNodeId, sessionId);
+    if (project && activeNodeId && activeSessionId) {
+      void loadMessages(project.id, activeNodeId, activeSessionId);
+      void loadTurns(project.id, activeNodeId, activeSessionId);
     }
-  }, [project, activeNodeId, sessionId]);
+  }, [project, activeNodeId, activeSessionId]);
 
   useEffect(() => {
     setLiveReasoningByRun(clearLiveReasoning());
-    setLiveDecisionRawByTurn({});
-  }, [project?.id, nodeId, sessionId]);
+  }, [project?.id, nodeId, activeSessionId]);
 
   useEffect(() => {
     const subscriptions = Promise.all([
       listen<AgentTokenEvent>("agent-token", (event) => {
         const token = event.payload;
-        if (!project || token.projectId !== project.id || token.nodeId !== nodeId || token.sessionId !== sessionId) return;
+        if (!project || token.projectId !== project.id || token.nodeId !== nodeId || token.sessionId !== activeSessionId) return;
         setMessages((current) => {
           const transientId = `stream-${token.runId}`;
           const existing = current.find((message) => message.id === transientId);
@@ -290,20 +294,12 @@ export function App() {
           return [...current, { id: transientId, role: "assistant", content: token.delta, createdAt: now() }];
         });
       }),
-      listen<DeliveryDecisionTokenEvent>("delivery-decision-token", (event) => {
-        const token = event.payload;
-        if (!project || token.projectId !== project.id || token.nodeId !== nodeId || token.sessionId !== sessionId) return;
-        setLiveDecisionRawByTurn((current) => ({
-          ...current,
-          [token.turnId]: (current[token.turnId] ?? "") + token.delta,
-        }));
-      }),
       listen<AgentReasoningSummaryEvent>("agent-reasoning-summary", (event) => {
-        if (!project || !sessionId) return;
+        if (!project || !activeSessionId) return;
         setLiveReasoningByRun((current) => appendLiveReasoning(current, event.payload, {
           projectId: project.id,
           nodeId,
-          sessionId,
+          sessionId: activeSessionId,
         }));
       }),
       listen<AgentFinishedEvent>("agent-run-finished", (event) => {
@@ -312,10 +308,10 @@ export function App() {
         setRuns((current) => current.map((item) => item.id === run.id ? run : item));
         setMessages((current) => current.filter((message) => message.id !== `stream-${run.id}`));
         setLiveReasoningByRun((current) => removeLiveReasoning(current, run.id));
-        if (sessionId) void loadMessages(project.id, nodeId, sessionId);
-        if (sessionId) void loadTurns(project.id, nodeId, sessionId);
-        if (project && sessionId && modelSelection) {
-          void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
+        if (activeSessionId) void loadMessages(project.id, nodeId, activeSessionId);
+        if (activeSessionId) void loadTurns(project.id, nodeId, activeSessionId);
+        if (project && activeSessionId && modelSelection) {
+          void loadConversationContext(project.id, nodeId, activeSessionId, modelSelection, selectedFileIds);
         }
         void loadRuns(project.id);
       }),
@@ -327,16 +323,8 @@ export function App() {
           setNode(reconciled.node);
           setDraft(reconciled.draft);
         }
-        if (sessionId && turn.sessionId !== sessionId) return;
+        if (!activeSessionId || turn.sessionId !== activeSessionId) return;
         setTurns((current) => mergeTurnSnapshot(current, turn));
-        if (turn.deliveryInspection) {
-          setLiveDecisionRawByTurn((current) => {
-            if (!(turn.id in current)) return current;
-            const next = { ...current };
-            delete next[turn.id];
-            return next;
-          });
-        }
       }),
       listen<DeliveryGenerationTokenEvent>("delivery-generation-token", (event) => {
         const payload = event.payload;
@@ -366,13 +354,13 @@ export function App() {
         );
         setNode(reconciled.node);
         setDraft(reconciled.draft);
-        if (project && sessionId && modelSelection) {
-          void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
+        if (project && activeSessionId && modelSelection) {
+          void loadConversationContext(project.id, nodeId, activeSessionId, modelSelection, selectedFileIds);
         }
       }),
     ]);
     return () => { void subscriptions.then((unlisten) => unlisten.forEach((stop) => stop())); };
-  }, [project, nodeId, sessionId, modelSelection, selectedFileIds]);
+  }, [project, nodeId, activeSessionId, modelSelection, selectedFileIds]);
 
   // Export events are centralized here. Only terminal run updates and workspace
   // invalidations bump the project-scoped refresh token; model progress and
@@ -640,6 +628,9 @@ export function App() {
     if (projectChanged) {
       setMessageDraft("");
       setSelectedFileIds([]);
+      setSessions([]);
+      setSessionId(null);
+      setMessages([]);
       setFiles([]);
       setRuns([]);
       setRunsError(null);
@@ -703,8 +694,8 @@ export function App() {
       if (!isLatestRequest(scope, workspaceScopeRef.current)) return false;
       setNotice(agentOverrideDraft.trim() ? "节点自定义规则已保存；它会追加到内置规则后" : "已清除节点自定义规则；Agent 将只使用内置规则");
       await loadAgentRules(project.id, nodeId);
-      if (sessionId && modelSelection) {
-        void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
+      if (activeSessionId && modelSelection) {
+        void loadConversationContext(project.id, nodeId, activeSessionId, modelSelection, selectedFileIds);
       }
       return isLatestRequest(scope, workspaceScopeRef.current);
     } catch (error) {
@@ -731,8 +722,8 @@ export function App() {
         setDraft(result.saved.markdown);
         setConflictLatest(null);
         setNotice(`已原子保存 revision ${result.saved.revision}`);
-        if (sessionId && modelSelection) {
-          void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
+        if (activeSessionId && modelSelection) {
+          void loadConversationContext(project.id, nodeId, activeSessionId, modelSelection, selectedFileIds);
         }
         return "saved";
       }
@@ -842,28 +833,81 @@ export function App() {
     }
   }
 
-  async function retryDelivery(turnId: string) {
-    if (!project || !sessionId) return;
-    setSavingModelSelection(true);
+  async function resolveHarnessProposal(turnId: string, proposalId: string, action: "apply" | "reject") {
+    if (!project || !activeSessionId) return;
+    const projectId = project.id;
+    const targetNodeId = nodeId;
+    const targetSessionId = activeSessionId;
+    const scope = requestScope(projectId, targetNodeId, targetSessionId);
+    const key = `${turnId}:${proposalId}`;
+    setResolvingProposalIds((current) => ({ ...current, [key]: true }));
     try {
-      const result = await retryConversationTurnDelivery(project.id, nodeId, sessionId, turnId, now());
-      setRuns((current) => [result.run, ...current.filter((run) => run.id !== result.run.id)]);
-      setTurns((current) => mergeTurnSnapshot(current, result.turn));
+      if (action === "reject") {
+        const result = await harnessProposalReject(
+          projectId,
+          targetNodeId,
+          targetSessionId,
+          turnId,
+          proposalId,
+          now(),
+        );
+        if (projectScopeRef.current !== projectId || messageScopeRef.current !== scope) return;
+        setTurns((current) => mergeTurnSnapshot(current, result.turn));
+        setNotice("已拒绝该提案");
+        return;
+      }
+      const result = await harnessProposalApply(
+        projectId,
+        targetNodeId,
+        targetSessionId,
+        turnId,
+        proposalId,
+        now(),
+      );
+      if (projectScopeRef.current !== projectId || messageScopeRef.current !== scope) return;
+      if (result.kind === "applied" || result.kind === "stale") {
+        setTurns((current) => mergeTurnSnapshot(current, result.turn));
+      }
+      if (result.kind === "applied") {
+        if (result.savedNode) {
+          const reconciled = reconcileSavedNode(nodeRef.current, draftRef.current, result.savedNode);
+          setNode(reconciled.node);
+          setDraft(reconciled.draft);
+        }
+        if (result.refreshedRules) {
+          setAgentRules(result.refreshedRules);
+          setAgentOverrideDraft(result.refreshedRules.customMarkdown ?? "");
+        }
+        setNotice("提案已应用");
+      } else if (result.kind === "stale") {
+        setNotice("提案已过期，未覆盖最新内容");
+      } else if (result.kind === "not_found") {
+        await loadTurns(projectId, targetNodeId, targetSessionId);
+        setNotice("提案不存在或不属于当前会话");
+      } else {
+        await loadTurns(projectId, targetNodeId, targetSessionId);
+        setNotice("提案当前不可应用");
+      }
     } catch (error) {
-      setNotice(`重新判断交付稿失败：${String(error)}`);
+      if (projectScopeRef.current === projectId && messageScopeRef.current === scope) {
+        setNotice(`${action === "apply" ? "应用" : "拒绝"}提案失败：${String(error)}`);
+      }
     } finally {
-      setSavingModelSelection(false);
+      setResolvingProposalIds((current) => {
+        const { [key]: _resolved, ...rest } = current;
+        return rest;
+      });
     }
   }
 
   async function startRegeneration() {
-    if (!project || !node || !sessionId) return;
+    if (!project || !node || !activeSessionId) return;
     const activeGenerationId = crypto.randomUUID();
-    const scope = deliveryGenerationScope(project.id, nodeId, sessionId);
+    const scope = deliveryGenerationScope(project.id, nodeId, activeSessionId);
     generationScopeByIdRef.current[activeGenerationId] = scope;
     setGenerationProgressByScope((current) => beginDeliveryGeneration(current, scope));
     try {
-      const result = await startDeliveryRegeneration(project.id, nodeId, sessionId, activeGenerationId, selectedFileIds, node.revision, messageDraft.trim(), now());
+      const result = await startDeliveryRegeneration(project.id, nodeId, activeSessionId, activeGenerationId, selectedFileIds, node.revision, messageDraft.trim(), now());
       if (generationScopeByIdRef.current[activeGenerationId] === scope) {
         setGenerationProgressByScope((current) => {
           const existing = current[scope]?.generation;
@@ -892,10 +936,9 @@ export function App() {
 
   useEffect(() => {
     if (!project) { setModelSelection(null); return; }
-    const active = sessionId ? sessions.find((item) => item.id === sessionId) ?? null : null;
-    if (active?.modelSelection) setModelSelection(active.modelSelection);
+    if (activeSession?.modelSelection) setModelSelection(activeSession.modelSelection);
     else setModelSelection(defaultModelSelection(providers));
-  }, [project, sessionId, sessions, providers]);
+  }, [project, activeSession, providers]);
 
   async function loadConversationContext(
     projectId: string,
@@ -936,20 +979,19 @@ export function App() {
   }
 
   useEffect(() => {
-    if (!project || !sessionId || !modelSelection) {
+    if (!project || !activeSessionId || !modelSelection) {
       conversationContextScopeRef.current = null;
       setConversationContext(null);
       setLoadingConversationContext(false);
       setConversationContextError(null);
       return;
     }
-    void loadConversationContext(project.id, nodeId, sessionId, modelSelection, selectedFileIds);
-  }, [project, nodeId, sessionId, modelSelection, selectedFileIds]);
+    void loadConversationContext(project.id, nodeId, activeSessionId, modelSelection, selectedFileIds);
+  }, [project, nodeId, activeSessionId, modelSelection, selectedFileIds]);
 
   async function changeModelSelection(selection: ChatModelSelection) {
-    if (!project || !sessionId) { setModelSelection(selection); return; }
+    if (!project || !activeSessionId) { setModelSelection(selection); return; }
     const contextScope = requestScope(project.id, nodeId);
-    const activeSessionId = sessionId;
     const scope = requestScope(project.id, nodeId, activeSessionId, "update-model", crypto.randomUUID());
     sessionMutationScopeRef.current = scope;
     setSavingModelSelection(true);
@@ -976,11 +1018,11 @@ export function App() {
       savingSelection: savingModelSelection,
     })) return;
     const contextScope = requestScope(project.id, nodeId);
-    const scope = requestScope(project.id, nodeId, sessionId ?? "new-session", "send-message", crypto.randomUUID());
+    const scope = requestScope(project.id, nodeId, activeSessionId ?? "new-session", "send-message", crypto.randomUUID());
     messageMutationScopeRef.current = scope;
     setSendingMessage(true);
     try {
-      const active = sessionId ? sessions.find((session) => session.id === sessionId) ?? null : await createSession();
+      const active = activeSession ?? await createSession();
       if (!active || !isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
       const outcome = await startAgentRun(project.id, nodeId, active.id, content, selectedFileIds, node?.revision ?? 0, !markdownDirty, now());
       if (!isLatestRequest(scope, messageMutationScopeRef.current) || !isLatestRequest(contextScope, workspaceScopeRef.current)) return;
@@ -1093,10 +1135,14 @@ export function App() {
     messageMutationScopeRef.current = null;
     fileImportScopeRef.current = null;
     setSavingModelSelection(false);
+    setResolvingProposalIds({});
     setSendingMessage(false);
     setImportingFile(false);
     setMessageDraft("");
     setSelectedFileIds([]);
+    setSessions([]);
+    setSessionId(null);
+    setMessages([]);
     filePreviewScopeRef.current = null;
     setNode(null);
     setDraft("");
@@ -1287,7 +1333,7 @@ export function App() {
       saving={saving}
       generation={generation}
       candidateLength={generationCandidate.length}
-      canRegenerate={Boolean(node) && !markdownDirty && !Boolean(activeRunId) && Boolean(modelSelection) && Boolean(sessionId) && !regenerating}
+      canRegenerate={Boolean(node) && !markdownDirty && !Boolean(activeRunId) && Boolean(modelSelection) && Boolean(activeSessionId) && !regenerating}
       regenerating={regenerating}
       locked={deliveryLocked}
       onView={(deliveryView) => setWorkspaceView((current) => ({ ...current, deliveryView }))}
@@ -1387,7 +1433,7 @@ export function App() {
       onRightSurface={openRightSurface}
       sessions={sessions}
       sessionsError={sessionsError}
-      sessionId={sessionId}
+      sessionId={activeSessionId}
       onSelectSession={selectSession}
       onCreateSession={() => void createSession()}
       onDeleteSession={(id) => deleteSession(id)}
@@ -1398,9 +1444,11 @@ export function App() {
       messages={messages}
       turns={turns}
       liveReasoningByRun={liveReasoningByRun}
-      liveDecisionRawByTurn={liveDecisionRawByTurn}
       markdownDirty={markdownDirty}
-      onRetryDelivery={(id) => void retryDelivery(id)}
+      agentRulesDirty={agentRulesDirty}
+      resolvingProposalIds={resolvingProposalIds}
+      onApproveProposal={(turnId, proposalId) => void resolveHarnessProposal(turnId, proposalId, "apply")}
+      onRejectProposal={(turnId, proposalId) => void resolveHarnessProposal(turnId, proposalId, "reject")}
       onOpenRunDetail={openRunDetail}
       messageDraft={messageDraft}
       onMessageDraft={setMessageDraft}

@@ -10,6 +10,7 @@ const RUN_STATUS_LABEL: Record<AgentRun["status"], string> = {
   completed: "已完成",
   failed: "失败",
   cancelled: "已取消",
+  interrupted: "已中断",
 };
 
 const RUN_KIND_LABEL: Record<AgentRun["kind"], string> = {
@@ -17,12 +18,22 @@ const RUN_KIND_LABEL: Record<AgentRun["kind"], string> = {
   delivery_decision: "交付判断",
   delivery_retry: "交付重试",
   delivery_regeneration: "重新生成交付稿",
+  harness: "文档 Harness",
 };
 
 const CONTEXT_STATUS_LABEL = { ready: "正常", warning: "接近上限", blocked: "超过上限" } as const;
 const USAGE_SOURCE_LABEL = { exact: "精确", estimated: "估算", mixed: "混合" } as const;
 const CALL_CATEGORY_LABEL = { answer: "回复", tool_planning: "工具规划", document_update: "文稿更新", other: "其他" } as const;
 const CALL_STATUS_LABEL = { completed: "已完成", interrupted: "已中断", failed: "失败" } as const;
+const HARNESS_LIMIT_LABEL = {
+  model_steps: "模型步骤上限",
+  tool_calls: "工具调用上限",
+  validation_retries: "提案校验重试上限",
+  tokens: "Token 预算上限",
+  wall_clock: "运行时间上限",
+  duplicate_call: "重复工具调用",
+} as const;
+const TOOL_STATUS_LABEL = { completed: "已完成", error: "失败", unauthorized: "未授权", skipped: "已跳过" } as const;
 
 function statusKind(status: AgentRun["status"]) {
   if (status === "completed") return "success" as const;
@@ -89,9 +100,10 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
   const turn = detail?.turn;
   const context = run?.contextSnapshot;
   const usage = run?.usage;
+  const harness = detail?.harnessSummary;
 
   return (
-    <Dialog open={open} title="运行详情" description="查看本次运行保存的上下文、用量和交付结果。" size="medium" closeLabel="关闭运行详情" onClose={onClose}>
+    <Dialog open={open} title="运行详情" description="查看本次运行保存的上下文、用量和文稿提案结果。" size="medium" closeLabel="关闭运行详情" onClose={onClose}>
       {loading ? (
         <div className="run-detail-loading" aria-busy="true" aria-label="正在读取运行详情">
           <span /><span /><span /><span />
@@ -162,6 +174,29 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
             </section>
           ) : null}
 
+          {harness ? (
+            <section>
+              <h3>Harness 执行</h3>
+              <dl className="run-detail-grid">
+                <DetailField label="模型步骤" value={harness.modelSteps} />
+                <DetailField label="工具调用" value={harness.toolCalls} />
+                <DetailField label="校验重试" value={harness.validationRetries} />
+                <DetailField label="触发限制" value={harness.limitReached ? HARNESS_LIMIT_LABEL[harness.limitReached] : undefined} />
+              </dl>
+              {harness.toolTraces.length ? (
+                <ol className="run-detail-calls">
+                  {harness.toolTraces.map((trace) => (
+                    <li key={trace.callId}>
+                      <strong>{trace.name}</strong>
+                      <span>{TOOL_STATUS_LABEL[trace.status]} · {trace.summary}</span>
+                      <small>{formatTime(trace.startedAt)} → {formatTime(trace.finishedAt)}</small>
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
+            </section>
+          ) : null}
+
           <section>
             <h3>活动时间线</h3>
             {turn?.activities.length ? (
@@ -180,16 +215,32 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
             ) : <p className="run-detail-missing">{LEGACY_MISSING}</p>}
           </section>
 
-          <section>
-            <h3>交付结果</h3>
-            <p className="run-detail-delivery">{deliveryLabel(turn?.deliveryOutcome)}</p>
-            {turn?.deliveryInspection ? (
-              <DeliveryDecisionDetails
-                inspection={turn.deliveryInspection}
-                outcome={turn.deliveryOutcome}
-              />
-            ) : null}
-          </section>
+          {harness ? (
+            <section>
+              <h3>文稿提案</h3>
+              {harness.proposals.length ? (
+                <ol className="run-detail-calls">
+                  {harness.proposals.map((proposal) => (
+                    <li key={proposal.id}>
+                      <strong>{proposal.kind === "delivery" ? "当前节点交付稿" : "当前节点 Agent 规则"}</strong>
+                      <span>{proposal.status} · {proposal.reason}</span>
+                    </li>
+                  ))}
+                </ol>
+              ) : <p className="run-detail-missing">本次未创建文稿提案。</p>}
+            </section>
+          ) : (
+            <section>
+              <h3>交付结果</h3>
+              <p className="run-detail-delivery">{deliveryLabel(turn?.deliveryOutcome)}</p>
+              {turn?.deliveryInspection ? (
+                <DeliveryDecisionDetails
+                  inspection={turn.deliveryInspection}
+                  outcome={turn.deliveryOutcome}
+                />
+              ) : null}
+            </section>
+          )}
         </div>
       ) : (
         <p className="run-detail-missing">{LEGACY_MISSING}</p>

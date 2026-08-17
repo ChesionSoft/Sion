@@ -28,6 +28,10 @@ const forbiddenFileNames = [
   "search-engine",
   "search-planner",
   "web-tool",
+  "harness-browser",
+  "harness-network",
+  "harness-shell",
+  "harness-web",
 ];
 
 async function filesAt(directory) {

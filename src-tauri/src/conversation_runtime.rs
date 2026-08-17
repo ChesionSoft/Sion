@@ -1147,8 +1147,6 @@ mod tests {
     fn harness_initial_context_contains_protocol_manifests_and_no_bodies() {
         use sion_core::{HarnessLimits, HarnessToolDefinition};
         use sion_storage::{CreateProjectInput, SaveNodeResult};
-        use std::path::PathBuf;
-
         let root =
             std::env::temp_dir().join(format!("sion-harness-context-{}", uuid::Uuid::new_v4()));
         let projects = root.join("projects");

@@ -2,29 +2,57 @@
 // attachments, and context-indicator state. No Tauri imports; these are
 // consumed by the conversation workspace components.
 
-import type { ChatModelSelection, ContextEstimate, Provider } from "./types.ts";
+import type { ChatModelSelection, ChatSession, ContextEstimate, NodeId, Provider } from "./types.ts";
+
+export const activeSessionForNode = (
+  sessions: ChatSession[],
+  sessionId: string | null,
+  nodeId: NodeId | null,
+): ChatSession | null => {
+  if (!sessionId || !nodeId) return null;
+  return sessions.find((session) => session.id === sessionId && session.nodeId === nodeId) ?? null;
+};
+
+const hasUsableContextWindow = (contextWindowTokens: number | null) =>
+  Number.isSafeInteger(contextWindowTokens) && (contextWindowTokens ?? 0) > 0;
 
 export const selectableModels = (providers: Provider[]) =>
   providers.flatMap((provider) =>
     provider.models
-      .filter(
-        (model) =>
-          Number.isSafeInteger(model.contextWindowTokens) &&
-          (model.contextWindowTokens ?? 0) > 0,
-      )
+      .filter((model) => hasUsableContextWindow(model.contextWindowTokens))
       .map((model) => ({ provider, model })),
   );
 
+export const selectableHarnessModels = (providers: Provider[]) =>
+  selectableModels(providers).filter(({ model }) => model.toolCalling);
+
 export const defaultModelSelection = (providers: Provider[]): ChatModelSelection | null => {
-  const provider = providers.find((item) => item.isDefault) ?? providers[0];
-  if (!provider) return null;
-  const model = provider.models.find((item) => item.isDefault) ?? provider.models[0];
-  return model?.contextWindowTokens
-    ? { providerId: provider.id, model: model.name, reasoningEffort: "medium" }
+  const selectable = selectableHarnessModels(providers);
+  const preferredProvider = providers.find((item) => item.isDefault);
+  const preferred = selectable.find(
+    ({ provider, model }) => provider.id === preferredProvider?.id && model.isDefault,
+  )
+    ?? selectable.find(({ provider }) => provider.id === preferredProvider?.id)
+    ?? selectable.find(({ model }) => model.isDefault)
+    ?? selectable[0];
+  return preferred
+    ? { providerId: preferred.provider.id, model: preferred.model.name, reasoningEffort: "medium" }
     : null;
 };
 
 export const selectionIsValid = (
+  selection: ChatModelSelection | null,
+  providers: Provider[],
+) =>
+  Boolean(
+    selection &&
+      selectableHarnessModels(providers).some(
+        ({ provider, model }) =>
+          provider.id === selection.providerId && model.name === selection.model,
+      ),
+  );
+
+export const selectionIsValidForExport = (
   selection: ChatModelSelection | null,
   providers: Provider[],
 ) =>

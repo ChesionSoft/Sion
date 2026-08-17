@@ -43,6 +43,7 @@ export function ExportActionBar({
           selection={modelSelection}
           disabled={reviewBusy}
           saving={Boolean(savingModel)}
+          requireToolCalling={false}
           onSelection={async (selection) => {
             await onModelChange(selection);
           }}

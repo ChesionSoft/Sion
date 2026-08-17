@@ -1,7 +1,6 @@
 import type { ChatMessage, ConversationTurn } from "../../types";
 import {
   formatTurnElapsed,
-  turnCanRetryDelivery,
   turnDeliveryPresentation,
   turnElapsedMs,
   turnVisualPhase,
@@ -11,6 +10,7 @@ import { ConversationReasoningDisclosure } from "./ConversationReasoningDisclosu
 import { ConversationStreamingResponse } from "./ConversationStreamingResponse";
 import { ConversationDeliveryGeneration } from "./ConversationDeliveryGeneration";
 import { DeliveryDecisionDetails } from "./DeliveryDecisionDetails";
+import { HarnessProposalCard } from "./HarnessProposalCard";
 import { SafeMarkdown } from "./SafeMarkdown";
 
 export type ConversationTurnCardProps = {
@@ -19,9 +19,11 @@ export type ConversationTurnCardProps = {
   assistantMessage?: ChatMessage;
   streamingMessage?: ChatMessage;
   liveReasoning?: string;
-  liveDecisionRaw?: string;
   markdownDirty: boolean;
-  onRetryDelivery: (turnId: string) => void;
+  agentRulesDirty: boolean;
+  resolvingProposalIds: Record<string, true>;
+  onApproveProposal: (turnId: string, proposalId: string) => void;
+  onRejectProposal: (turnId: string, proposalId: string) => void;
   onOpenRunDetail: (runId: string) => void;
 };
 
@@ -31,24 +33,26 @@ export function ConversationTurnCard({
   assistantMessage,
   streamingMessage,
   liveReasoning,
-  liveDecisionRaw,
   markdownDirty,
-  onRetryDelivery,
+  agentRulesDirty,
+  resolvingProposalIds,
+  onApproveProposal,
+  onRejectProposal,
   onOpenRunDetail,
 }: ConversationTurnCardProps) {
-  const canRetry = turnCanRetryDelivery(turn, markdownDirty);
   const delivery = turnDeliveryPresentation(turn, markdownDirty);
   const active = turn.status === "queued" || turn.status === "running";
   const reasoningContent = liveReasoning || turn.reasoningSummary;
   const elapsedText = formatTurnElapsed(turnElapsedMs(turn, Date.now()));
-  const showDecisionDetails = Boolean(turn.deliveryInspection) || Boolean(liveDecisionRaw);
+  const showDecisionDetails = Boolean(turn.deliveryInspection);
   const visualPhase = turnVisualPhase(turn, liveReasoning, Boolean(streamingMessage));
   const activeDelivery = active
     ? turn.activities.find((activity) => activity.kind !== "response" && activity.status === "running")
     : undefined;
+  const legacyDeliveryKind = turn.deliveryOutcome?.kind ?? "harness";
   return (
     <article
-      className={`conversation-turn is-${turn.status} is-${turn.deliveryOutcome.kind} is-phase-${visualPhase}`}
+      className={`conversation-turn is-${turn.status} is-${legacyDeliveryKind} is-phase-${visualPhase}`}
     >
       {userMessage ? (
         <section className="conversation-turn-block is-user">
@@ -86,7 +90,7 @@ export function ConversationTurnCard({
         onOpenRunDetail={onOpenRunDetail}
       />
       {activeDelivery ? <ConversationDeliveryGeneration label={activeDelivery.label} /> : null}
-      {delivery.kind !== "pending" ? (
+      {delivery && delivery.kind !== "pending" ? (
         <section className={`delivery-result is-${delivery.tone}`}>
           <div className="delivery-result-main">
             <strong>{delivery.headline}</strong>
@@ -104,19 +108,19 @@ export function ConversationTurnCard({
       {showDecisionDetails ? (
         <DeliveryDecisionDetails
           inspection={turn.deliveryInspection}
-          liveRaw={liveDecisionRaw}
           outcome={turn.deliveryOutcome}
         />
       ) : null}
-      {canRetry ? (
-        <button
-          type="button"
-          className="conversation-turn-retry"
-          onClick={() => onRetryDelivery(turn.id)}
-        >
-          重新判断交付稿
-        </button>
-      ) : null}
+      {turn.harness?.proposals.map((proposal) => (
+        <HarnessProposalCard
+          key={proposal.id}
+          proposal={proposal}
+          blocked={proposal.kind === "delivery" ? markdownDirty : agentRulesDirty}
+          busy={Boolean(resolvingProposalIds[`${turn.id}:${proposal.id}`])}
+          onApprove={() => onApproveProposal(turn.id, proposal.id)}
+          onReject={() => onRejectProposal(turn.id, proposal.id)}
+        />
+      ))}
     </article>
   );
 }

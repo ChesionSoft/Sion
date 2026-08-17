@@ -127,6 +127,21 @@ test("workspace mutations are scoped and session loading clears stale rows first
   const loadTurnsSource = source.slice(loadTurnsStart, loadTurnsEnd);
   assert.match(loadTurnsSource, /const scope = requestScope\(projectId, nextNodeId, nextSessionId\)/);
   assert.match(loadTurnsSource, /messageScopeRef\.current !== scope/);
+
+  for (const [startMarker, endMarker, contextUpdate] of [
+    ["function openProjectImmediate", "async function loadNode", "setProject(item)"],
+    ["function selectNodeImmediate", "function updateActiveProjectUi", "updateUi("],
+  ]) {
+    const start = source.indexOf(startMarker);
+    const end = source.indexOf(endMarker, start);
+    const block = source.slice(start, end);
+    const updateIndex = block.indexOf(contextUpdate);
+    assert.ok(start >= 0 && end > start && updateIndex > 0);
+    for (const reset of ["setSessions([])", "setSessionId(null)", "setMessages([])", "setTurns([])"]) {
+      const resetIndex = block.indexOf(reset);
+      assert.ok(resetIndex >= 0 && resetIndex < updateIndex, `${startMarker} must call ${reset} before ${contextUpdate}`);
+    }
+  }
 });
 
 test("leaving the file-pool context invalidates pending import presentation", async () => {
@@ -336,6 +351,19 @@ test("model menu keyboard navigation stays within its active panel", async () =>
   assert.match(source, /ArrowLeft[\s\S]*setSubmenu\(null\)/);
 });
 
+test("node conversation requires native tool calling but export selection remains text-capable", async () => {
+  const [controls, menu, exportAction] = await Promise.all([
+    readFile("src/conversation-controls.ts", "utf8"),
+    readFile("src/components/workspace/ConversationModelMenu.tsx", "utf8"),
+    readFile("src/components/export/ExportActionBar.tsx", "utf8"),
+  ]);
+  assert.match(controls, /selectableHarnessModels/);
+  assert.match(controls, /model\.toolCalling/);
+  assert.match(menu, /requireToolCalling = true/);
+  assert.match(menu, /节点对话需要原生工具调用能力/);
+  assert.match(exportAction, /requireToolCalling=\{false\}/);
+});
+
 test("model submenu can shrink inside narrow viewports", async () => {
   const css = await readFile("src/styles/workspace.css", "utf8");
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.conversation-model-submenu\s*\{[^}]*min-width:\s*0/s);
@@ -356,7 +384,7 @@ test("conversation turns own agent status and the app no longer notices run comp
   assert.match(card, /ConversationActivityTimeline/);
   assert.match(card, /delivery-result/);
   assert.match(card, /reasoningSummary/);
-  assert.match(card, /重新判断交付稿/);
+  assert.doesNotMatch(card, /重新判断交付稿/);
 });
 
 test("conversation emits public reasoning summaries but never hidden reasoning", async () => {
@@ -374,7 +402,7 @@ test("live public reasoning is scoped and cleared at terminal or navigation boun
   assert.match(app, /listen<AgentReasoningSummaryEvent>\("agent-reasoning-summary"/);
   assert.match(app, /appendLiveReasoning/);
   assert.match(app, /removeLiveReasoning/);
-  assert.match(app, /\[project\?\.id, nodeId, sessionId\]/);
+  assert.match(app, /\[project\?\.id, nodeId, activeSessionId\]/);
 });
 
 test("reasoning disclosure is collapsed, accessible, and adds no retry action", async () => {
@@ -434,9 +462,9 @@ test("delivery regenerates locally while DOCX stays in Export Center", async () 
   assert.match(app, /locked=\{deliveryLocked\}/);
   assert.match(app, /if \(!project \|\| !node \|\| deliveryLocked\) return "cancelled"/);
   assert.match(app, /generationScopeByIdRef\.current\[payload\.generation\.id\]/);
-  assert.match(app, /sessionId, activeGenerationId, selectedFileIds, node\.revision, messageDraft\.trim\(\), now\(\)/);
+  assert.match(app, /activeSessionId, activeGenerationId, selectedFileIds, node\.revision, messageDraft\.trim\(\), now\(\)/);
   assert.match(app, /saveNode\(project\.id, nodeId, node\.revision, draft, "confirmed", now\(\)\)/);
-  assert.match(app, /deliveryGenerationScope\(project\.id, nodeId, sessionId\)/);
+  assert.match(app, /deliveryGenerationScope\(project\.id, nodeId, activeSessionId\)/);
   assert.match(app, /generationScopeByIdRef/);
   assert.match(app, /setGenerationProgressByScope/);
   const generationStatus = await readFile("src/components/workspace/DeliveryGenerationStatus.tsx", "utf8");
@@ -639,9 +667,9 @@ test("delivery decision details expose raw json diff and save result", async () 
   assert.doesNotMatch(details, /dangerouslySetInnerHTML/);
   assert.match(runDetail, /delivery_decision/);
   assert.match(runDetail, /DeliveryDecisionDetails/);
-  assert.match(appSource, /delivery-decision-token/);
-  assert.match(appSource, /liveDecisionRawByTurn/);
-  assert.match(types, /DeliveryDecisionTokenEvent/);
+  assert.doesNotMatch(appSource, /delivery-decision-token/);
+  assert.doesNotMatch(appSource, /liveDecisionRawByTurn/);
+  assert.doesNotMatch(types, /DeliveryDecisionTokenEvent/);
   assert.match(types, /DeliveryDecisionInspection/);
 });
 
@@ -840,7 +868,7 @@ test("turn chrome is a thinking-and-execution timeline with a delivery result ca
   assert.match(card, /activity\.kind !== "response"/);
   assert.match(card, /turnDeliveryPresentation/);
   assert.match(card, /formatTurnElapsed/);
-  assert.match(card, /conversation-turn-retry/);
+  assert.doesNotMatch(card, /conversation-turn-retry/);
   assert.match(disclosure, /思考了 \$\{elapsedText\}/);
   assert.match(disclosure, /conversation-reasoning-head/);
   assert.match(runDetail, /DeliveryDecisionDetails/);

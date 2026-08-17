@@ -702,17 +702,6 @@ mod tests {
                 steps: std::sync::Mutex::new(steps.into()),
             }
         }
-        fn fail() -> Self {
-            let mut steps = std::collections::VecDeque::new();
-            steps.push_back(HarnessModelStep {
-                reason: HarnessModelStepReason::Failed,
-                output: String::new(),
-                reasoning_summary: Vec::new(),
-                tool_calls: Vec::new(),
-                usage: None,
-            });
-            Self { steps: std::sync::Mutex::new(steps) }
-        }
     }
 
     impl HarnessModelClient for ScriptedProvider {

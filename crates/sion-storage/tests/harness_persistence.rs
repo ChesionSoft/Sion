@@ -12,7 +12,7 @@ use sion_core::{
 };
 use sion_storage::{
     CreateProjectInput, DeliveryProposalApplyResult, ProjectStore, RuleProposalApplyResult,
-    SaveAgentOverrideResult, SaveNodeResult,
+    SaveNodeResult,
 };
 use std::path::PathBuf;
 
@@ -132,15 +132,6 @@ fn turn_with_proposals(session_id: &str, turn_id: &str, proposals: Vec<HarnessPr
         started_at: "started".into(),
         finished_at: None,
     }
-}
-
-fn run_for(store: &ProjectStore, turn_id: &str) -> sion_agent::AgentRun {
-    store
-        .list_runs()
-        .unwrap()
-        .into_iter()
-        .find(|run| run.turn_id.as_deref() == Some(turn_id))
-        .expect("linked run exists")
 }
 
 #[test]

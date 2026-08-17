@@ -4,7 +4,6 @@ import type { DeliveryDecisionInspection, DeliveryOutcome } from "../../types";
 
 export type DeliveryDecisionDetailsProps = {
   inspection?: DeliveryDecisionInspection;
-  liveRaw?: string;
   outcome?: DeliveryOutcome;
 };
 
@@ -33,17 +32,16 @@ function outcomeTone(outcome?: DeliveryOutcome): string {
   }
 }
 
-export function DeliveryDecisionDetails({ inspection, liveRaw, outcome }: DeliveryDecisionDetailsProps) {
-  const raw = liveRaw ?? inspection?.rawResponse ?? "";
+export function DeliveryDecisionDetails({ inspection, outcome }: DeliveryDecisionDetailsProps) {
+  const raw = inspection?.rawResponse ?? "";
   const base = inspection?.baseMarkdown ?? "";
   const proposed = inspection?.proposedMarkdown;
-  const streaming = Boolean(liveRaw) && !inspection;
   return (
     <details className="delivery-decision-details">
       <summary>交付判断详情</summary>
       <section className="delivery-decision-section">
         <h4>模型返回的交付 JSON</h4>
-        <pre className="delivery-decision-raw" aria-live={streaming ? "polite" : undefined}>{raw || "暂无"}</pre>
+        <pre className="delivery-decision-raw">{raw || "暂无"}</pre>
       </section>
       {proposed ? (
         <section className="delivery-decision-section">

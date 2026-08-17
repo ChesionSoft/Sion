@@ -543,6 +543,21 @@
 .delivery-result.is-error { border-color: color-mix(in srgb, #cf222e 42%, var(--border)); }
 .delivery-result.is-error .delivery-result-main strong { color: #cf222e; }
 
+.harness-proposal { display: grid; gap: 9px; padding-top: 4px; }
+.harness-proposal-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.harness-proposal-head > div { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.harness-proposal-head strong { font-size: 12px; font-weight: 600; }
+.harness-proposal-head small, .harness-proposal-status, .harness-proposal-note { color: var(--text-faint); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.harness-proposal-status { flex: none; border: 1px solid var(--border); border-radius: 6px; padding: 1px 5px; }
+.harness-proposal-reason { margin: -3px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.harness-proposal-diff { margin: 0; max-height: min(300px, 45vh); overflow: auto; }
+.harness-proposal-note { margin: 0; }
+.harness-proposal-note.is-stale { color: #b45309; }
+.harness-proposal-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.harness-proposal.is-applied .harness-proposal-status { color: #1a7f37; border-color: color-mix(in srgb, #2da44e 42%, var(--border)); }
+.harness-proposal.is-rejected .harness-proposal-status { color: var(--text-muted); }
+.harness-proposal.is-stale .harness-proposal-status { color: #b45309; border-color: color-mix(in srgb, #b45309 42%, var(--border)); }
+
 @media (prefers-reduced-motion: reduce) {
   .conversation-activity-item.is-running .conversation-activity-marker,
   .conversation-activity-item.is-queued .conversation-activity-marker,
@@ -568,6 +583,11 @@
   .workspace-breadcrumb span { max-width: 110px; }
   .conversation-thread { padding-inline: 24px; }
   .conversation-composer { width: calc(100% - 32px); }
+}
+
+@media (max-width: 560px) {
+  .harness-proposal-head { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .harness-proposal-actions .ui-button { flex: 1 1 120px; }
 }
 
 @media (max-width: 620px) {

@@ -11,6 +11,10 @@ const files = [
   "src/components/workspace/FilePoolWorkspace.tsx",
   "src-tauri/src/lib.rs",
   "src-tauri/src/conversation_runtime.rs",
+  "src-tauri/src/harness_runtime.rs",
+  "src-tauri/src/harness_scope.rs",
+  "src-tauri/src/harness_tools.rs",
+  "src-tauri/src/harness_proposals.rs",
   "src-tauri/src/turn_runtime.rs",
   "src-tauri/src/provider_settings.rs",
   "src/conversation-turns.ts",
@@ -22,6 +26,8 @@ const forbidden = [
   ["project-level .sion", /\.sion\/(?:chat|files|nodes|runs)|写入 \.sion|项目.*\.sion/],
   ["credential store", /Keychain|Credential Manager|钥匙串|系统凭据库|keyring/i],
   ["old setting", /defaultProjectDirectory|default_project_directory/],
+  ["raw model path schema", /["'](?:path|filePath|directory|glob)["']\s*:/],
+  ["raw model network schema", /["'](?:url|uri|endpoint)["']\s*:/],
 ];
 const failures = [];
 for (const file of files) {

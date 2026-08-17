@@ -4,7 +4,6 @@ import type { ChatMessage, ConversationTurn } from "../src/types.ts";
 import {
   groupConversation,
   mergeTurnSnapshot,
-  turnCanRetryDelivery,
   turnHeadline,
 } from "../src/conversation-turns.ts";
 
@@ -54,18 +53,6 @@ test("grouping links one user and assistant message without duplicating legacy m
   );
 });
 
-test("retry is allowed for recoverable delivery outcomes when the draft is clean", () => {
-  const awaiting = turn({
-    deliveryOutcome: { kind: "awaiting_manual_draft_resolution", expectedRevision: 7 },
-  });
-  assert.equal(turnCanRetryDelivery(awaiting, false), true);
-  assert.equal(turnCanRetryDelivery(awaiting, true), false);
-  assert.equal(turnCanRetryDelivery(turn({ deliveryOutcome: { kind: "conflict", expectedRevision: 7, actualRevision: 8 } }), false), true);
-  assert.equal(turnCanRetryDelivery(turn({ deliveryOutcome: { kind: "failed", stage: "decision", publicError: "模型服务失败" } }), false), true);
-  assert.equal(turnCanRetryDelivery(turn({ deliveryOutcome: { kind: "failed", stage: "response", publicError: "模型服务失败" } }), false), false);
-  assert.equal(turnCanRetryDelivery(turn({ deliveryOutcome: { kind: "unchanged" } }), false), false);
-});
-
 test("headline summarizes the terminal delivery outcome", () => {
   assert.equal(
     turnHeadline(turn({ deliveryOutcome: { kind: "patch_applied", previousRevision: 7, revision: 8, sectionTitles: ["建设目标"] } })),
@@ -87,4 +74,25 @@ test("response failures headline the mapped provider reason", () => {
     turnHeadline(failed),
     "模型服务上游网关超时（HTTP 504），请稍后重新发送",
   );
+});
+
+test("harness turns use proposal state instead of a legacy delivery outcome", () => {
+  const harnessTurn = turn({
+    deliveryOutcome: undefined,
+    harness: {
+      proposals: [{
+        id: "proposal-1",
+        kind: "delivery",
+        status: "ready",
+        projectId: "project-1",
+        nodeId: "goals",
+        turnId: "turn-1",
+        baseContent: "# 当前稿",
+        proposedContent: "# 建议稿",
+        reason: "补全目标",
+        createdAt: "2026-08-17T00:00:00Z",
+      }],
+    },
+  });
+  assert.equal(turnHeadline(harnessTurn), "已准备 1 项文稿提案");
 });

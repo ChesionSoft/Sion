@@ -9,7 +9,6 @@ import {
   type AgentRun,
   type AgentRunDetail,
   type AgentRunStartOutcome,
-  type AgentRunStartResult,
   type AppSettings,
   type ChatMessage,
   type ChatModelSelection,
@@ -26,6 +25,8 @@ import {
   type ExportSaveAsResult,
   type ExportWorkspaceSnapshot,
   type FilePreview,
+  type HarnessProposalRejected,
+  type HarnessProposalResolution,
   type NodeId,
   type NodeStatus,
   type ProjectFile,
@@ -245,18 +246,37 @@ export const listConversationTurns = async (
     })
   ).turns;
 
-export const retryConversationTurnDelivery = (
+export const harnessProposalApply = (
   projectId: string,
   nodeId: NodeId,
   sessionId: string,
   turnId: string,
+  proposalId: string,
   now: string,
-) =>
-  invokePayload<AgentRunStartResult>("conversation_turn_retry_delivery", {
+): Promise<HarnessProposalResolution> =>
+  invokePayload<HarnessProposalResolution>("harness_proposal_apply", {
     projectId,
     nodeId,
     sessionId,
     turnId,
+    proposalId,
+    now,
+  });
+
+export const harnessProposalReject = (
+  projectId: string,
+  nodeId: NodeId,
+  sessionId: string,
+  turnId: string,
+  proposalId: string,
+  now: string,
+): Promise<HarnessProposalRejected> =>
+  invokePayload<HarnessProposalRejected>("harness_proposal_reject", {
+    projectId,
+    nodeId,
+    sessionId,
+    turnId,
+    proposalId,
     now,
   });
 

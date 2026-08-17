@@ -16,15 +16,17 @@ export type ConversationPaneProps = {
   messages: ChatMessage[];
   turns: ConversationTurn[];
   liveReasoningByRun: Record<string, string>;
-  liveDecisionRawByTurn: Record<string, string>;
   activeRunId: string | null;
   sendingMessage: boolean;
   messageDraft: string;
   markdownDirty: boolean;
+  agentRulesDirty: boolean;
+  resolvingProposalIds: Record<string, true>;
   onMessageDraft: (value: string) => void;
   onSend: () => void;
   onCancel: () => void;
-  onRetryDelivery: (turnId: string) => void;
+  onApproveProposal: (turnId: string, proposalId: string) => void;
+  onRejectProposal: (turnId: string, proposalId: string) => void;
   onOpenRunDetail: (runId: string) => void;
   providers: Provider[];
   files: ProjectFile[];
@@ -44,8 +46,8 @@ const reasoningLabel: Record<string, string> = { off: "关闭", low: "低", medi
 
 export function ConversationPane(props: ConversationPaneProps) {
   const {
-    nodeAvailable, messages, turns, liveReasoningByRun, liveDecisionRawByTurn, activeRunId, sendingMessage, messageDraft, markdownDirty,
-    onMessageDraft, onSend, onCancel, onRetryDelivery, onOpenRunDetail,
+    nodeAvailable, messages, turns, liveReasoningByRun, activeRunId, sendingMessage, messageDraft, markdownDirty, agentRulesDirty, resolvingProposalIds,
+    onMessageDraft, onSend, onCancel, onApproveProposal, onRejectProposal, onOpenRunDetail,
     providers, files, selectedFileIds, importing, modelSelection, savingModelSelection,
     conversationContext, loadingConversationContext, conversationContextError, onModelSelection, onToggleFile, onImportFile,
   } = props;
@@ -123,9 +125,11 @@ export function ConversationPane(props: ConversationPaneProps) {
               assistantMessage={item.assistantMessage}
               streamingMessage={item.streamingMessage}
               liveReasoning={liveReasoningByRun[item.turn.runId]}
-              liveDecisionRaw={liveDecisionRawByTurn[item.turn.id]}
               markdownDirty={markdownDirty}
-              onRetryDelivery={onRetryDelivery}
+              agentRulesDirty={agentRulesDirty}
+              resolvingProposalIds={resolvingProposalIds}
+              onApproveProposal={onApproveProposal}
+              onRejectProposal={onRejectProposal}
               onOpenRunDetail={onOpenRunDetail}
             />
           );

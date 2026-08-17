@@ -7,6 +7,7 @@ const RUN_STATUS_LABEL: Record<AgentRun["status"], string> = {
   completed: "已完成",
   failed: "失败",
   cancelled: "已取消",
+  interrupted: "已中断",
 };
 
 const RUN_KIND_LABEL: Record<AgentRun["kind"], string> = {
@@ -14,6 +15,7 @@ const RUN_KIND_LABEL: Record<AgentRun["kind"], string> = {
   delivery_decision: "交付判断",
   delivery_retry: "交付重试",
   delivery_regeneration: "重新生成交付稿",
+  harness: "文档 Harness",
 };
 
 function statusKind(status: AgentRun["status"]) {

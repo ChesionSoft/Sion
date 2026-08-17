@@ -582,7 +582,10 @@ pub(crate) fn prepare_harness_send(
         message,
         selection.clone(),
     )?;
-    let tool_definitions = crate::harness_tools::tool_definitions();
+    let mut tool_definitions = crate::harness_tools::tool_definitions();
+    tool_definitions.extend(crate::harness_proposals::proposal_definitions(
+        scope.rule_write_authorized,
+    ));
     let limits = HarnessLimits::default();
     let history = store
         .messages(node_id, session_id)

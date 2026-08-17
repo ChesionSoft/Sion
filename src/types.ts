@@ -1,7 +1,7 @@
 // Shared frontend domain types and component prop contracts. This is the single
 // source of truth for the wire shapes exchanged with the Rust command layer.
 
-export const API_VERSION = 1;
+export const API_VERSION = 2;
 
 export const NODES = [
   ["basic-info", "项目基本信息"],
@@ -155,13 +155,13 @@ export type Provider = {
   hasApiKey: boolean;
 };
 
-export type AgentRunKind = "conversation" | "delivery_decision" | "delivery_retry" | "delivery_regeneration";
+export type AgentRunKind = "conversation" | "delivery_decision" | "delivery_retry" | "delivery_regeneration" | "harness";
 export type AgentRun = {
   id: string;
   projectId: string;
   nodeId: NodeId;
   kind: AgentRunKind;
-  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -176,7 +176,6 @@ export type AgentRun = {
   usage?: TurnTokenUsage;
   durationMs?: number;
 };
-export type AgentRunStartResult = { run: AgentRun; turn: ConversationTurn };
 export type AgentRunStartOutcome =
   | { kind: "started"; run: AgentRun; turn: ConversationTurn }
   | {
@@ -187,10 +186,9 @@ export type AgentRunStartOutcome =
     };
 export type AgentTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
 export type AgentReasoningSummaryEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; delta: string };
-export type DeliveryDecisionTokenEvent = { runId: string; projectId: string; nodeId: NodeId; sessionId: string; turnId: string; delta: string };
 export type AgentFinishedEvent = { run: AgentRun };
 export type TurnStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
-export type TurnActivityKind = "response" | "delivery_check" | "delivery_validate" | "delivery_save";
+export type TurnActivityKind = "response" | "delivery_check" | "delivery_validate" | "delivery_save" | "tool_read" | "search" | "proposal" | "validation" | "proposal_ready" | "other";
 export type TurnActivityStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 export type DeliveryStage = "response" | "decision" | "validation" | "save";
 export type TurnActivity = {
@@ -215,6 +213,47 @@ export type DeliveryDecisionInspection = {
   baseMarkdown: string;
   proposedMarkdown?: string;
 };
+export type HarnessProposalKind = "delivery" | "agent_rule";
+export type HarnessProposalStatus = "ready" | "rejected" | "applied" | "stale";
+export type HarnessProposal = {
+  id: string;
+  kind: HarnessProposalKind;
+  status: HarnessProposalStatus;
+  projectId: string;
+  nodeId: NodeId;
+  turnId: string;
+  baseRevision?: number;
+  baseRuleDigest?: string;
+  baseContent: string;
+  proposedContent: string;
+  reason: string;
+  validationSummary?: string;
+  createdAt: string;
+  resolvedAt?: string;
+  latestRevision?: number;
+  latestRuleDigest?: string;
+};
+export type SanitizedToolStatus = "completed" | "error" | "unauthorized" | "skipped";
+export type SanitizedToolTrace = {
+  callId: string;
+  name: string;
+  status: SanitizedToolStatus;
+  summary: string;
+  startedAt: string;
+  finishedAt: string;
+};
+export type HarnessLimitKind = "model_steps" | "tool_calls" | "validation_retries" | "tokens" | "wall_clock" | "duplicate_call";
+export type HarnessDiagnostics = {
+  modelSteps: number;
+  toolCalls: number;
+  validationRetries: number;
+  limitReached?: HarnessLimitKind;
+  toolTraces: SanitizedToolTrace[];
+};
+export type HarnessTurnState = {
+  proposals: HarnessProposal[];
+  diagnostics?: HarnessDiagnostics;
+};
 export type ConversationTurn = {
   id: string;
   projectId: string;
@@ -226,15 +265,33 @@ export type ConversationTurn = {
   status: TurnStatus;
   activities: TurnActivity[];
   reasoningSummary?: string;
-  deliveryOutcome: DeliveryOutcome;
+  /** Legacy fixed-pipeline outcome; Harness turns omit this. */
+  deliveryOutcome?: DeliveryOutcome;
   deliveryInspection?: DeliveryDecisionInspection;
+  /** Explicit Harness marker/state for new node conversations. */
+  harness?: HarnessTurnState;
   startedAt: string;
   finishedAt?: string;
+};
+export type HarnessProposalResolution =
+  | { kind: "applied"; turn: ConversationTurn; savedNode?: WorkflowNode; refreshedRules?: EffectiveAgentRules }
+  | { kind: "stale"; turn: ConversationTurn; latestRevision?: number; latestRuleDigest?: string }
+  | { kind: "not_found" }
+  | { kind: "not_ready" };
+export type HarnessProposalRejected = { turn: ConversationTurn };
+export type HarnessRunDetailSummary = {
+  modelSteps: number;
+  toolCalls: number;
+  validationRetries: number;
+  limitReached?: HarnessLimitKind;
+  toolTraces: SanitizedToolTrace[];
+  proposals: HarnessProposal[];
 };
 export type AgentRunDetail = {
   run: AgentRun;
   turn?: ConversationTurn;
   assistantMessage?: ChatMessage;
+  harnessSummary?: HarnessRunDetailSummary;
 };
 export type ConversationTurnEvent = { turn: ConversationTurn; savedNode?: WorkflowNode };
 export type DeliveryGenerationStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "conflict";

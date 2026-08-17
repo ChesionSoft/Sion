@@ -42,7 +42,7 @@ mod harness_tools;
 mod turn_runtime;
 use conversation_runtime::{EffectiveAgentRules, compose_effective_agent_rules};
 
-const API_VERSION: u16 = 1;
+const API_VERSION: u16 = 2;
 
 fn utc_now() -> String {
     time::OffsetDateTime::now_utc()
@@ -396,6 +396,7 @@ fn recover_interrupted_conversation_runs(store: &ProjectStore, now: &str) {
     }
 }
 
+#[allow(dead_code)]
 fn delivery_outcome_can_retry(outcome: Option<&DeliveryOutcome>) -> bool {
     matches!(
         outcome,
@@ -1274,6 +1275,242 @@ fn conversation_turn_list(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct HarnessProposalRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: String,
+    turn_id: String,
+    proposal_id: String,
+    now: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum HarnessProposalResolution {
+    Applied {
+        turn: ConversationTurn,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        saved_node: Option<WorkflowNode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        refreshed_rules: Option<EffectiveAgentRules>,
+    },
+    Stale {
+        turn: ConversationTurn,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latest_revision: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latest_rule_digest: Option<String>,
+    },
+    NotFound,
+    NotReady,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HarnessProposalRejected {
+    turn: ConversationTurn,
+}
+
+/// Loads the turn after a resolution so the response carries the updated
+/// proposal state.
+fn reload_turn(
+    store: &ProjectStore,
+    node_id: WorkflowNodeId,
+    session_id: &str,
+    turn_id: &str,
+) -> Result<ConversationTurn, ApiError> {
+    store
+        .turns(node_id, session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .ok_or_else(|| ApiError::CheckFailed("会话轮次未找到".to_string()))
+}
+
+fn load_harness_proposal(
+    store: &ProjectStore,
+    node_id: WorkflowNodeId,
+    session_id: &str,
+    turn_id: &str,
+    proposal_id: &str,
+) -> Result<sion_core::HarnessProposal, ApiError> {
+    let turn = reload_turn(store, node_id, session_id, turn_id)?;
+    turn.harness
+        .as_ref()
+        .and_then(|harness| harness.proposals.iter().find(|p| p.id == proposal_id))
+        .cloned()
+        .ok_or_else(|| ApiError::CheckFailed("提案未找到或不属于本轮".to_string()))
+}
+
+/// Applies a reviewable Harness proposal by ID. The frontend never supplies
+/// proposed content; the persisted proposal's validated content is what gets
+/// written through CAS/digest checks.
+#[tauri::command]
+fn harness_proposal_apply(
+    request: HarnessProposalRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<HarnessProposalResolution>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(&project_root);
+    store
+        .session(request.node_id, &request.session_id)
+        .map_err(|_| ApiError::CheckFailed("会话不存在或已删除".to_string()))?;
+    let proposal = load_harness_proposal(
+        &store,
+        request.node_id,
+        &request.session_id,
+        &request.turn_id,
+        &request.proposal_id,
+    )?;
+    let resolution = match proposal.kind {
+        sion_core::HarnessProposalKind::Delivery => {
+            match store
+                .apply_delivery_proposal(
+                    request.node_id,
+                    &request.session_id,
+                    &request.turn_id,
+                    &request.proposal_id,
+                    request.now.clone(),
+                )
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?
+            {
+                sion_storage::DeliveryProposalApplyResult::Applied {
+                    saved_node,
+                    ..
+                } => HarnessProposalResolution::Applied {
+                    turn: reload_turn(
+                        &store,
+                        request.node_id,
+                        &request.session_id,
+                        &request.turn_id,
+                    )?,
+                    saved_node: Some(saved_node),
+                    refreshed_rules: None,
+                },
+                sion_storage::DeliveryProposalApplyResult::Stale {
+                    latest_node, ..
+                } => HarnessProposalResolution::Stale {
+                    turn: reload_turn(
+                        &store,
+                        request.node_id,
+                        &request.session_id,
+                        &request.turn_id,
+                    )?,
+                    latest_revision: Some(latest_node.revision),
+                    latest_rule_digest: None,
+                },
+                sion_storage::DeliveryProposalApplyResult::NotFound => {
+                    HarnessProposalResolution::NotFound
+                }
+                sion_storage::DeliveryProposalApplyResult::NotReady => {
+                    HarnessProposalResolution::NotReady
+                }
+            }
+        }
+        sion_core::HarnessProposalKind::AgentRule => {
+            match store
+                .apply_agent_rule_proposal(
+                    request.node_id,
+                    &request.session_id,
+                    &request.turn_id,
+                    &request.proposal_id,
+                    request.now.clone(),
+                )
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?
+            {
+                sion_storage::RuleProposalApplyResult::Applied { .. } => {
+                    let override_markdown = store
+                        .agent_override(request.node_id)
+                        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+                    HarnessProposalResolution::Applied {
+                        turn: reload_turn(
+                            &store,
+                            request.node_id,
+                            &request.session_id,
+                            &request.turn_id,
+                        )?,
+                        saved_node: None,
+                        refreshed_rules: Some(compose_effective_agent_rules(
+                            request.node_id,
+                            override_markdown,
+                        )),
+                    }
+                }
+                sion_storage::RuleProposalApplyResult::Stale {
+                    latest_digest, ..
+                } => HarnessProposalResolution::Stale {
+                    turn: reload_turn(
+                        &store,
+                        request.node_id,
+                        &request.session_id,
+                        &request.turn_id,
+                    )?,
+                    latest_revision: None,
+                    latest_rule_digest: Some(latest_digest),
+                },
+                sion_storage::RuleProposalApplyResult::NotFound => {
+                    HarnessProposalResolution::NotFound
+                }
+                sion_storage::RuleProposalApplyResult::NotReady => {
+                    HarnessProposalResolution::NotReady
+                }
+            }
+        }
+    };
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: resolution,
+    })
+}
+
+/// Rejects a reviewable Harness proposal by ID. Only the durable proposal
+/// state changes; node and rule content are never touched.
+#[tauri::command]
+fn harness_proposal_reject(
+    request: HarnessProposalRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<HarnessProposalRejected>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(&project_root);
+    store
+        .session(request.node_id, &request.session_id)
+        .map_err(|_| ApiError::CheckFailed("会话不存在或已删除".to_string()))?;
+    let _proposal = load_harness_proposal(
+        &store,
+        request.node_id,
+        &request.session_id,
+        &request.turn_id,
+        &request.proposal_id,
+    )?;
+    store
+        .reject_harness_proposal(
+            request.node_id,
+            &request.session_id,
+            &request.turn_id,
+            &request.proposal_id,
+            request.now.clone(),
+        )
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: HarnessProposalRejected {
+            turn: reload_turn(
+                &store,
+                request.node_id,
+                &request.session_id,
+                &request.turn_id,
+            )?,
+        },
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct ConversationTurnRetryRequest {
     #[serde(flatten)]
     version: VersionedRequest,
@@ -1285,6 +1522,7 @@ struct ConversationTurnRetryRequest {
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 fn conversation_turn_retry_delivery(
     request: ConversationTurnRetryRequest,
     app: tauri::AppHandle,
@@ -3664,7 +3902,8 @@ pub fn run() {
             agent_run_detail,
             agent_run_cancel,
             conversation_turn_list,
-            conversation_turn_retry_delivery,
+            harness_proposal_apply,
+            harness_proposal_reject,
             delivery_regeneration_start,
             delivery_regeneration_cancel,
             project_create,
@@ -3839,7 +4078,13 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_ipc_version() {
-        let error = assert_api_version(&VersionedRequest { api_version: 2 }).unwrap_err();
+        let error = assert_api_version(&VersionedRequest { api_version: 99 }).unwrap_err();
+        assert!(error.to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn rejects_the_v1_ipc_version_after_the_v2_migration() {
+        let error = assert_api_version(&VersionedRequest { api_version: 1 }).unwrap_err();
         assert!(error.to_string().contains("unsupported"));
     }
 

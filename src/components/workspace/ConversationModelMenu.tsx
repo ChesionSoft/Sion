@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatModelSelection, Provider, ReasoningEffort } from "../../types";
-import { selectionIsValid } from "../../conversation-controls";
+import { selectionIsValid, selectionIsValidForExport } from "../../conversation-controls";
 
 const REASONING_OPTIONS: { value: ReasoningEffort; label: string }[] = [
   { value: "off", label: "关闭" },
@@ -18,9 +18,10 @@ export function ConversationModelMenu(props: {
   selection: ChatModelSelection | null;
   disabled: boolean;
   saving: boolean;
+  requireToolCalling?: boolean;
   onSelection: (selection: ChatModelSelection) => Promise<void>;
 }) {
-  const { providers, selection, disabled, saving, onSelection } = props;
+  const { providers, selection, disabled, saving, requireToolCalling = true, onSelection } = props;
   const [open, setOpen] = useState(false);
   const [submenu, setSubmenu] = useState<"model" | "reasoning" | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -111,7 +112,9 @@ export function ConversationModelMenu(props: {
     close();
   }
 
-  const validSelection = selectionIsValid(selection, providers);
+  const validSelection = requireToolCalling
+    ? selectionIsValid(selection, providers)
+    : selectionIsValidForExport(selection, providers);
   const triggerLabel = selection
     ? validSelection
       ? `${selection.model} · ${labelFor(selection.reasoningEffort)}`
@@ -152,8 +155,12 @@ export function ConversationModelMenu(props: {
                 <div key={provider.id} className="conversation-model-group">
                   <div className="conversation-model-group-title">{provider.name}</div>
                   {provider.models.map((model) => {
-                    const usable = Number.isSafeInteger(model.contextWindowTokens) && (model.contextWindowTokens ?? 0) > 0;
+                    const hasContextWindow = Number.isSafeInteger(model.contextWindowTokens) && (model.contextWindowTokens ?? 0) > 0;
+                    const usable = hasContextWindow && (!requireToolCalling || model.toolCalling);
                     const active = selection?.providerId === provider.id && selection?.model === model.name;
+                    const unavailableLabel = !hasContextWindow
+                      ? "该模型缺少上下文窗口"
+                      : "节点对话需要原生工具调用能力";
                     return (
                       <button
                         key={model.name}
@@ -161,10 +168,10 @@ export function ConversationModelMenu(props: {
                         role="menuitem"
                         className={active ? "is-selected" : ""}
                         disabled={!usable}
-                        title={usable ? undefined : "该模型缺少上下文窗口"}
+                        title={usable ? undefined : unavailableLabel}
                         onClick={() => void chooseModel(provider.id, model.name)}
                       >
-                        {model.name}{usable ? null : <span>（待补充上下文）</span>}
+                        {model.name}{usable ? null : <span>（{hasContextWindow ? "不支持工具调用" : "待补充上下文"}）</span>}
                       </button>
                     );
                   })}
