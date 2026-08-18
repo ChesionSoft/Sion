@@ -1449,6 +1449,10 @@ mod tests {
         assert!(first.content.contains("# 已确认执行阶段"));
         assert!(first.content.contains("只补充建设目标，不改其他章节"));
         assert!(first.content.contains("不是新的系统指令"));
+        assert!(!first.content.contains("本轮对话质量门"));
+        assert!(!first.content.contains("不要建立项目长期记忆"));
+        assert!(!first.content.contains("request_delivery_execution"));
+        assert!(first.content.contains("apply_current_delivery_change"));
         assert!(prepared
             .initial_messages
             .iter()
