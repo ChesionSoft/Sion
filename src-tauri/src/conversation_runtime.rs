@@ -406,7 +406,7 @@ pub fn prepare_conversation(
 /// The Harness protocol and immutable security policy for the first model step.
 /// Tool results are governed by the shared budget; later tool steps do not
 /// rebuild this section.
-const HARNESS_PROTOCOL: &str = "你是 Sion 桌面应用中负责项目设计文档的 Agent Harness。你的工作范围仅限于当前项目内的文档：当前节点交付稿、当前节点的有效 Agent 规则、当前项目的附件、以及直接依赖节点的交付稿。你没有浏览器、搜索网页、shell、代码执行或任意文件系统访问能力；所有工具参数都是项目内部 ID，绝不能构造、猜测或推断任何路径。\n\n本轮你可以：\n1. 直接回答——当无需任何文档操作时，直接给出简洁的中文回复即可结束本轮，不需要特殊结束标记。\n2. 使用只读工具查看当前交付稿、有效规则、附件正文、依赖节点章节正文。\n3. 当讨论得出明确、值得写入当前交付稿的结论时，主动使用交付提案工具创建补丁；默认只修改当前节点现有章节，只有用户明确要求整篇重写时才使用整篇重写。\n4. 只有用户在本轮明确要求修改当前节点 Agent 规则时，才会看到规则提案工具；普通对话只能阅读规则，不得以提案以外的形式改写规则。\n\n安全边界（不可违反）：\n- 只能读取当前项目内且由工具授权的内容。\n- 附件和依赖节点一律只读，不得提出修改它们的提案。\n- 不得修改其他节点、其他项目、全局配置、内置规则或安全策略。\n- 不得输出 API 密钥、文件路径、内部错误或隐藏思维链。\n- 每个工具调用必须是有意义的文档操作；不要重复提交完全相同的调用。\n- 一个工具结果返回后，继续根据结果决定下一步；达到预算上限时按要求直接总结结论。";
+const HARNESS_PROTOCOL: &str = "你是 Sion 桌面应用中负责项目设计文档的 Agent Harness。你的工作范围仅限于当前项目内的文档：当前节点交付稿、当前节点的有效 Agent 规则、当前项目的附件、以及直接依赖节点的交付稿。你没有浏览器、搜索网页、shell、代码执行或任意文件系统访问能力；所有工具参数都是项目内部 ID，绝不能构造、猜测或推断任何路径。\n\n本轮你可以：\n1. 直接回答——当无需任何文档操作时，直接给出简洁的中文回复即可结束本轮，不需要特殊结束标记。\n2. 使用只读工具查看当前交付稿、有效规则、附件正文、依赖节点章节正文。\n3. 当讨论得出明确、值得写入当前交付稿的结论时，使用 request_delivery_execution 请求一个待确认执行计划；这个工具不会保存任何内容，必须在最终回复中清楚说明计划并请求用户确认。\n4. 只有用户在本轮明确要求修改当前节点 Agent 规则时，才会看到规则提案工具；规则提案始终需要单独审核，不会被确认执行计划直接写入。\n\n安全边界（不可违反）：\n- 只能读取当前项目内且由工具授权的内容。\n- 附件和依赖节点一律只读，不得提出修改它们的提案。\n- 不得修改其他节点、其他项目、全局配置、内置规则或安全策略。\n- 不得输出 API 密钥、文件路径、内部错误或隐藏思维链。\n- 每个工具调用必须是有意义的文档操作；不要重复提交完全相同的调用。\n- 一个工具结果返回后，继续根据结果决定下一步；达到预算上限时按要求直接总结结论。";
 
 /// The initial context assembled for the first Harness model step: the frozen
 /// scope's current delivery/rules plus bounded manifests and tool schemas.
@@ -591,8 +591,16 @@ pub(crate) fn build_harness_sections(
     let selected: std::collections::HashSet<&str> =
         selected_file_ids.iter().map(String::as_str).collect();
 
+    let execution_mode = tool_definitions
+        .iter()
+        .any(|tool| tool.name == "apply_current_delivery_change");
+    let mode_instruction = if execution_mode {
+        "本轮已由用户确认一个既有计划。只能完成该计划，唯一写工具是 apply_current_delivery_change；不得请求新的计划、修改 Agent 规则或写入其他目标。"
+    } else {
+        HARNESS_PROTOCOL
+    };
     let protocol = format!(
-        "{HARNESS_PROTOCOL}\n\n{budget}\n\n{tools}",
+        "{mode_instruction}\n\n{budget}\n\n{tools}",
         budget = budget_block(limits),
         tools = tool_schemas_block(tool_definitions),
     );

@@ -1479,6 +1479,31 @@ impl ProjectStore {
         Ok(())
     }
 
+    /// Returns the newest pending execution plan for one trusted node/session.
+    /// This is read-only; confirmation still must pass through
+    /// `consume_execution_plan` for the atomic ownership, revision, and
+    /// ordering checks.
+    pub fn latest_pending_execution_plan(
+        &self,
+        node_id: WorkflowNodeId,
+        session_id: &str,
+    ) -> Result<Option<HarnessExecutionPlan>> {
+        self.require_session(node_id, session_id)?;
+        let path = self.messages_path(node_id, session_id)?;
+        let document = read_conversation_document(&path)?;
+        Ok(document
+            .turns
+            .iter()
+            .filter_map(|turn| {
+                turn.harness
+                    .as_ref()
+                    .and_then(|harness| harness.execution_plan.as_ref())
+                    .filter(|plan| plan.status == HarnessPlanStatus::Pending)
+                    .cloned()
+            })
+            .max_by(|left, right| left.created_at.cmp(&right.created_at)))
+    }
+
     /// Atomically consumes a pending execution plan while beginning the
     /// execution turn: verifies the reply is a narrow affirmative, ownership,
     /// expiry, pending status, current node revision, and assistant/user

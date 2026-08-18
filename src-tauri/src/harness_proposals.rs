@@ -1,11 +1,12 @@
-//! Validated delivery and Agent-rule proposal services.
+//! Validated Agent-rule proposal and execution-plan request services.
 //!
-//! Proposal tools create deterministic, reviewable candidates without ever
-//! persisting the delivery or Agent override. Tool execution cannot call
-//! `save_node_if_revision` or `save_agent_override_if_digest`; only user-approved
-//! proposal resolution may persist document content. Candidates stay in memory
-//! during the active loop and become durable `HarnessProposal` records only for
-//! valid ready proposals or explicit discards needed for audit.
+//! A normal planning Harness turn may create one durable pending execution
+//! plan candidate (`request_delivery_execution`) and, only when the user
+//! explicitly asks, review-only Agent-rule proposal candidates. Tool execution
+//! never calls `save_node_if_revision` or `save_agent_override_if_digest`;
+//! only user-approved resolution (or the confirmed execution turn) may persist
+//! document content. Candidates stay in memory during the active loop and
+//! become durable records only at the terminal checkpoint.
 
 // The harness runtime gains its orchestration callers in Tasks 7 and 8.
 #![allow(dead_code)]
@@ -14,9 +15,9 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 use sion_core::{
-    DeliveryProposalChange, DeliveryProposalError, HarnessProposal, HarnessProposalKind,
-    HarnessProposalStatus, HarnessToolCall, HarnessToolDefinition, HarnessToolStatus,
-    WorkflowNode, document_diff_summary, resolve_delivery_proposal, validate_agent_rule_override,
+    HarnessProposal, HarnessProposalKind, HarnessProposalStatus, HarnessToolCall,
+    HarnessToolDefinition, HarnessToolStatus, WorkflowNode, document_diff_summary,
+    validate_agent_rule_override,
 };
 use sion_storage::ProjectStore;
 
@@ -25,11 +26,98 @@ use crate::harness_tools::{ToolError, ToolExecution, validate_tool_arguments};
 
 /// Maximum lines in a proposal diff summary returned to the model.
 const MAX_DIFF_SUMMARY_LINES: usize = 40;
-/// Maximum length of a proposal reason sent by the model.
+/// Maximum length of a proposal reason or execution-plan summary.
 const MAX_REASON_CHARS: usize = 400;
+/// How long a pending execution plan stays confirmable (ISO duration addition).
+const PLAN_EXPIRY_SECONDS: u64 = 30 * 60;
 
 /// The maximum automatic validation retries per proposal lineage.
 pub(crate) const MAX_VALIDATION_RETRIES: u32 = 2;
+
+/// Adds an ISO-8601 offset (seconds) to an ISO timestamp and returns the new
+/// ISO string. Inputs use the app's fixed UTC ISO format, so naive string
+/// arithmetic on the date components is sufficient for the bounded expiry.
+fn expiry_from_now(now: &str) -> String {
+    let offset = std::time::Duration::from_secs(PLAN_EXPIRY_SECONDS);
+    let parsed = iso_parse(now);
+    let expanded = parsed + offset.as_secs();
+    iso_format(now, expanded)
+}
+
+/// Parses `YYYY-MM-DDTHH:MM:SS(.fff)?Z` into a seconds-since-epoch estimate
+/// using pure arithmetic; returns 0 for unparseable input (expiry then fails
+/// closed at the next comparison).
+fn iso_parse(now: &str) -> u64 {
+    let digits: Vec<u64> = now
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .map(|c| c.to_digit(10).unwrap_or(0) as u64)
+        .collect();
+    if digits.len() < 14 {
+        return 0;
+    }
+    let year = digits[0] * 1000 + digits[1] * 100 + digits[2] * 10 + digits[3];
+    let month = digits[4] * 10 + digits[5];
+    let day = digits[6] * 10 + digits[7];
+    let hour = digits[8] * 10 + digits[9];
+    let minute = digits[10] * 10 + digits[11];
+    let second = digits[12] * 10 + digits[13];
+    let days = days_from_civil(year, month, day);
+    (days as u64) * 86_400 + hour * 3_600 + minute * 60 + second
+}
+
+fn iso_format(now: &str, seconds: u64) -> String {
+    // Preserve fractional seconds from the original input when present;
+    // otherwise emit a plain second resolution.
+    let base = format_iso(seconds);
+    if let Some(fraction) = now
+        .split_once('.')
+        .and_then(|(_, rest)| rest.split('Z').next())
+    {
+        format!("{base}.{fraction}Z")
+    } else {
+        format!("{base}Z")
+    }
+}
+
+fn format_iso(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let rem = seconds % 86_400;
+    let hour = rem / 3_600;
+    let minute = (rem % 3_600) / 60;
+    let second = rem % 60;
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}"
+    )
+}
+
+/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(year: u64, month: u64, day: u64) -> i64 {
+    let year = year as i64;
+    let month = month as i64;
+    let day = day as i64;
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+fn civil_from_days(z: u64) -> (u64, u64, u64) {
+    let z = z as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y } as u64, m as u64, d as u64)
+}
 
 fn tool(
     name: &str,
@@ -41,40 +129,6 @@ fn tool(
         description: description.to_string(),
         parameters,
     }
-}
-
-fn delivery_propose_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "changes": { "type": "object" },
-            "reason": { "type": "string", "maxLength": 400 }
-        },
-        "required": ["changes"],
-        "additionalProperties": false
-    })
-}
-
-fn delivery_revise_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "proposalId": { "type": "string", "maxLength": 64 },
-            "changes": { "type": "object" },
-            "reason": { "type": "string", "maxLength": 400 }
-        },
-        "required": ["proposalId", "changes"],
-        "additionalProperties": false
-    })
-}
-
-fn delivery_discard_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": { "proposalId": { "type": "string", "maxLength": 64 } },
-        "required": ["proposalId"],
-        "additionalProperties": false
-    })
 }
 
 fn rule_propose_schema() -> serde_json::Value {
@@ -103,29 +157,30 @@ fn rule_revise_schema() -> serde_json::Value {
 }
 
 fn rule_discard_schema() -> serde_json::Value {
-    delivery_discard_schema()
+    serde_json::json!({
+        "type": "object",
+        "properties": { "proposalId": { "type": "string", "maxLength": 64 } },
+        "required": ["proposalId"],
+        "additionalProperties": false
+    })
 }
 
-/// Proposal tool definitions. Delivery tools are always advertised; Agent-rule
-/// tools appear only when the frozen turn authorization grants rule writes.
+/// Proposal tool definitions for a normal planning Harness turn.
+///
+/// Delivery proposal tools are intentionally absent: a planning turn no longer
+/// creates direct-apply delivery proposals. Instead the model may request one
+/// durable pending execution plan (`request_delivery_execution`) that the user
+/// later confirms in natural language; only then does a distinct execution turn
+/// write the current node. Agent-rule tools appear only when the frozen turn
+/// authorization grants rule proposals (review-only, never direct writes).
+/// Historical `HarnessProposal` records and their explicit resolution remain
+/// readable and resolvable through the storage layer.
 pub(crate) fn proposal_definitions(rule_authorized: bool) -> Vec<HarnessToolDefinition> {
-    let mut definitions = vec![
-        tool(
-            "propose_delivery_change",
-            "当讨论得出明确、值得写入当前交付稿的结论时，创建交付补丁提案。changes.mode 为 patch 时按现有章节补丁；为 rewrite 时整篇重写（仅在用户明确要求时可用）。工具不会保存交付稿；创建的是待你审阅的提案。",
-            delivery_propose_schema(),
-        ),
-        tool(
-            "revise_delivery_proposal",
-            "按 proposalId 修改一个已创建的交付提案的 changes 与 reason。",
-            delivery_revise_schema(),
-        ),
-        tool(
-            "discard_delivery_proposal",
-            "按 proposalId 放弃一个交付提案，不再提交审阅。",
-            delivery_discard_schema(),
-        ),
-    ];
+    let mut definitions = vec![tool(
+        "request_delivery_execution",
+        "当讨论得出明确、值得写入当前交付稿的修改计划时，请求一次用户确认的执行计划。summary 是给用户的简短计划摘要（不超过 200 字）。工具不会保存交付稿；只有用户回复“继续/可以/确认”后，才进入一轮受控执行。",
+        execution_request_schema(),
+    )];
     if rule_authorized {
         definitions.push(tool(
             "propose_agent_rule_override",
@@ -146,6 +201,17 @@ pub(crate) fn proposal_definitions(rule_authorized: bool) -> Vec<HarnessToolDefi
     definitions
 }
 
+fn execution_request_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "summary": { "type": "string", "maxLength": 400 }
+        },
+        "required": ["summary"],
+        "additionalProperties": false
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CandidateStatus {
     Ready,
@@ -163,9 +229,20 @@ struct ProposalCandidate {
     status: CandidateStatus,
 }
 
+/// One in-memory pending execution plan candidate. It is created only after a
+/// planning answer has established a clear modification plan; it never writes
+/// Markdown. The runtime publishes it durably once the planning turn completes.
+#[derive(Debug, Clone)]
+struct PendingExecutionCandidate {
+    summary: String,
+    created_at: String,
+    expires_at: String,
+}
+
 /// Per-turn in-memory proposal service. `&mut self` methods enforce one active
-/// delivery candidate and one active Agent-rule candidate per turn, plus the
-/// validation-retry budget.
+/// Agent-rule candidate per turn, one pending execution plan candidate, plus
+/// the validation-retry budget. Delivery proposal tools are intentionally
+/// removed from new planning turns.
 pub(crate) struct ProposalService<'a> {
     scope: &'a HarnessScope,
     store: &'a ProjectStore,
@@ -173,6 +250,7 @@ pub(crate) struct ProposalService<'a> {
     candidates: HashMap<String, ProposalCandidate>,
     delivery_retries: u32,
     rule_retries: u32,
+    pending_execution: Option<PendingExecutionCandidate>,
 }
 
 impl<'a> ProposalService<'a> {
@@ -187,16 +265,15 @@ impl<'a> ProposalService<'a> {
             candidates: HashMap::new(),
             delivery_retries: 0,
             rule_retries: 0,
+            pending_execution: None,
         })
     }
 
     /// Executes one proposal tool call. Rule tools fail closed when the frozen
     /// turn authorization does not grant rule writes.
-    pub(crate) fn execute(&mut self, call: &HarnessToolCall) -> ToolExecution {
+    pub(crate) fn execute(&mut self, call: &HarnessToolCall, now: &str) -> ToolExecution {
         let result = match call.name.as_str() {
-            "propose_delivery_change" => self.propose_delivery(&call.arguments),
-            "revise_delivery_proposal" => self.revise_delivery(&call.arguments),
-            "discard_delivery_proposal" => self.discard_delivery(&call.arguments),
+            "request_delivery_execution" => self.request_execution(&call.arguments, now),
             "propose_agent_rule_override" => self.propose_rule(&call.arguments),
             "revise_agent_rule_proposal" => self.revise_rule(&call.arguments),
             "discard_agent_rule_proposal" => self.discard_rule(&call.arguments),
@@ -213,29 +290,18 @@ impl<'a> ProposalService<'a> {
     /// call runs.
     pub(crate) fn validate(&self, call: &HarnessToolCall) -> Result<(), ToolError> {
         match call.name.as_str() {
-            "propose_delivery_change" => {
-                let arguments =
-                    validate_tool_arguments(&tool_by_name("propose_delivery_change"), &call.arguments)?;
-                serde_json::from_value::<DeliveryProposeArgs>(arguments)
-                    .map_err(|error| {
-                        ToolError::InvalidArguments(format!("changes 结构无效：{error}"))
-                    })?;
-                Ok(())
-            }
-            "revise_delivery_proposal" => {
-                let arguments =
-                    validate_tool_arguments(&tool_by_name("revise_delivery_proposal"), &call.arguments)?;
-                serde_json::from_value::<DeliveryReviseArgs>(arguments)
-                    .map_err(|error| {
-                        ToolError::InvalidArguments(format!("changes 结构无效：{error}"))
-                    })?;
-                Ok(())
-            }
-            "discard_delivery_proposal" => {
-                let arguments =
-                    validate_tool_arguments(&tool_by_name("discard_delivery_proposal"), &call.arguments)?;
-                serde_json::from_value::<DiscardArgs>(arguments)
+            "request_delivery_execution" => {
+                let arguments = validate_tool_arguments(
+                    &tool_by_name("request_delivery_execution"),
+                    &call.arguments,
+                )?;
+                let payload: ExecutionRequestArgs = serde_json::from_value(arguments)
                     .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+                if payload.summary.trim().is_empty() {
+                    return Err(ToolError::InvalidArguments(
+                        "summary 不能为空".to_string(),
+                    ));
+                }
                 Ok(())
             }
             "propose_agent_rule_override" => {
@@ -284,6 +350,38 @@ impl<'a> ProposalService<'a> {
         self.scope.rule_write_authorized
     }
 
+    /// Whether a pending execution plan candidate exists this turn.
+    pub(crate) fn has_pending_execution(&self) -> bool {
+        self.pending_execution.is_some()
+    }
+
+    /// Builds the durable pending execution plan from the in-memory candidate,
+    /// or `None` when the model never requested execution. The caller supplies
+    /// the plan's own turn and assistant message ids after the turn completes.
+    pub(crate) fn execution_plan_candidate(
+        &self,
+        plan_turn_id: &str,
+        plan_message_id: &str,
+    ) -> Option<sion_core::HarnessExecutionPlan> {
+        let candidate = self.pending_execution.as_ref()?;
+        Some(sion_core::HarnessExecutionPlan {
+            id: format!("plan-{}", uuid::Uuid::new_v4()),
+            project_id: self.scope.project_id.clone(),
+            node_id: self.scope.node_id,
+            session_id: self.scope.session_id.clone(),
+            plan_turn_id: plan_turn_id.to_string(),
+            plan_message_id: plan_message_id.to_string(),
+            base_revision: self.scope.expected_node_revision,
+            summary: candidate.summary.clone(),
+            status: sion_core::HarnessPlanStatus::Pending,
+            created_at: candidate.created_at.clone(),
+            expires_at: candidate.expires_at.clone(),
+            consumed_at: None,
+            invalidated_at: None,
+            invalid_reason: None,
+        })
+    }
+
     /// Ready (reviewable) proposal records for live turn snapshots during the
     /// loop. These are in-memory only until the terminal checkpoint.
     pub(crate) fn ready_proposals(&self, now: &str) -> Vec<HarnessProposal> {
@@ -294,93 +392,32 @@ impl<'a> ProposalService<'a> {
             .collect()
     }
 
-    fn propose_delivery(&mut self, args: &str) -> Result<ToolExecution, ToolError> {
+    fn request_execution(&mut self, args: &str, now: &str) -> Result<ToolExecution, ToolError> {
         let arguments =
-            validate_tool_arguments(&tool_by_name("propose_delivery_change"), args)?;
-        let payload: DeliveryProposeArgs = serde_json::from_value(arguments)
-            .map_err(|error| ToolError::InvalidArguments(format!("changes 结构无效：{error}")))?;
-        let reason = payload.reason.unwrap_or_default();
-        if reason.chars().count() > MAX_REASON_CHARS {
-            return Err(ToolError::InvalidArguments("reason 过长".to_string()));
+            validate_tool_arguments(&tool_by_name("request_delivery_execution"), args)?;
+        let payload: ExecutionRequestArgs = serde_json::from_value(arguments)
+            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
+        let summary = payload.summary.trim().to_string();
+        if summary.is_empty() {
+            return Err(ToolError::InvalidArguments("summary 不能为空".to_string()));
         }
-        if self.active_delivery_id().is_some() {
+        if summary.chars().count() > MAX_REASON_CHARS {
+            return Err(ToolError::InvalidArguments("summary 过长".to_string()));
+        }
+        if self.pending_execution.is_some() {
             return Err(ToolError::InvalidArguments(
-                "已有待处理的交付提案，请用 revise_delivery_proposal 修改或先 discard".to_string(),
+                "本轮已有一个待确认的执行计划，请不要重复请求".to_string(),
             ));
         }
-        match resolve_delivery_proposal(
-            &payload.changes,
-            self.scope.node_id,
-            &self.node.markdown,
-            self.scope.rewrite_authorized,
-        ) {
-            Ok(proposed) => {
-                self.insert_delivery_candidate(&payload.changes, proposed, reason);
-                Ok(self.ready_execution("delivery"))
-            }
-            Err(error) => self.delivery_validation_failure(error),
-        }
-    }
-
-    fn revise_delivery(&mut self, args: &str) -> Result<ToolExecution, ToolError> {
-        if self.delivery_retries > MAX_VALIDATION_RETRIES {
-            return Err(self.retry_budget_exceeded());
-        }
-        let arguments =
-            validate_tool_arguments(&tool_by_name("revise_delivery_proposal"), args)?;
-        let payload: DeliveryReviseArgs = serde_json::from_value(arguments)
-            .map_err(|error| ToolError::InvalidArguments(format!("changes 结构无效：{error}")))?;
-        let reason = payload.reason.unwrap_or_default();
-        if reason.chars().count() > MAX_REASON_CHARS {
-            return Err(ToolError::InvalidArguments("reason 过长".to_string()));
-        }
-        let node_id = self.scope.node_id;
-        let node_markdown = self.node.markdown.clone();
-        let rewrite_authorized = self.scope.rewrite_authorized;
-        let proposal_id = payload.proposal_id.clone();
-        let resolved = {
-            let candidate = self.mutable_delivery(&proposal_id)?;
-            match resolve_delivery_proposal(
-                &payload.changes,
-                node_id,
-                &node_markdown,
-                rewrite_authorized,
-            ) {
-                Ok(proposed) => {
-                    candidate.base_content = node_markdown;
-                    candidate.proposed_content = proposed;
-                    candidate.reason = reason;
-                    candidate.validation_summary = document_diff_summary(
-                        &candidate.base_content,
-                        &candidate.proposed_content,
-                        MAX_DIFF_SUMMARY_LINES,
-                    );
-                    candidate.status = CandidateStatus::Ready;
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            }
-        };
-        match resolved {
-            Ok(()) => {
-                self.delivery_retries = 0;
-                Ok(self.ready_execution("delivery"))
-            }
-            Err(error) => self.delivery_validation_failure(error),
-        }
-    }
-
-    fn discard_delivery(&mut self, args: &str) -> Result<ToolExecution, ToolError> {
-        let arguments =
-            validate_tool_arguments(&tool_by_name("discard_delivery_proposal"), args)?;
-        let payload: DiscardArgs = serde_json::from_value(arguments)
-            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
-        let candidate = self.mutable_delivery(&payload.proposal_id)?;
-        candidate.status = CandidateStatus::Discarded;
+        self.pending_execution = Some(PendingExecutionCandidate {
+            summary,
+            created_at: now.to_string(),
+            expires_at: expiry_from_now(now),
+        });
         Ok(ToolExecution {
             status: HarnessToolStatus::Completed,
-            content: format!("已放弃交付提案 {}", candidate.id),
-            summary: "已放弃交付提案".to_string(),
+            content: "已准备好执行计划。请在最终回复中明确向用户说明计划内容，并请求用户回复“继续”或“可以”来确认执行。你尚未保存任何内容。".to_string(),
+            summary: "已请求执行计划确认".to_string(),
         })
     }
 
@@ -402,7 +439,7 @@ impl<'a> ProposalService<'a> {
         match self.validate_rule_text(&payload.markdown) {
             Ok(markdown) => {
                 self.insert_rule_candidate(markdown, reason);
-                Ok(self.ready_execution("agent_rule"))
+                Ok(self.ready_execution())
             }
             Err(message) => self.rule_validation_failure(message),
         }
@@ -450,7 +487,7 @@ impl<'a> ProposalService<'a> {
         match resolved {
             Ok(()) => {
                 self.rule_retries = 0;
-                Ok(self.ready_execution("agent_rule"))
+                Ok(self.ready_execution())
             }
             Err(message) => self.rule_validation_failure(message),
         }
@@ -518,31 +555,6 @@ impl<'a> ProposalService<'a> {
         }
     }
 
-    fn insert_delivery_candidate(&mut self, _change: &DeliveryProposalChange, proposed: String, reason: String) {
-        let id = format!("delivery-{}", uuid::Uuid::new_v4());
-        let candidate = ProposalCandidate {
-            id: id.clone(),
-            kind: HarnessProposalKind::Delivery,
-            base_content: self.node.markdown.clone(),
-            proposed_content: proposed,
-            reason,
-            validation_summary: String::new(),
-            status: CandidateStatus::Ready,
-        };
-        let summary = document_diff_summary(
-            &candidate.base_content,
-            &candidate.proposed_content,
-            MAX_DIFF_SUMMARY_LINES,
-        );
-        self.candidates.insert(
-            id,
-            ProposalCandidate {
-                validation_summary: summary,
-                ..candidate
-            },
-        );
-    }
-
     fn insert_rule_candidate(&mut self, markdown: String, reason: String) {
         let id = format!("rule-{}", uuid::Uuid::new_v4());
         let base_content = self
@@ -566,28 +578,24 @@ impl<'a> ProposalService<'a> {
         );
     }
 
-    fn ready_execution(&self, _kind: &str) -> ToolExecution {
-        let delivery = self
+    fn ready_execution(&self) -> ToolExecution {
+        let candidate = self
             .candidates
             .values()
             .find(|candidate| candidate.status == CandidateStatus::Ready);
-        let (id, summary, kind) = match delivery {
+        let (id, summary) = match candidate {
             Some(candidate) => (
                 candidate.id.clone(),
                 candidate.validation_summary.clone(),
-                match candidate.kind {
-                    HarnessProposalKind::Delivery => "交付",
-                    HarnessProposalKind::AgentRule => "规则",
-                },
             ),
-            None => (String::new(), String::new(), "交付"),
+            None => (String::new(), String::new()),
         };
         ToolExecution {
             status: HarnessToolStatus::Completed,
             content: format!(
-                "已创建{kind}提案 {id}，等待你审阅后由用户批准才会保存。变更摘要：\n{summary}",
+                "已创建规则提案 {id}，等待用户批准后才会生效。变更摘要：\n{summary}",
             ),
-            summary: format!("已准备{kind}提案"),
+            summary: "已准备规则提案".to_string(),
         }
     }
 
@@ -595,21 +603,6 @@ impl<'a> ProposalService<'a> {
         ToolError::InvalidArguments(
             "提案校验失败次数已达上限，请总结结论，不要再重复修改".to_string(),
         )
-    }
-
-    fn delivery_validation_failure(
-        &mut self,
-        error: DeliveryProposalError,
-    ) -> Result<ToolExecution, ToolError> {
-        self.delivery_retries += 1;
-        if self.delivery_retries > MAX_VALIDATION_RETRIES {
-            return Err(self.retry_budget_exceeded());
-        }
-        Ok(ToolExecution {
-            status: HarnessToolStatus::Error,
-            content: format!("交付提案校验未通过（可修正后重试）：{error}"),
-            summary: "交付提案校验失败".to_string(),
-        })
     }
 
     fn rule_validation_failure(&mut self, message: String) -> Result<ToolExecution, ToolError> {
@@ -638,33 +631,12 @@ impl<'a> ProposalService<'a> {
         }
     }
 
-    fn active_delivery_id(&self) -> Option<String> {
-        self.candidates.values().find_map(|candidate| {
-            (candidate.kind == HarnessProposalKind::Delivery
-                && candidate.status == CandidateStatus::Ready)
-                .then(|| candidate.id.clone())
-        })
-    }
-
     fn active_rule_id(&self) -> Option<String> {
         self.candidates.values().find_map(|candidate| {
             (candidate.kind == HarnessProposalKind::AgentRule
                 && candidate.status == CandidateStatus::Ready)
                 .then(|| candidate.id.clone())
         })
-    }
-
-    fn mutable_delivery(&mut self, proposal_id: &str) -> Result<&mut ProposalCandidate, ToolError> {
-        let candidate = self
-            .candidates
-            .get_mut(proposal_id)
-            .ok_or_else(|| ToolError::NotFound("提案不存在或不属于本轮".to_string()))?;
-        if candidate.kind != HarnessProposalKind::Delivery {
-            return Err(ToolError::NotFound(
-                "提案不存在或不属于本轮".to_string(),
-            ));
-        }
-        Ok(candidate)
     }
 
     fn mutable_rule(&mut self, proposal_id: &str) -> Result<&mut ProposalCandidate, ToolError> {
@@ -689,22 +661,7 @@ fn tool_by_name(name: &str) -> HarnessToolDefinition {
         .expect("every dispatched proposal tool has a definition")
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeliveryProposeArgs {
-    changes: DeliveryProposalChange,
-    #[serde(default)]
-    reason: Option<String>,
-}
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeliveryReviseArgs {
-    proposal_id: String,
-    changes: DeliveryProposalChange,
-    #[serde(default)]
-    reason: Option<String>,
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -729,11 +686,17 @@ struct DiscardArgs {
     proposal_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecutionRequestArgs {
+    summary: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sion_core::{
-        ChatModelSelection, HarnessProposalStatus, NodeStatus, ReasoningEffort, WorkflowNodeId,
+        ChatModelSelection, NodeStatus, ReasoningEffort, WorkflowNodeId,
     };
     use sion_storage::{CreateProjectInput, SaveNodeResult};
     use std::path::PathBuf;
@@ -801,160 +764,83 @@ mod tests {
     }
 
     #[test]
-    fn delivery_proposal_round_trips_through_propose_and_durable() {
+    fn request_execution_creates_one_pending_plan_candidate_without_writes() {
         let (root, store) = fixture(false);
         let scope = scope_for(&store, &root, "你好");
         let mut service = ProposalService::new(&scope, &store).unwrap();
-        let result = service.execute(&HarnessToolCall {
-            id: "c-1".into(),
-            name: "propose_delivery_change".into(),
-            arguments: format!(
-                r#"{{"changes":{},"reason":"补充目标"}}"#,
-                patch_changes("建设目标", "新目标")
-            ),
-        });
+        assert!(!service.has_pending_execution());
+        let result = service.execute(
+            &HarnessToolCall {
+                id: "c-1".into(),
+                name: "request_delivery_execution".into(),
+                arguments: r#"{"summary":"补充建设目标与验收标准"}"#.into(),
+            },
+            "2026-08-17T00:00:00.000Z",
+        );
         assert_eq!(result.status, HarnessToolStatus::Completed, "{}", result.content);
-        let proposal_id = result
-            .content
-            .split("提案 ")
-            .nth(1)
-            .and_then(|part| part.split('，').next())
-            .unwrap()
-            .to_string();
-        let durable = service.durable_proposals("now");
-        assert_eq!(durable.len(), 1);
-        assert_eq!(durable[0].id, proposal_id);
-        assert_eq!(durable[0].status, HarnessProposalStatus::Ready);
-        assert_eq!(durable[0].kind, HarnessProposalKind::Delivery);
-        assert_eq!(durable[0].base_revision, Some(1));
-        assert!(durable[0].proposed_content.contains("新目标"));
-        assert!(!durable[0].proposed_content.contains("旧目标"));
-        // Tool execution must never have persisted the node.
+        assert!(service.has_pending_execution());
+        // The candidate builds a durable plan pinned to the current node and
+        // base revision; tool execution never wrote the node.
+        let plan = service
+            .execution_plan_candidate("turn-plan", "message-plan")
+            .unwrap();
+        assert!(plan.id.starts_with("plan-"));
+        assert_eq!(plan.node_id, WorkflowNodeId::Goals);
+        assert_eq!(plan.base_revision, 1);
+        assert_eq!(plan.plan_turn_id, "turn-plan");
+        assert_eq!(plan.plan_message_id, "message-plan");
+        assert_eq!(plan.summary, "补充建设目标与验收标准");
+        assert!(plan.expires_at > plan.created_at);
         assert_eq!(store.node(WorkflowNodeId::Goals).unwrap().revision, 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn unauthorized_rewrite_is_a_validation_error_not_a_proposal() {
+    fn request_execution_rejects_empty_and_duplicate_requests() {
         let (root, store) = fixture(false);
         let scope = scope_for(&store, &root, "你好");
         let mut service = ProposalService::new(&scope, &store).unwrap();
-        let result = service.execute(&HarnessToolCall {
-            id: "c-1".into(),
-            name: "propose_delivery_change".into(),
-            arguments: r##"{"changes":{"mode":"rewrite","markdown":"# 需求背景与建设目标\n\n## 需求背景\n新\n\n## 建设目标\n新\n\n## 范围边界\n新"},"reason":"r"}"##.into(),
-        });
-        assert_eq!(result.status, HarnessToolStatus::Error);
-        assert!(result.content.contains("完整重写需要用户"));
-        assert!(service.durable_proposals("now").is_empty());
-        std::fs::remove_dir_all(root).unwrap();
-    }
+        let empty = service.execute(
+            &HarnessToolCall {
+                id: "c-1".into(),
+                name: "request_delivery_execution".into(),
+                arguments: r#"{"summary":"   "}"#.into(),
+            },
+            "now",
+        );
+        assert_eq!(empty.status, HarnessToolStatus::Error);
+        assert!(!service.has_pending_execution());
 
-    #[test]
-    fn explicit_rewrite_is_authorized_by_the_frozen_turn() {
-        let (root, store) = fixture(false);
-        let scope = scope_for(&store, &root, "请整篇重写交付稿");
-        let mut service = ProposalService::new(&scope, &store).unwrap();
-        let result = service.execute(&HarnessToolCall {
-            id: "c-1".into(),
-            name: "propose_delivery_change".into(),
-            arguments: r##"{"changes":{"mode":"rewrite","markdown":"# 需求背景与建设目标\n\n## 需求背景\n新背景\n\n## 建设目标\n新目标\n\n## 范围边界\n新边界"},"reason":"整篇重写"}"##.into(),
-        });
-        assert_eq!(result.status, HarnessToolStatus::Completed, "{}", result.content);
-        let durable = service.durable_proposals("now");
-        assert_eq!(durable.len(), 1);
-        assert!(durable[0].proposed_content.contains("新背景"));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn invalid_patch_can_be_revised_within_the_retry_budget() {
-        let (root, store) = fixture(false);
-        let scope = scope_for(&store, &root, "你好");
-        let mut service = ProposalService::new(&scope, &store).unwrap();
-        // A patch targeting an unsupported section fails validation.
-        let bad = service.execute(&HarnessToolCall {
-            id: "c-1".into(),
-            name: "propose_delivery_change".into(),
-            arguments: r#"{"changes":{"mode":"patch","sections":[{"title":"不存在的章节","content":"x"}]},"reason":"r"}"#.into(),
-        });
-        assert_eq!(bad.status, HarnessToolStatus::Error);
-        assert!(bad.content.contains("校验未通过"));
-        assert!(service.durable_proposals("now").is_empty());
-
-        // A valid proposal gives a proposal id for revision attempts.
-        let created = service.execute(&HarnessToolCall {
-            id: "c-2".into(),
-            name: "propose_delivery_change".into(),
-            arguments: format!(
-                r#"{{"changes":{},"reason":"r"}}"#,
-                patch_changes("建设目标", "新目标")
-            ),
-        });
-        assert_eq!(created.status, HarnessToolStatus::Completed, "{}", created.content);
-        let proposal_id = created
-            .content
-            .split("提案 ")
-            .nth(1)
-            .and_then(|part| part.split('，').next())
-            .unwrap()
-            .to_string();
-
-        // Retry budget: two failed revisions are allowed, the third is capped.
-        for _ in 0..3 {
-            let retry = service.execute(&HarnessToolCall {
+        let first = service.execute(
+            &HarnessToolCall {
+                id: "c-2".into(),
+                name: "request_delivery_execution".into(),
+                arguments: r#"{"summary":"补充目标"}"#.into(),
+            },
+            "now",
+        );
+        assert_eq!(first.status, HarnessToolStatus::Completed);
+        // A second request is refused: one pending plan per turn.
+        let second = service.execute(
+            &HarnessToolCall {
                 id: "c-3".into(),
-                name: "revise_delivery_proposal".into(),
-                arguments: format!(
-                    r#"{{"proposalId":"{proposal_id}","changes":{},"reason":"r"}}"#,
-                    patch_changes("不存在的章节", "x")
-                ),
-            });
-            assert_eq!(retry.status, HarnessToolStatus::Error);
-        }
-        let limited = service.execute(&HarnessToolCall {
-            id: "c-4".into(),
-            name: "revise_delivery_proposal".into(),
-            arguments: format!(
-                r#"{{"proposalId":"{proposal_id}","changes":{},"reason":"r"}}"#,
-                patch_changes("建设目标", "ok")
-            ),
-        });
-        assert_eq!(limited.status, HarnessToolStatus::Error);
-        assert!(limited.content.contains("校验失败次数已达上限"));
+                name: "request_delivery_execution".into(),
+                arguments: r#"{"summary":"再补充范围边界"}"#.into(),
+            },
+            "now",
+        );
+        assert_eq!(second.status, HarnessToolStatus::Error);
+        assert!(second.content.contains("已有一个待确认"));
+        assert!(service.has_pending_execution());
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn discard_records_a_rejected_proposal_for_audit() {
+    fn no_pending_execution_yields_no_plan_candidate() {
         let (root, store) = fixture(false);
         let scope = scope_for(&store, &root, "你好");
-        let mut service = ProposalService::new(&scope, &store).unwrap();
-        let result = service.execute(&HarnessToolCall {
-            id: "c-1".into(),
-            name: "propose_delivery_change".into(),
-            arguments: format!(
-                r#"{{"changes":{},"reason":"r"}}"#,
-                patch_changes("建设目标", "新目标")
-            ),
-        });
-        let proposal_id = result
-            .content
-            .split("提案 ")
-            .nth(1)
-            .and_then(|part| part.split('，').next())
-            .unwrap()
-            .to_string();
-        let discarded = service.execute(&HarnessToolCall {
-            id: "c-2".into(),
-            name: "discard_delivery_proposal".into(),
-            arguments: format!(r#"{{"proposalId":"{proposal_id}"}}"#),
-        });
-        assert_eq!(discarded.status, HarnessToolStatus::Completed);
-        let durable = service.durable_proposals("now");
-        assert_eq!(durable.len(), 1);
-        assert_eq!(durable[0].status, HarnessProposalStatus::Rejected);
-        assert_eq!(durable[0].resolved_at.as_deref(), Some("now"));
+        let service = ProposalService::new(&scope, &store).unwrap();
+        assert!(service.execution_plan_candidate("turn-plan", "message-plan").is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -964,7 +850,9 @@ mod tests {
         assert!(definitions.iter().all(|tool| !tool.name.starts_with("propose_agent_rule")));
         assert!(definitions.iter().all(|tool| !tool.name.starts_with("revise_agent_rule")));
         assert!(definitions.iter().all(|tool| !tool.name.starts_with("discard_agent_rule")));
-        assert!(definitions.iter().any(|tool| tool.name == "propose_delivery_change"));
+        // New planning turns request execution instead of creating proposals.
+        assert!(definitions.iter().any(|tool| tool.name == "request_delivery_execution"));
+        assert!(definitions.iter().all(|tool| !tool.name.starts_with("propose_delivery")));
 
         let authorized = proposal_definitions(true);
         assert!(authorized.iter().any(|tool| tool.name == "propose_agent_rule_override"));
@@ -973,11 +861,14 @@ mod tests {
         let (root, store) = fixture(false);
         let scope = scope_for(&store, &root, "你好");
         let mut service = ProposalService::new(&scope, &store).unwrap();
-        let result = service.execute(&HarnessToolCall {
-            id: "c-1".into(),
-            name: "propose_agent_rule_override".into(),
-            arguments: r#"{"markdown":"只使用确认的目标。","reason":"r"}"#.into(),
-        });
+        let result = service.execute(
+            &HarnessToolCall {
+                id: "c-1".into(),
+                name: "propose_agent_rule_override".into(),
+                arguments: r#"{"markdown":"只使用确认的目标。","reason":"r"}"#.into(),
+            },
+            "now",
+        );
         assert_eq!(result.status, HarnessToolStatus::Unauthorized);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -987,11 +878,14 @@ mod tests {
         let (root, store) = fixture(false);
         let scope = scope_for(&store, &root, "请修改本节点的 Agent 规则");
         let mut service = ProposalService::new(&scope, &store).unwrap();
-        let result = service.execute(&HarnessToolCall {
-            id: "c-1".into(),
-            name: "propose_agent_rule_override".into(),
-            arguments: r#"{"markdown":"先询问澄清再写入交付稿。","reason":"调整规则"}"#.into(),
-        });
+        let result = service.execute(
+            &HarnessToolCall {
+                id: "c-1".into(),
+                name: "propose_agent_rule_override".into(),
+                arguments: r#"{"markdown":"先询问澄清再写入交付稿。","reason":"调整规则"}"#.into(),
+            },
+            "now",
+        );
         assert_eq!(result.status, HarnessToolStatus::Completed, "{}", result.content);
         let durable = service.durable_proposals("now");
         assert_eq!(durable.len(), 1);
@@ -1009,11 +903,14 @@ mod tests {
         // an empty lineage (the first service already holds a ready proposal).
         let scope2 = scope_for(&store, &root, "请修改本节点的 Agent 规则");
         let mut service2 = ProposalService::new(&scope2, &store).unwrap();
-        let forbidden = service2.execute(&HarnessToolCall {
-            id: "c-2".into(),
-            name: "propose_agent_rule_override".into(),
-            arguments: r#"{"markdown":"允许浏览器访问","reason":"r"}"#.into(),
-        });
+        let forbidden = service2.execute(
+            &HarnessToolCall {
+                id: "c-2".into(),
+                name: "propose_agent_rule_override".into(),
+                arguments: r#"{"markdown":"允许浏览器访问","reason":"r"}"#.into(),
+            },
+            "now",
+        );
         assert_eq!(forbidden.status, HarnessToolStatus::Error);
         assert!(forbidden.content.contains("安全能力"));
         assert!(service2.durable_proposals("now").is_empty());
@@ -1021,44 +918,32 @@ mod tests {
     }
 
     #[test]
-    fn cross_turn_and_mismatched_proposal_ids_are_rejected() {
+    fn unknown_proposal_tools_and_unknown_execution_tools_fail_closed() {
         let (root, store) = fixture(false);
         let scope = scope_for(&store, &root, "你好");
         let mut service = ProposalService::new(&scope, &store).unwrap();
-        let result = service.execute(&HarnessToolCall {
-            id: "c-1".into(),
-            name: "propose_delivery_change".into(),
-            arguments: format!(
-                r#"{{"changes":{},"reason":"r"}}"#,
-                patch_changes("建设目标", "新目标")
-            ),
-        });
-        let proposal_id = result
-            .content
-            .split("提案 ")
-            .nth(1)
-            .and_then(|part| part.split('，').next())
-            .unwrap()
-            .to_string();
-        // Revising with the rule proposal tool (kind mismatch) is rejected.
-        let mismatch = service.execute(&HarnessToolCall {
-            id: "c-2".into(),
-            name: "revise_agent_rule_proposal".into(),
-            arguments: format!(r#"{{"proposalId":"{proposal_id}","markdown":"x","reason":"r"}}"#),
-        });
-        assert_eq!(mismatch.status, HarnessToolStatus::Unauthorized);
-        // A stale id is not found.
-        let stale = service.execute(&HarnessToolCall {
-            id: "c-3".into(),
-            name: "revise_delivery_proposal".into(),
-            arguments: format!(
-                r#"{{"proposalId":"{}","changes":{},"reason":"r"}}"#,
-                "delivery-other-turn",
-                patch_changes("建设目标", "新目标")
-            ),
-        });
+        // A stale delivery proposal tool call is not dispatched.
+        let stale = service.execute(
+            &HarnessToolCall {
+                id: "c-1".into(),
+                name: "propose_delivery_change".into(),
+                arguments: r#"{"changes":{"mode":"patch","sections":[]}}"#.into(),
+            },
+            "now",
+        );
         assert_eq!(stale.status, HarnessToolStatus::Error);
-        assert!(stale.content.contains("不属于本轮"));
+        assert!(stale.content.contains("未知提案工具"));
+        // The execution write tool is not part of the planning service.
+        let write = service.execute(
+            &HarnessToolCall {
+                id: "c-2".into(),
+                name: "apply_current_delivery_change".into(),
+                arguments: r#"{"changes":{"mode":"patch","sections":[]}}"#.into(),
+            },
+            "now",
+        );
+        assert_eq!(write.status, HarnessToolStatus::Error);
+        assert!(write.content.contains("未知提案工具"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

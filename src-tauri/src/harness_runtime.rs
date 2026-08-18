@@ -21,6 +21,7 @@ use sion_agent::model_protocol::ModelRequest;
 use sion_agent::model_stream::{ProviderProtocol, StreamDelta};
 use sion_core::{
     ChatMessage, ChatRole, ConversationTurn, HarnessDiagnostics, HarnessLimits,
+    HarnessExecutionPlan, HarnessExecutionRecord, HarnessExecutionStatus, HarnessExecutionWrite,
     HarnessModelStepReason, HarnessProposal, HarnessToolCall, HarnessToolDefinition,
     HarnessToolStatus, HarnessTurnState, ReasoningEffort, TurnActivity, TurnActivityKind,
     TurnActivityStatus, TurnStatus, WorkflowNodeId,
@@ -32,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 use crate::harness_proposals::ProposalService;
 use crate::harness_scope::HarnessScope;
 use crate::harness_tools::{HarnessToolRegistry, ToolError};
+use crate::harness_execution::HarnessExecutionService;
 use crate::provider_settings::ResolvedModel;
 use crate::{
     AgentFinishedEvent, AgentReasoningSummaryEvent, AgentState, AgentTokenEvent,
@@ -54,13 +56,15 @@ fn is_read_tool(name: &str) -> bool {
 fn is_proposal_tool(name: &str) -> bool {
     matches!(
         name,
-        "propose_delivery_change"
-            | "revise_delivery_proposal"
-            | "discard_delivery_proposal"
+        "request_delivery_execution"
             | "propose_agent_rule_override"
             | "revise_agent_rule_proposal"
             | "discard_agent_rule_proposal"
     )
+}
+
+fn is_execution_tool(name: &str) -> bool {
+    crate::harness_execution::is_execution_write_tool(name)
 }
 
 fn tool_error_message(error: &ToolError) -> String {
@@ -250,7 +254,21 @@ impl HarnessObserver for HarnessEventBridge {
         status: HarnessToolStatus,
         summary: &str,
     ) {
-        let (kind, label, activity_status) = if is_proposal_tool(name) {
+        let (kind, label, activity_status) = if is_execution_tool(name) {
+            (
+                TurnActivityKind::DeliverySave,
+                if status == HarnessToolStatus::Completed {
+                    "已保存当前节点交付稿"
+                } else {
+                    "当前节点交付稿保存失败"
+                },
+                if status == HarnessToolStatus::Completed {
+                    TurnActivityStatus::Completed
+                } else {
+                    TurnActivityStatus::Failed
+                },
+            )
+        } else if is_proposal_tool(name) {
             (
                 TurnActivityKind::Proposal,
                 if status == HarnessToolStatus::Error {
@@ -296,31 +314,61 @@ impl HarnessObserver for HarnessEventBridge {
 /// service behind the loop's trait. `ProposalService` mutates candidates, so it
 /// is held behind a mutex; the loop never persists anything itself.
 struct HarnessToolExecutorImpl<'a> {
-    registry: HarnessToolRegistry<'a>,
-    proposals: Mutex<ProposalService<'a>>,
+    registry: Mutex<HarnessToolRegistry<'a>>,
+    proposals: Option<Mutex<ProposalService<'a>>>,
+    execution: Option<Mutex<HarnessExecutionService<'a>>>,
+    store: &'a ProjectStore,
+    execution_writes: Mutex<Vec<HarnessExecutionWrite>>,
     now: Arc<dyn Fn() -> String + Send + Sync>,
 }
 
 impl<'a> HarnessToolExecutorImpl<'a> {
     fn durable_proposals(&self, now: &str) -> Vec<HarnessProposal> {
-        self.proposals.lock().unwrap().durable_proposals(now)
+        self.proposals
+            .as_ref()
+            .map(|proposals| proposals.lock().unwrap().durable_proposals(now))
+            .unwrap_or_default()
+    }
+
+    fn execution_plan_candidate(
+        &self,
+        turn_id: &str,
+        message_id: &str,
+    ) -> Option<HarnessExecutionPlan> {
+        self.proposals.as_ref()?.lock().unwrap().execution_plan_candidate(turn_id, message_id)
+    }
+
+    fn execution_writes(&self) -> Vec<HarnessExecutionWrite> {
+        self.execution_writes.lock().unwrap().clone()
     }
 }
 
 impl HarnessToolExecutor for HarnessToolExecutorImpl<'_> {
     fn tool_definitions(&self) -> Vec<HarnessToolDefinition> {
-        let rule_authorized = self.proposals.lock().unwrap().rule_authorized();
         let mut tools = crate::harness_tools::tool_definitions();
-        tools.extend(crate::harness_proposals::proposal_definitions(rule_authorized));
+        if self.execution.is_some() {
+            tools.extend(crate::harness_execution::execution_tool_definitions());
+        } else if let Some(proposals) = &self.proposals {
+            let rule_authorized = proposals.lock().unwrap().rule_authorized();
+            tools.extend(crate::harness_proposals::proposal_definitions(rule_authorized));
+        }
         tools
     }
 
     fn validate_batch(&self, calls: &[HarnessToolCall]) -> Result<(), HarnessToolBatchError> {
         for call in calls {
             let result = if is_read_tool(&call.name) {
-                self.registry.validate(call)
+                self.registry.lock().unwrap().validate(call)
+            } else if is_execution_tool(&call.name) {
+                self.execution
+                    .as_ref()
+                    .ok_or_else(|| ToolError::Unauthorized("执行权限未启用".to_string()))
+                    .and_then(|execution| execution.lock().unwrap().validate(call))
             } else if is_proposal_tool(&call.name) {
-                self.proposals.lock().unwrap().validate(call)
+                self.proposals
+                    .as_ref()
+                    .ok_or_else(|| ToolError::Unauthorized("当前运行不支持提案工具".to_string()))
+                    .and_then(|proposals| proposals.lock().unwrap().validate(call))
             } else {
                 Err(ToolError::InvalidArguments(format!("未知工具：{}", call.name)))
             };
@@ -334,21 +382,61 @@ impl HarnessToolExecutor for HarnessToolExecutorImpl<'_> {
     }
 
     fn is_write_proposal(&self, call: &HarnessToolCall) -> bool {
-        is_proposal_tool(&call.name)
+        is_proposal_tool(&call.name) || is_execution_tool(&call.name)
     }
 
     fn execute(&self, call: &HarnessToolCall) -> HarnessToolResult {
         let (execution, ready) = if is_read_tool(&call.name) {
-            (self.registry.execute(call), None)
+            (self.registry.lock().unwrap().execute(call), None)
+        } else if is_execution_tool(&call.name) {
+            let now = (self.now)();
+            let result = self
+                .execution
+                .as_ref()
+                .ok_or_else(|| ToolError::Unauthorized("执行权限未启用".to_string()))
+                .and_then(|execution| execution.lock().unwrap().apply(&call.arguments, &now));
+            let execution = match result {
+                Ok(write) => {
+                    if let Some(revision) = write.saved_revision {
+                        if let Ok(node) = self.store.node(self.registry.lock().unwrap().node_id()) {
+                            self.registry.lock().unwrap().update_node_snapshot(node);
+                        }
+                        if let Ok(mut writes) = self.execution_writes.lock() {
+                            writes.push(HarnessExecutionWrite {
+                                revision,
+                                summary: write.summary.clone(),
+                                saved_at: now,
+                            });
+                        }
+                    }
+                    crate::harness_tools::ToolExecution {
+                        status: write.status,
+                        content: write.content,
+                        summary: write.summary,
+                    }
+                }
+                Err(error) => error.into_execution(),
+            };
+            (execution, None)
         } else {
             let now = (self.now)();
-            let mut proposals = self.proposals.lock().unwrap();
+            let Some(proposals) = &self.proposals else {
+                return HarnessToolResult {
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    content: "当前运行不支持提案工具".to_string(),
+                    summary: "提案工具不可用".to_string(),
+                    status: HarnessToolStatus::Unauthorized,
+                    ready_proposal: None,
+                };
+            };
+            let mut proposals = proposals.lock().unwrap();
             let before: Vec<String> = proposals
                 .ready_proposals(&now)
                 .into_iter()
                 .map(|proposal| proposal.id)
                 .collect();
-            let execution = proposals.execute(call);
+            let execution = proposals.execute(call, &now);
             let ready = proposals
                 .ready_proposals(&now)
                 .into_iter()
@@ -366,8 +454,23 @@ impl HarnessToolExecutor for HarnessToolExecutorImpl<'_> {
     }
 
     fn validation_retries(&self) -> u32 {
-        self.proposals.lock().unwrap().validation_retries()
+        self.execution
+            .as_ref()
+            .map(|execution| execution.lock().unwrap().validation_retries())
+            .unwrap_or_else(|| {
+                self.proposals
+                    .as_ref()
+                    .map(|proposals| proposals.lock().unwrap().validation_retries())
+                    .unwrap_or_default()
+            })
     }
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub(crate) enum HarnessRunMode {
+    Planning,
+    Execution { plan: HarnessExecutionPlan },
 }
 
 /// Turn-scoped state for one Harness run, kept in `AgentState::harness_jobs`
@@ -379,12 +482,16 @@ pub(crate) struct HarnessJob {
     pub(crate) node_id: WorkflowNodeId,
     pub(crate) session_id: String,
     pub(crate) turn_id: String,
+    pub(crate) user_message_id: String,
     pub(crate) run_id: String,
     pub(crate) scope: HarnessScope,
     pub(crate) model: ResolvedModel,
     pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) cancellation: CancellationToken,
     pub(crate) started_instant: Instant,
+    pub(crate) mode: HarnessRunMode,
+    pub(crate) initial_messages: Vec<sion_agent::model_protocol::ProtocolMessage>,
+    pub(crate) limits: HarnessLimits,
 }
 
 /// Runs the Harness loop for one turn and persists the terminal checkpoint.
@@ -413,6 +520,9 @@ pub(crate) fn spawn_harness_run(
                     },
                     Vec::new(),
                     Vec::new(),
+                    None,
+                    Vec::new(),
+                    None,
                 );
                 return;
             }
@@ -434,32 +544,72 @@ pub(crate) fn spawn_harness_run(
                     },
                     Vec::new(),
                     Vec::new(),
+                    None,
+                    Vec::new(),
+                    None,
                 );
                 return;
             }
         };
-        let proposals = match ProposalService::new(&job.scope, &store) {
-            Ok(proposals) => proposals,
-            Err(message) => {
-                complete_harness_run(
-                    &app,
-                    &state,
-                    &run,
-                    &job,
-                    HarnessTurnResult::Failed {
-                        error: message,
-                        usage: empty_usage(&job.turn_id),
-                        diagnostics: HarnessDiagnostics::new(),
-                    },
-                    Vec::new(),
-                    Vec::new(),
-                );
-                return;
+        let (proposals, execution) = match &job.mode {
+            HarnessRunMode::Planning => match ProposalService::new(&job.scope, &store) {
+                Ok(proposals) => (Some(Mutex::new(proposals)), None),
+                Err(message) => {
+                    complete_harness_run(
+                        &app,
+                        &state,
+                        &run,
+                        &job,
+                        HarnessTurnResult::Failed {
+                            error: message,
+                            usage: empty_usage(&job.turn_id),
+                            diagnostics: HarnessDiagnostics::new(),
+                        },
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                        Vec::new(),
+                        None,
+                    );
+                    return;
+                }
+            },
+            HarnessRunMode::Execution { plan } => {
+                match HarnessExecutionService::new(
+                    &job.scope,
+                    &store,
+                    plan.id.clone(),
+                    job.turn_id.clone(),
+                ) {
+                    Ok(execution) => (None, Some(Mutex::new(execution))),
+                    Err(message) => {
+                        complete_harness_run(
+                            &app,
+                            &state,
+                            &run,
+                            &job,
+                            HarnessTurnResult::Failed {
+                                error: message,
+                                usage: empty_usage(&job.turn_id),
+                                diagnostics: HarnessDiagnostics::new(),
+                            },
+                            Vec::new(),
+                            Vec::new(),
+                            None,
+                            Vec::new(),
+                            None,
+                        );
+                        return;
+                    }
+                }
             }
         };
         let tools = Arc::new(HarnessToolExecutorImpl {
-            registry,
-            proposals: Mutex::new(proposals),
+            registry: Mutex::new(registry),
+            proposals,
+            execution,
+            store: &store,
+            execution_writes: Mutex::new(Vec::new()),
             now: now.clone(),
         });
         let provider = HarnessProviderAdapter {
@@ -502,6 +652,17 @@ pub(crate) fn spawn_harness_run(
         .run(&bridge, &job.turn_id)
         .await;
         let durable_proposals = tools.durable_proposals(&(now)());
+        let assistant_message_id = match &result {
+            HarnessTurnResult::Completed(_) => Some(uuid::Uuid::new_v4().to_string()),
+            _ => None,
+        };
+        let execution_plan = match (&job.mode, assistant_message_id.as_deref()) {
+            (HarnessRunMode::Planning, Some(message_id)) => {
+                tools.execution_plan_candidate(&job.turn_id, message_id)
+            }
+            _ => None,
+        };
+        let execution_writes = tools.execution_writes();
         let live_activities = live
             .lock()
             .map(|state| state.activities.clone())
@@ -514,6 +675,9 @@ pub(crate) fn spawn_harness_run(
             result,
             durable_proposals,
             live_activities,
+            execution_plan,
+            execution_writes,
+            assistant_message_id,
         );
     });
 }
@@ -543,6 +707,7 @@ pub(crate) struct PreparedHarnessSend {
     pub(crate) session_id: String,
     pub(crate) scope: HarnessScope,
     pub(crate) limits: HarnessLimits,
+    pub(crate) mode: HarnessRunMode,
 }
 
 /// Prepares a Harness turn start: validates native tool calling, freezes the
@@ -603,6 +768,8 @@ pub(crate) fn prepare_harness_send(
             resolved.context_window_tokens,
             now,
         )?;
+    let mut initial_messages = initial_messages;
+    initial_messages.push(sion_agent::model_protocol::ProtocolMessage::user(message));
     let turn_id = uuid::Uuid::new_v4().to_string();
     let attachments = crate::conversation_runtime::load_selected_files(store, file_ids)?
         .into_iter()
@@ -635,6 +802,105 @@ pub(crate) fn prepare_harness_send(
         session_id: session_id.to_string(),
         scope,
         limits,
+        mode: HarnessRunMode::Planning,
+    })
+}
+
+/// Prepares the second-stage confirmed execution Harness. The plan and scope
+/// are trusted storage records; model or frontend arguments cannot widen them.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_harness_execution_send(
+    app_data_root: &std::path::Path,
+    store: &ProjectStore,
+    project_root: PathBuf,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: &str,
+    message: &str,
+    file_ids: &[String],
+    plan: HarnessExecutionPlan,
+    now: &str,
+) -> Result<PreparedHarnessSend, String> {
+    let session = store
+        .session(node_id, session_id)
+        .map_err(|error| error.to_string())?;
+    let selection = match session.model_selection {
+        Some(selection) => selection,
+        None => crate::provider_settings::default_selection(app_data_root)?,
+    };
+    let resolved = crate::provider_settings::resolve_model(
+        app_data_root,
+        &selection.provider_id,
+        &selection.model,
+    )?;
+    if !resolved.tool_calling {
+        return Err("所选模型不支持原生工具调用，无法执行已确认计划".to_string());
+    }
+    let scope = crate::harness_scope::freeze_execution_scope(
+        store,
+        project_root,
+        project_id,
+        node_id,
+        session_id,
+        &plan,
+        selection.clone(),
+    )?;
+    let mut tool_definitions = crate::harness_tools::tool_definitions();
+    tool_definitions.extend(crate::harness_execution::execution_tool_definitions());
+    let limits = HarnessLimits::default();
+    let history = store
+        .messages(node_id, session_id)
+        .map_err(|error| error.to_string())?;
+    let (initial_messages, snapshot) =
+        crate::conversation_runtime::build_harness_initial_messages(
+            store,
+            &scope,
+            &history,
+            file_ids,
+            &tool_definitions,
+            limits,
+            resolved.context_window_tokens,
+            now,
+        )?;
+    let mut initial_messages = initial_messages;
+    initial_messages.push(sion_agent::model_protocol::ProtocolMessage::system(format!(
+        "本轮是已确认的执行阶段。只能完成以下计划，不得扩展目标：{}。你可以先读取授权上下文，然后仅使用 apply_current_delivery_change 修改当前节点交付稿。每次保存后继续使用新的 revision；遇到冲突、取消或校验失败时停止写入并如实说明。",
+        plan.summary
+    )));
+    initial_messages.push(sion_agent::model_protocol::ProtocolMessage::user(message));
+    let turn_id = uuid::Uuid::new_v4().to_string();
+    let attachments = crate::conversation_runtime::load_selected_files(store, file_ids)?
+        .into_iter()
+        .map(|file| sion_core::MessageAttachmentRef {
+            file_id: file.file_id,
+            original_name: file.original_name,
+        })
+        .collect();
+    let user_message = ChatMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        role: ChatRole::User,
+        content: message.to_string(),
+        reasoning_content: None,
+        sources: None,
+        created_at: now.to_string(),
+        turn_id: Some(turn_id.clone()),
+        reasoning_duration_ms: None,
+        usage: None,
+        attachments,
+        model_execution: None,
+    };
+    Ok(PreparedHarnessSend {
+        resolved,
+        selection,
+        initial_messages,
+        snapshot,
+        user_message,
+        file_ids: file_ids.to_vec(),
+        turn_id,
+        session_id: session_id.to_string(),
+        scope,
+        limits,
+        mode: HarnessRunMode::Execution { plan },
     })
 }
 
@@ -709,6 +975,99 @@ pub(crate) fn persist_harness_send(
     Ok((run, turn))
 }
 
+/// Enqueues and atomically begins a confirmed execution turn. The storage
+/// transaction consumes the pending plan while appending the confirmation
+/// message and execution turn, so a racing confirmation cannot create a second
+/// write-capable run.
+pub(crate) fn persist_harness_execution_send(
+    store: &ProjectStore,
+    scheduler: &mut sion_agent::RunScheduler,
+    prepared: &PreparedHarnessSend,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    now: String,
+) -> Result<(sion_agent::AgentRun, ConversationTurn), String> {
+    let HarnessRunMode::Execution { plan } = &prepared.mode else {
+        return Err("执行计划状态无效".to_string());
+    };
+    let run_request = sion_agent::RunRequest {
+        project_id,
+        node_id,
+        provider_id: prepared.selection.provider_id.clone(),
+        model: prepared.selection.model.clone(),
+        reasoning_effort: prepared.selection.reasoning_effort,
+        file_ids: prepared.file_ids.clone(),
+        kind: sion_agent::AgentRunKind::HarnessExecution,
+        created_at: now.clone(),
+        session_id: Some(prepared.session_id.clone()),
+        turn_id: Some(prepared.turn_id.clone()),
+        context_snapshot: Some(prepared.snapshot.clone()),
+    };
+    scheduler
+        .ensure_available(&run_request.project_id, node_id)
+        .map_err(|error| error.to_string())?;
+    let run = scheduler.enqueue(run_request).map_err(|error| error.to_string())?;
+    let running = run.status == sion_agent::AgentRunStatus::Running;
+    let turn = ConversationTurn {
+        id: prepared.turn_id.clone(),
+        project_id: run.project_id.clone(),
+        node_id,
+        session_id: prepared.session_id.clone(),
+        run_id: run.id.clone(),
+        user_message_id: prepared.user_message.id.clone(),
+        assistant_message_id: None,
+        status: if running { TurnStatus::Running } else { TurnStatus::Queued },
+        activities: if running {
+            vec![running_response_activity(&now)]
+        } else {
+            Vec::new()
+        },
+        reasoning_summary: None,
+        delivery_outcome: None,
+        delivery_inspection: None,
+        harness: Some(HarnessTurnState {
+            proposals: Vec::new(),
+            diagnostics: None,
+            execution_plan: None,
+            execution: Some(HarnessExecutionRecord {
+                run_id: run.id.clone(),
+                turn_id: prepared.turn_id.clone(),
+                started_at: now.clone(),
+                finished_at: None,
+                status: HarnessExecutionStatus::Running,
+                writes: Vec::new(),
+                public_error: None,
+            }),
+        }),
+        started_at: now.clone(),
+        finished_at: None,
+    };
+    match store.consume_execution_plan(
+        node_id,
+        &prepared.session_id,
+        &plan.id,
+        &prepared.user_message.content,
+        prepared.user_message.clone(),
+        turn.clone(),
+        &run,
+        now,
+    )
+    .map_err(|error| error.to_string())?
+    {
+        sion_storage::ConsumeExecutionPlanResult::Consumed { run, turn, .. } => {
+            Ok((*run, *turn))
+        }
+        sion_storage::ConsumeExecutionPlanResult::Unavailable { reason } => {
+            let _ = scheduler.cancel(
+                &run.id,
+                utc_now(),
+                Some(format!("执行计划不可用：{reason:?}")),
+            );
+            Err("执行计划已失效或不可用，请重新进行规划".to_string())
+        }
+    }
+}
+
 fn running_response_activity(now: &str) -> TurnActivity {
     TurnActivity {
         id: "response-0".to_string(),
@@ -735,6 +1094,9 @@ fn complete_harness_run(
     result: HarnessTurnResult,
     durable_proposals: Vec<HarnessProposal>,
     live_activities: Vec<TurnActivity>,
+    execution_plan: Option<HarnessExecutionPlan>,
+    execution_writes: Vec<HarnessExecutionWrite>,
+    assistant_message_id: Option<String>,
 ) {
     let finished_at = utc_now();
     let duration_ms = elapsed_ms(job.started_instant);
@@ -744,7 +1106,9 @@ fn complete_harness_run(
         match result {
             HarnessTurnResult::Completed(outcome) => {
                 let assistant = ChatMessage {
-                    id: uuid::Uuid::new_v4().to_string(),
+                    id: assistant_message_id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                     role: ChatRole::Assistant,
                     content: outcome.assistant_message.clone(),
                     reasoning_content: None,
@@ -772,7 +1136,10 @@ fn complete_harness_run(
             }
             HarnessTurnResult::Cancelled { usage, diagnostics } => (
                 sion_agent::AgentRunStatus::Cancelled,
-                Some("已取消；未应用任何提案".to_string()),
+                Some(match job.mode {
+                    HarnessRunMode::Execution { .. } => "已取消；已保存的修改保持不变".to_string(),
+                    HarnessRunMode::Planning => "已取消；未应用任何提案".to_string(),
+                }),
                 TurnStatus::Cancelled,
                 None,
                 usage,
@@ -799,13 +1166,29 @@ fn complete_harness_run(
         ..run.clone()
     };
 
+    let execution = match &job.mode {
+        HarnessRunMode::Execution { .. } => Some(HarnessExecutionRecord {
+            run_id: job.run_id.clone(),
+            turn_id: job.turn_id.clone(),
+            started_at: run.created_at.clone(),
+            finished_at: Some(finished_at.clone()),
+            status: match turn_status {
+                TurnStatus::Completed => HarnessExecutionStatus::Completed,
+                TurnStatus::Cancelled => HarnessExecutionStatus::Cancelled,
+                _ => HarnessExecutionStatus::Failed,
+            },
+            writes: execution_writes,
+            public_error: error.clone(),
+        }),
+        HarnessRunMode::Planning => None,
+    };
     let terminal_turn = ConversationTurn {
         id: job.turn_id.clone(),
         project_id: job.project_id.clone(),
         node_id: job.node_id,
         session_id: job.session_id.clone(),
         run_id: job.run_id.clone(),
-        user_message_id: String::new(),
+        user_message_id: job.user_message_id.clone(),
         assistant_message_id: assistant_message.as_ref().map(|message| message.id.clone()),
         status: turn_status,
         activities: live_activities,
@@ -815,8 +1198,8 @@ fn complete_harness_run(
         harness: Some(HarnessTurnState {
             proposals: durable_proposals,
             diagnostics: Some(diagnostics.clone()),
-            execution_plan: None,
-            execution: None,
+            execution_plan: execution_plan.clone(),
+            execution,
         }),
         started_at: run.created_at.clone(),
         finished_at: Some(finished_at.clone()),
@@ -1043,13 +1426,16 @@ mod tests {
         let registry = HarnessToolRegistry::new(&prepared.scope, &store).unwrap();
         let proposals = ProposalService::new(&prepared.scope, &store).unwrap();
         let executor = HarnessToolExecutorImpl {
-            registry,
-            proposals: Mutex::new(proposals),
+            registry: Mutex::new(registry),
+            proposals: Some(Mutex::new(proposals)),
+            execution: None,
+            store: &store,
+            execution_writes: Mutex::new(Vec::new()),
             now: Arc::new(utc_now),
         };
         let definitions = executor.tool_definitions();
         assert!(definitions.iter().any(|tool| tool.name == "read_attachment"));
-        assert!(definitions.iter().any(|tool| tool.name == "propose_delivery_change"));
+        assert!(definitions.iter().any(|tool| tool.name == "request_delivery_execution"));
         assert!(definitions
             .iter()
             .all(|tool| !tool.name.starts_with("propose_agent_rule")));
@@ -1083,8 +1469,11 @@ mod tests {
         let registry = HarnessToolRegistry::new(&prepared.scope, &store).unwrap();
         let proposals = ProposalService::new(&prepared.scope, &store).unwrap();
         let executor = HarnessToolExecutorImpl {
-            registry,
-            proposals: Mutex::new(proposals),
+            registry: Mutex::new(registry),
+            proposals: Some(Mutex::new(proposals)),
+            execution: None,
+            store: &store,
+            execution_writes: Mutex::new(Vec::new()),
             now: Arc::new(utc_now),
         };
         let unknown = executor.validate_batch(&[HarnessToolCall {

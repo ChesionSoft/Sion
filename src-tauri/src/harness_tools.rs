@@ -9,7 +9,7 @@
 // The harness runtime gains its orchestration callers in Tasks 7 and 8.
 #![allow(dead_code)]
 
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use sion_core::{
     HarnessToolCall, HarnessToolDefinition, HarnessToolStatus, WorkflowNode, WorkflowNodeId,
@@ -169,7 +169,7 @@ pub(crate) struct HarnessToolRegistry<'a> {
     node: WorkflowNode,
     dependency_nodes: Vec<DependencyNodeContext>,
     effective_rules: String,
-    search_index: OnceLock<HarnessSearchIndex>,
+    search_index: Mutex<Option<HarnessSearchIndex>>,
 }
 
 impl<'a> HarnessToolRegistry<'a> {
@@ -184,8 +184,30 @@ impl<'a> HarnessToolRegistry<'a> {
             node,
             dependency_nodes,
             effective_rules: scope.rule_snapshot.effective_markdown.clone(),
-            search_index: OnceLock::new(),
+            search_index: Mutex::new(None),
         })
+    }
+
+    /// Replaces the frozen node snapshot after an execution write so subsequent
+    /// `read_current_delivery`/search reads see the newly saved document, and
+    /// drops any cached search index so it rebuilds against the new content.
+    pub(crate) fn update_node_snapshot(&mut self, node: WorkflowNode) {
+        self.node = node;
+        *self.search_index.get_mut().unwrap() = None;
+    }
+
+    /// The current trusted node revision seen by read tools.
+    pub(crate) fn current_revision(&self) -> u64 {
+        self.node.revision
+    }
+
+    /// The current trusted node Markdown seen by read tools.
+    pub(crate) fn current_markdown(&self) -> &str {
+        &self.node.markdown
+    }
+
+    pub(crate) fn node_id(&self) -> WorkflowNodeId {
+        self.node.id
     }
 
     /// Validates and executes one tool call. Unauthorized calls fail closed and
@@ -428,8 +450,15 @@ impl<'a> HarnessToolRegistry<'a> {
         if query.trim().is_empty() {
             return Err(ToolError::InvalidArguments("搜索词不能为空".to_string()));
         }
-        let index = self.search_index.get_or_init(|| self.build_search_index());
-        let hits = index.search(query, MAX_SEARCH_RESULTS, MAX_SEARCH_EXCERPT_CHARS);
+        if self.search_index.lock().unwrap().is_none() {
+            let index = self.build_search_index();
+            *self.search_index.lock().unwrap() = Some(index);
+        }
+        let index = self.search_index.lock().unwrap();
+        let hits = index
+            .as_ref()
+            .expect("search index initialized above")
+            .search(query, MAX_SEARCH_RESULTS, MAX_SEARCH_EXCERPT_CHARS);
         if hits.is_empty() {
             return Ok(ToolExecution {
                 status: HarnessToolStatus::Completed,

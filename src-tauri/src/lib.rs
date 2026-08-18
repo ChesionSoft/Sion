@@ -34,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 
 mod conversation_runtime;
 mod dependency_context;
+mod harness_execution;
 mod harness_proposals;
 mod harness_runtime;
 mod harness_scope;
@@ -1033,6 +1034,121 @@ fn agent_run_start(
     let app_data_root = sion_root(&app)?;
     let project_root = resolve_registered_project_root(&app, &request.project_id)?;
     let store = ProjectStore::at(&project_root);
+    let pending_plan = store
+        .latest_pending_execution_plan(request.node_id, &request.session_id)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    if let Some(plan) = pending_plan {
+        if sion_core::is_execution_confirmation(&request.message) {
+            let prepared = harness_runtime::prepare_harness_execution_send(
+                &app_data_root,
+                &store,
+                project_root.clone(),
+                request.project_id.clone(),
+                request.node_id,
+                &request.session_id,
+                &request.message,
+                &request.file_ids,
+                plan,
+                &request.now,
+            )
+            .map_err(ApiError::CheckFailed)?;
+            if prepared.snapshot.status == sion_core::ContextEstimateStatus::Blocked {
+                let excess_tokens = prepared
+                    .snapshot
+                    .estimated_input_tokens
+                    .saturating_sub(prepared.snapshot.context_window_tokens);
+                let largest_section = largest_context_section(&prepared.snapshot);
+                return Ok(VersionedResponse {
+                    api_version: API_VERSION,
+                    payload: AgentRunStartOutcome::ContextBlocked {
+                        snapshot: prepared.snapshot,
+                        excess_tokens,
+                        largest_section,
+                    },
+                });
+            }
+            if store
+                .session(request.node_id, &request.session_id)
+                .map_err(|error| ApiError::CheckFailed(error.to_string()))?
+                .model_selection
+                .is_none()
+            {
+                store
+                    .update_session_model(
+                        request.node_id,
+                        &request.session_id,
+                        prepared.selection.clone(),
+                        request.now.clone(),
+                    )
+                    .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+            }
+            let mut scheduler = state
+                .scheduler
+                .lock()
+                .map_err(|_| ApiError::CheckFailed("agent scheduler lock is poisoned".to_string()))?;
+            let start_result = harness_runtime::persist_harness_execution_send(
+                &store,
+                &mut scheduler,
+                &prepared,
+                request.project_id.clone(),
+                request.node_id,
+                request.now.clone(),
+            )
+            .map_err(ApiError::CheckFailed)?;
+            let job = harness_runtime::HarnessJob {
+                project_root,
+                project_id: request.project_id.clone(),
+                node_id: request.node_id,
+                session_id: request.session_id.clone(),
+                turn_id: prepared.turn_id.clone(),
+                user_message_id: prepared.user_message.id.clone(),
+                run_id: start_result.0.id.clone(),
+                scope: prepared.scope.clone(),
+                model: prepared.resolved.clone(),
+                reasoning_effort: prepared.selection.reasoning_effort,
+                cancellation: CancellationToken::new(),
+                started_instant: Instant::now(),
+                mode: prepared.mode.clone(),
+                initial_messages: prepared.initial_messages.clone(),
+                limits: prepared.limits,
+            };
+            state
+                .harness_jobs
+                .lock()
+                .map_err(|_| ApiError::CheckFailed("harness job lock is poisoned".to_string()))?
+                .insert(start_result.0.id.clone(), job.clone());
+            let should_spawn = start_result.0.status == sion_agent::AgentRunStatus::Running;
+            drop(scheduler);
+            if should_spawn {
+                harness_runtime::spawn_harness_run(
+                    app,
+                    state.inner().clone(),
+                    start_result.0.clone(),
+                    job,
+                    prepared.initial_messages.clone(),
+                    prepared.limits,
+                );
+            }
+            return Ok(VersionedResponse {
+                api_version: API_VERSION,
+                payload: AgentRunStartOutcome::Started {
+                    run: Box::new(start_result.0),
+                    turn: Box::new(start_result.1),
+                },
+            });
+        }
+        // A pending plan is single-use and must be confirmed immediately. Any
+        // other message invalidates it before the ordinary planning turn.
+        store
+            .invalidate_execution_plan(
+                request.node_id,
+                &request.session_id,
+                &plan.id,
+                sion_core::HarnessPlanInvalidReason::AmbiguousConfirmation,
+                request.now.clone(),
+            )
+            .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    }
     let prepared = harness_runtime::prepare_harness_send(
         &app_data_root,
         &store,
@@ -1094,12 +1210,16 @@ fn agent_run_start(
         node_id: request.node_id,
         session_id: request.session_id.clone(),
         turn_id: prepared.turn_id.clone(),
+        user_message_id: prepared.user_message.id.clone(),
         run_id: start_result.0.id.clone(),
         scope: prepared.scope.clone(),
         model: prepared.resolved.clone(),
         reasoning_effort: prepared.selection.reasoning_effort,
         cancellation: CancellationToken::new(),
         started_instant: Instant::now(),
+        mode: prepared.mode.clone(),
+        initial_messages: prepared.initial_messages.clone(),
+        limits: prepared.limits,
     };
     state
         .harness_jobs
@@ -3739,6 +3859,50 @@ fn spawn_promoted_runs(
                 fail_promoted_run(&app, &state, &run, "晋升后的重新生成任务不存在");
             }
         } else {
+            let harness_job = state
+                .harness_jobs
+                .lock()
+                .ok()
+                .and_then(|jobs| jobs.get(&run.id).cloned());
+            if let Some(job) = harness_job {
+                let store = ProjectStore::at(&job.project_root);
+                let promoted_turn = store
+                    .turns(job.node_id, &job.session_id)
+                    .ok()
+                    .and_then(|turns| turns.into_iter().find(|turn| turn.id == job.turn_id))
+                    .map(|mut turn| {
+                        turn_runtime::mark_turn_running(&mut turn, &run.created_at);
+                        turn
+                    });
+                let persisted = store.save_run(&run).is_ok()
+                    && promoted_turn.as_ref().is_some_and(|turn| {
+                        store
+                            .save_turn(job.node_id, &job.session_id, turn.clone())
+                            .is_ok()
+                    });
+                if !persisted {
+                    fail_promoted_run(&app, &state, &run, "保存晋升后的 Harness 状态失败");
+                    continue;
+                }
+                if let Some(turn) = promoted_turn {
+                    let _ = app.emit(
+                        "conversation-turn-updated",
+                        ConversationTurnEvent {
+                            turn,
+                            saved_node: None,
+                        },
+                    );
+                }
+                harness_runtime::spawn_harness_run(
+                    app.clone(),
+                    state.clone(),
+                    run,
+                    job.clone(),
+                    job.initial_messages.clone(),
+                    job.limits,
+                );
+                continue;
+            }
             let job = state
                 .jobs
                 .lock()

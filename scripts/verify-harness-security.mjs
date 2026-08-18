@@ -13,27 +13,32 @@ const readToolNames = [
   "read_current_delivery",
   "read_effective_agent_rule",
 ];
-const proposalToolNames = [
-  "propose_delivery_change",
-  "revise_delivery_proposal",
-  "discard_delivery_proposal",
+const planningToolNames = [
+  "request_delivery_execution",
   "propose_agent_rule_override",
   "revise_agent_rule_proposal",
   "discard_agent_rule_proposal",
 ];
-const approvedToolNames = new Set([...readToolNames, ...proposalToolNames]);
+const executionToolNames = ["apply_current_delivery_change"];
+const approvedToolNames = new Set([
+  ...readToolNames,
+  ...planningToolNames,
+  ...executionToolNames,
+]);
 
-const [toolsRaw, proposalsRaw, runtime, lib] = await Promise.all([
+const [toolsRaw, proposalsRaw, executionRaw, runtime, lib] = await Promise.all([
   source("src-tauri/src/harness_tools.rs"),
   source("src-tauri/src/harness_proposals.rs"),
+  source("src-tauri/src/harness_execution.rs"),
   source("src-tauri/src/harness_runtime.rs"),
   source("src-tauri/src/lib.rs"),
 ]);
 const tools = productionSource(toolsRaw);
 const proposals = productionSource(proposalsRaw);
+const execution = productionSource(executionRaw);
 
 const registered = new Set();
-for (const text of [tools, proposals]) {
+for (const text of [tools, proposals, execution]) {
   for (const match of text.matchAll(/tool\(\s*\n\s*"([a-z_]+)"/g)) {
     registered.add(match[1]);
   }
@@ -48,12 +53,18 @@ for (const name of approvedToolNames) {
 for (const name of readToolNames) {
   if (!runtime.includes(`"${name}"`)) throw new Error(`read tool is not routed: ${name}`);
 }
-for (const name of proposalToolNames) {
+for (const name of planningToolNames) {
   if (!runtime.includes(`"${name}"`)) throw new Error(`proposal tool is not routed: ${name}`);
+}
+for (const name of executionToolNames) {
+  if (!execution.includes(`"${name}"`)) throw new Error(`execution tool is not defined: ${name}`);
+}
+if (/propose_delivery_change|revise_delivery_proposal|discard_delivery_proposal/.test(productionSource(proposalsRaw))) {
+  throw new Error("new planning Harness must not expose legacy delivery proposal tools");
 }
 
 const forbiddenSchemaArgument = /["'](?:path|filePath|directory|glob|url|uri|endpoint|command|shell|browser|code)["']\s*:/i;
-for (const [path, text] of [["harness_tools.rs", tools], ["harness_proposals.rs", proposals]]) {
+for (const [path, text] of [["harness_tools.rs", tools], ["harness_proposals.rs", proposals], ["harness_execution.rs", execution]]) {
   if (forbiddenSchemaArgument.test(text)) {
     throw new Error(`${path} exposes a forbidden raw model argument`);
   }
@@ -76,6 +87,9 @@ for (const requiredField of ["project_id", "node_id", "session_id", "turn_id", "
 
 if (!/kind:\s*sion_agent::AgentRunKind::Harness/.test(runtime)) {
   throw new Error("new node starts must schedule AgentRunKind::Harness");
+}
+if (!/AgentRunKind::HarnessExecution/.test(`${runtime}\n${lib}`) || !/consume_execution_plan/.test(runtime)) {
+  throw new Error("confirmed execution must consume a trusted plan before HarnessExecution");
 }
 if (/kind:\s*sion_agent::AgentRunKind::DeliveryDecision/.test(runtime)) {
   throw new Error("Harness start must not enqueue DeliveryDecision");

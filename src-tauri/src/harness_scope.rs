@@ -12,8 +12,8 @@
 use std::path::PathBuf;
 
 use sion_core::{
-    ChatModelSelection, WorkflowNodeId, agent_override_digest, authorize_latest_user_message,
-    readable_dependency_ids, TurnMessageAuthorization,
+    ChatModelSelection, HarnessExecutionPlan, WorkflowNodeId, agent_override_digest,
+    authorize_latest_user_message, readable_dependency_ids, TurnMessageAuthorization,
 };
 use sion_storage::ProjectStore;
 
@@ -110,6 +110,60 @@ pub(crate) fn freeze_harness_scope(
 /// Renders the frozen scope's allowed dependency IDs for a tool executor.
 pub(crate) fn allowed_dependency_set(scope: &HarnessScope) -> std::collections::HashSet<WorkflowNodeId> {
     scope.allowed_dependency_ids.iter().copied().collect()
+}
+
+/// Freezes the immutable execution scope from a consumed execution plan. It
+/// preserves the planning scope's read permissions (current node, direct
+/// dependencies, attachments, effective rule) and freezes the initial node
+/// revision from the plan's base revision. The execution scope authorizes
+/// current-node writes (the plan was already user-confirmed) but never
+/// Agent-rule writes. Model arguments cannot widen this scope.
+pub(crate) fn freeze_execution_scope(
+    store: &ProjectStore,
+    canonical_project_root: PathBuf,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    session_id: &str,
+    plan: &HarnessExecutionPlan,
+    model_selection: ChatModelSelection,
+) -> Result<HarnessScope, String> {
+    store
+        .session(node_id, session_id)
+        .map_err(|_| "会话不存在或已删除".to_string())?;
+    if plan.node_id != node_id || plan.session_id != session_id || plan.project_id != project_id {
+        return Err("执行范围与已确认计划不一致".to_string());
+    }
+    let node = store.node(node_id).map_err(|_| "当前节点交付稿读取失败".to_string())?;
+    if node.revision != plan.base_revision {
+        return Err("节点交付稿已变化，计划已失效".to_string());
+    }
+    let custom_override = store
+        .agent_override(node_id)
+        .map_err(|_| "Agent 规则读取失败".to_string())?;
+    let effective = compose_effective_agent_rules(node_id, custom_override);
+    let dependency_ids = readable_dependency_ids(node_id);
+    let files = store.list_files().map_err(|_| "项目附件读取失败".to_string())?;
+    let attachment_ids = files.into_iter().map(|file| file.id).collect();
+    Ok(HarnessScope {
+        project_id,
+        canonical_project_root,
+        node_id,
+        session_id: session_id.to_string(),
+        allowed_dependency_ids: dependency_ids,
+        attachment_ids,
+        expected_node_revision: plan.base_revision,
+        rule_snapshot: EffectiveRuleSnapshot {
+            built_in_markdown: effective.built_in_markdown,
+            custom_markdown: effective.custom_markdown.clone(),
+            effective_markdown: effective.effective_markdown,
+            digest: agent_override_digest(effective.custom_markdown.as_deref()),
+        },
+        model_selection,
+        // The plan was user-confirmed; current-node rewrites are authorized.
+        rewrite_authorized: true,
+        // Execution never changes Agent rules.
+        rule_write_authorized: false,
+    })
 }
 
 #[cfg(test)]
@@ -284,6 +338,130 @@ mod tests {
         // The scope freezes the trusted ID; the corrupt dependency only fails
         // when the manifest/section is actually read, never at freeze time.
         assert_eq!(scope.allowed_dependency_ids, vec![WorkflowNodeId::BasicInfo]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn execution_scope_freezes_plan_ownership_revision_and_write_authorization() {
+        use sion_core::{HarnessPlanStatus, WorkflowNodeId};
+        let (root, store) = fixture();
+        save_body(
+            &store,
+            WorkflowNodeId::BasicInfo,
+            "# 项目基本信息\n\n## 基础信息表\n基础正文",
+        );
+        save_body(
+            &store,
+            WorkflowNodeId::Goals,
+            "# 需求背景与建设目标\n\n## 需求背景\n目标正文",
+        );
+        let session = store
+            .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+            .unwrap();
+        let plan = HarnessExecutionPlan {
+            id: "plan-1".into(),
+            project_id: "project-1".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: session.id.clone(),
+            plan_turn_id: "turn-plan".into(),
+            plan_message_id: "message-plan".into(),
+            base_revision: 1,
+            summary: "补充目标".into(),
+            status: HarnessPlanStatus::Pending,
+            created_at: "now".into(),
+            expires_at: "later".into(),
+            consumed_at: None,
+            invalidated_at: None,
+            invalid_reason: None,
+        };
+        let scope = freeze_execution_scope(
+            &store,
+            root.join("projects/project-1"),
+            "project-1".into(),
+            WorkflowNodeId::Goals,
+            &session.id,
+            &plan,
+            selection(),
+        )
+        .unwrap();
+        assert_eq!(scope.expected_node_revision, 1);
+        assert_eq!(scope.allowed_dependency_ids, vec![WorkflowNodeId::BasicInfo]);
+        assert!(scope.rewrite_authorized);
+        assert!(!scope.rule_write_authorized);
+        assert_eq!(scope.node_id, WorkflowNodeId::Goals);
+        assert_eq!(scope.session_id, session.id);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn execution_scope_fails_closed_when_plan_ownership_or_revision_mismatches() {
+        use sion_core::{HarnessPlanStatus, WorkflowNodeId};
+        let (root, store) = fixture();
+        save_body(
+            &store,
+            WorkflowNodeId::Goals,
+            "# 需求背景与建设目标\n\n## 需求背景\n正文",
+        );
+        let session = store
+            .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+            .unwrap();
+        let plan = HarnessExecutionPlan {
+            id: "plan-1".into(),
+            project_id: "other-project".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: session.id.clone(),
+            plan_turn_id: "turn-plan".into(),
+            plan_message_id: "message-plan".into(),
+            base_revision: 1,
+            summary: "s".into(),
+            status: HarnessPlanStatus::Pending,
+            created_at: "now".into(),
+            expires_at: "later".into(),
+            consumed_at: None,
+            invalidated_at: None,
+            invalid_reason: None,
+        };
+        let error = freeze_execution_scope(
+            &store,
+            root.join("projects/project-1"),
+            "project-1".into(),
+            WorkflowNodeId::Goals,
+            &session.id,
+            &plan,
+            selection(),
+        )
+        .unwrap_err();
+        assert!(error.contains("不一致"));
+        assert!(!error.contains("projects"));
+
+        // Revision mismatch: plan base 2 but node is at revision 1.
+        let plan = HarnessExecutionPlan {
+            id: "plan-2".into(),
+            project_id: "project-1".into(),
+            node_id: WorkflowNodeId::Goals,
+            session_id: session.id.clone(),
+            plan_turn_id: "turn-plan".into(),
+            plan_message_id: "message-plan".into(),
+            base_revision: 2,
+            summary: "s".into(),
+            status: HarnessPlanStatus::Pending,
+            created_at: "now".into(),
+            expires_at: "later".into(),
+            consumed_at: None,
+            invalidated_at: None,
+            invalid_reason: None,
+        };
+        let error = freeze_execution_scope(
+            &store,
+            root.join("projects/project-1"),
+            "project-1".into(),
+            WorkflowNodeId::Goals,
+            &session.id,
+            &plan,
+            selection(),
+        )
+        .unwrap_err();
+        assert!(error.contains("已失效"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }
