@@ -27,6 +27,7 @@ import {
   type FilePreview,
   type HarnessProposalRejected,
   type HarnessProposalResolution,
+  type HarnessExecutionUndoOutcome,
   type NodeId,
   type NodeStatus,
   type ProjectFile,
@@ -114,6 +115,19 @@ export const saveNode = (
     expectedRevision,
     markdown,
     status,
+    now,
+  });
+
+export const harnessExecutionUndoLatest = (
+  projectId: string,
+  nodeId: NodeId,
+  expectedRevision: number,
+  now: string,
+) =>
+  invokePayload<HarnessExecutionUndoOutcome>("harness_execution_undo_latest", {
+    projectId,
+    nodeId,
+    expectedRevision,
     now,
   });
 

@@ -272,7 +272,14 @@ export type HarnessExecutionPlan = {
   invalidReason?: HarnessPlanInvalidReason;
 };
 export type HarnessExecutionStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
-export type HarnessExecutionWrite = { nodeId?: NodeId; revision: number; summary: string; savedAt: string };
+export type HarnessExecutionWrite = {
+  nodeId?: NodeId;
+  previousRevision?: number;
+  revision: number;
+  summary: string;
+  savedAt: string;
+  undoneAt?: string;
+};
 export type HarnessExecutionRecord = {
   runId: string;
   turnId: string;
@@ -285,6 +292,10 @@ export type HarnessExecutionRecord = {
   stoppedReason?: string;
   publicError?: string;
 };
+export type HarnessExecutionUndoOutcome =
+  | { kind: "undone"; node: WorkflowNode }
+  | { kind: "conflict"; latest: WorkflowNode }
+  | { kind: "unavailable" };
 export type HarnessTurnState = {
   proposals: HarnessProposal[];
   diagnostics?: HarnessDiagnostics;

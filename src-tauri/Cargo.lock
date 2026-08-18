@@ -3409,6 +3409,7 @@ dependencies = [
  "pdf-extract",
  "serde",
  "serde_json",
+ "sha2",
  "sion-agent",
  "sion-core",
  "thiserror 2.0.18",

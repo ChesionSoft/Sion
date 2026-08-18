@@ -1,4 +1,4 @@
-import type { ChatMessage, ConversationTurn } from "../../types";
+import type { ChatMessage, ConversationTurn, NodeId } from "../../types";
 import {
   formatTurnElapsed,
   turnDeliveryPresentation,
@@ -26,6 +26,8 @@ export type ConversationTurnCardProps = {
   onApproveProposal: (turnId: string, proposalId: string) => void;
   onRejectProposal: (turnId: string, proposalId: string) => void;
   onOpenRunDetail: (runId: string) => void;
+  onUndoExecutionWrite: (nodeId: NodeId, revision: number) => void;
+  undoingWriteKey?: string;
 };
 
 export function ConversationTurnCard({
@@ -40,12 +42,15 @@ export function ConversationTurnCard({
   onApproveProposal,
   onRejectProposal,
   onOpenRunDetail,
+  onUndoExecutionWrite,
+  undoingWriteKey,
 }: ConversationTurnCardProps) {
   const delivery = turnDeliveryPresentation(turn, markdownDirty);
   const active = turn.status === "queued" || turn.status === "running";
   const reasoningContent = liveReasoning || turn.reasoningSummary;
   const elapsedText = formatTurnElapsed(turnElapsedMs(turn, Date.now()));
   const showDecisionDetails = Boolean(turn.deliveryInspection);
+  const proposals = turn.harness?.proposals ?? [];
   const visualPhase = turnVisualPhase(turn, liveReasoning, Boolean(streamingMessage));
   const activeDelivery = active
     ? turn.activities.find((activity) => activity.kind !== "response" && activity.status === "running")
@@ -116,9 +121,11 @@ export function ConversationTurnCard({
         <HarnessExecutionPlanCard
           plan={turn.harness.executionPlan}
           execution={turn.harness.execution}
+          onUndoWrite={onUndoExecutionWrite}
+          undoingWriteKey={undoingWriteKey}
         />
       ) : null}
-      {turn.harness?.proposals.map((proposal) => (
+      {proposals.map((proposal) => (
         <HarnessProposalCard
           key={proposal.id}
           proposal={proposal}

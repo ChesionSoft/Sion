@@ -8,12 +8,12 @@
 
 use sion_core::{
     ChatMessage, ChatRole, ConversationTurn, HarnessExecutionPlan, HarnessExecutionRecord,
-    HarnessExecutionStatus, HarnessPlanInvalidReason, HarnessPlanStatus,
-    HarnessTurnState, NodeStatus, TurnStatus, WorkflowNodeId,
+    HarnessExecutionStatus, HarnessPlanInvalidReason, HarnessPlanStatus, HarnessTurnState,
+    NodeStatus, TurnStatus, WorkflowNodeId,
 };
 use sion_storage::{
     ConsumeExecutionPlanResult, CreateProjectInput, ExecutionPlanUnavailableReason,
-    ExecutionWriteOutcome, ProjectStore, SaveNodeResult,
+    ExecutionUndoOutcome, ExecutionWriteOutcome, ProjectStore, SaveNodeResult,
 };
 use std::path::PathBuf;
 
@@ -188,7 +188,14 @@ fn plan(
 }
 
 fn multi_plan(session_id: &str) -> HarnessExecutionPlan {
-    let mut plan = plan("multi-plan", session_id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let mut plan = plan(
+        "multi-plan",
+        session_id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     plan.targets = vec![
         sion_core::HarnessExecutionTarget {
             node_id: WorkflowNodeId::Goals,
@@ -270,6 +277,36 @@ fn publish(
         .unwrap();
 }
 
+fn begin_execution(store: &ProjectStore, session_id: &str, plan_id: &str) {
+    let turn = completed_turn(session_id, "turn-plan", "assistant-plan");
+    let pending = plan(
+        plan_id,
+        session_id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
+    publish(store, session_id, &turn, pending);
+    store
+        .consume_execution_plan(
+            WorkflowNodeId::Goals,
+            session_id,
+            plan_id,
+            "继续",
+            message("user-confirm", ChatRole::User, "继续"),
+            running_execution_turn(session_id, "turn-exec", "run-exec", plan_id),
+            &run(
+                "run-exec",
+                session_id,
+                "turn-exec",
+                sion_agent::AgentRunKind::HarnessExecution,
+            ),
+            later_now().into(),
+        )
+        .unwrap();
+}
+
 #[test]
 fn publish_execution_plan_links_to_completed_turn_and_assistant_message() {
     let (root, store) = fixture();
@@ -277,11 +314,24 @@ fn publish_execution_plan_links_to_completed_turn_and_assistant_message() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan.clone());
 
     let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
-    let stored = turns[0].harness.as_ref().unwrap().execution_plan.as_ref().unwrap();
+    let stored = turns[0]
+        .harness
+        .as_ref()
+        .unwrap()
+        .execution_plan
+        .as_ref()
+        .unwrap();
     assert_eq!(stored.id, "plan-1");
     assert_eq!(stored.status, HarnessPlanStatus::Pending);
     assert_eq!(stored.plan_message_id, "assistant-plan");
@@ -329,7 +379,10 @@ fn multi_target_plan_requires_every_target_revision_before_publish_and_consume()
             later_now().into(),
         )
         .unwrap();
-    assert!(matches!(result, ConsumeExecutionPlanResult::Consumed { .. }));
+    assert!(matches!(
+        result,
+        ConsumeExecutionPlanResult::Consumed { .. }
+    ));
 
     // A second plan with a stale non-owner target is rejected at publication,
     // proving the owner revision is not the only frozen safety check.
@@ -345,12 +398,22 @@ fn multi_target_plan_requires_every_target_revision_before_publish_and_consume()
             &session.id,
             Some(message("assistant-stale", ChatRole::Assistant, "计划")),
             stale_turn,
-            &run("run-stale", &session.id, "turn-stale", sion_agent::AgentRunKind::Harness),
+            &run(
+                "run-stale",
+                &session.id,
+                "turn-stale",
+                sion_agent::AgentRunKind::Harness,
+            ),
             "finished".into(),
         )
-        .and_then(|_| store.publish_execution_plan(WorkflowNodeId::Goals, &session.id, stale, "later".into()))
+        .and_then(|_| {
+            store.publish_execution_plan(WorkflowNodeId::Goals, &session.id, stale, "later".into())
+        })
         .unwrap_err();
-    assert!(matches!(error, sion_storage::StorageError::ExecutionPlanTurnUnavailable(_)));
+    assert!(matches!(
+        error,
+        sion_storage::StorageError::ExecutionPlanTurnUnavailable(_)
+    ));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -361,11 +424,25 @@ fn second_pending_plan_for_same_session_is_rejected() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let first = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let first = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, first);
 
     // A second plan for the same session (even a different turn) is refused.
-    let second = plan("plan-2", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let second = plan(
+        "plan-2",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     let error = store
         .publish_execution_plan(WorkflowNodeId::Goals, &session.id, second, "later".into())
         .unwrap_err();
@@ -390,7 +467,14 @@ fn publish_requires_completed_turn_with_matching_assistant_message() {
         .publish_execution_plan(
             WorkflowNodeId::Goals,
             &session.id,
-            plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry()),
+            plan(
+                "plan-1",
+                &session.id,
+                "turn-plan",
+                "assistant-plan",
+                1,
+                unexpired_expiry(),
+            ),
             "now".into(),
         )
         .unwrap_err();
@@ -409,7 +493,14 @@ fn consume_plan_begins_execution_turn_with_user_message_and_run() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan.clone());
 
     let execution_turn = running_execution_turn(&session.id, "turn-exec", "run-exec", "plan-1");
@@ -432,7 +523,11 @@ fn consume_plan_begins_execution_turn_with_user_message_and_run() {
         )
         .unwrap();
     match result {
-        ConsumeExecutionPlanResult::Consumed { run, turn, plan: consumed } => {
+        ConsumeExecutionPlanResult::Consumed {
+            run,
+            turn,
+            plan: consumed,
+        } => {
             assert_eq!(run.kind, sion_agent::AgentRunKind::HarnessExecution);
             assert_eq!(turn.id, "turn-exec");
             assert_eq!(consumed.status, HarnessPlanStatus::Consumed);
@@ -440,7 +535,11 @@ fn consume_plan_begins_execution_turn_with_user_message_and_run() {
         other => panic!("expected consumed, got {other:?}"),
     }
     let messages = store.messages(WorkflowNodeId::Goals, &session.id).unwrap();
-    assert!(messages.iter().any(|m| m.id == "user-confirm" && m.content == "继续"));
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.id == "user-confirm" && m.content == "继续")
+    );
     assert!(store.run("run-exec").is_ok());
     let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
     assert_eq!(turns.len(), 2);
@@ -448,7 +547,14 @@ fn consume_plan_begins_execution_turn_with_user_message_and_run() {
     assert_eq!(turns[1].status, TurnStatus::Running);
     let plan_turn = &turns[0];
     assert_eq!(
-        plan_turn.harness.as_ref().unwrap().execution_plan.as_ref().unwrap().status,
+        plan_turn
+            .harness
+            .as_ref()
+            .unwrap()
+            .execution_plan
+            .as_ref()
+            .unwrap()
+            .status,
         HarnessPlanStatus::Consumed
     );
     std::fs::remove_dir_all(root).unwrap();
@@ -461,7 +567,14 @@ fn duplicate_or_racing_confirmation_consumes_once_only() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
 
     let execution_turn = running_execution_turn(&session.id, "turn-exec", "run-exec", "plan-1");
@@ -507,12 +620,17 @@ fn duplicate_or_racing_confirmation_consumes_once_only() {
     // Exactly one execution run and one user confirmation message exist.
     let runs = store.list_runs().unwrap();
     assert_eq!(
-        runs.iter().filter(|run| run.kind == sion_agent::AgentRunKind::HarnessExecution).count(),
+        runs.iter()
+            .filter(|run| run.kind == sion_agent::AgentRunKind::HarnessExecution)
+            .count(),
         1
     );
     let messages = store.messages(WorkflowNodeId::Goals, &session.id).unwrap();
     assert_eq!(
-        messages.iter().filter(|m| m.id == "user-confirm" || m.id == "user-confirm-2").count(),
+        messages
+            .iter()
+            .filter(|m| m.id == "user-confirm" || m.id == "user-confirm-2")
+            .count(),
         1
     );
     std::fs::remove_dir_all(root).unwrap();
@@ -525,7 +643,14 @@ fn consume_fails_when_node_revision_changed_and_invalidates_plan() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
 
     // A manual save bumps the node revision from 1 to 2.
@@ -564,9 +689,18 @@ fn consume_fails_when_node_revision_changed_and_invalidates_plan() {
     }
     // The plan is now invalidated and no execution run exists.
     let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
-    let stored = turns[0].harness.as_ref().unwrap().execution_plan.as_ref().unwrap();
+    let stored = turns[0]
+        .harness
+        .as_ref()
+        .unwrap()
+        .execution_plan
+        .as_ref()
+        .unwrap();
     assert_eq!(stored.status, HarnessPlanStatus::Invalidated);
-    assert_eq!(stored.invalid_reason, Some(HarnessPlanInvalidReason::NodeChanged));
+    assert_eq!(
+        stored.invalid_reason,
+        Some(HarnessPlanInvalidReason::NodeChanged)
+    );
     assert!(
         store
             .list_runs()
@@ -584,7 +718,14 @@ fn consume_fails_when_expired_or_ordering_mismatched() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let expired = plan("plan-expired", &session.id, "turn-plan", "assistant-plan", 1, "2000-01-01T00:00:00Z");
+    let expired = plan(
+        "plan-expired",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        "2000-01-01T00:00:00Z",
+    );
     publish(&store, &session.id, &turn, expired);
     let result = store
         .consume_execution_plan(
@@ -618,7 +759,14 @@ fn consume_fails_when_expired_or_ordering_mismatched() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-order", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-order",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
     store
         .append_message(
@@ -661,7 +809,14 @@ fn negative_or_ambiguous_reply_is_refused_and_invalidates_plan() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
 
     for reply in ["不要", "取消", "no", "好的，我们再讨论一下需求", "嗯？"] {
@@ -684,7 +839,11 @@ fn negative_or_ambiguous_reply_is_refused_and_invalidates_plan() {
             .unwrap();
         match result {
             ConsumeExecutionPlanResult::Unavailable { reason } => {
-                assert_eq!(reason, ExecutionPlanUnavailableReason::NotAffirmative, "{reply}");
+                assert_eq!(
+                    reason,
+                    ExecutionPlanUnavailableReason::NotAffirmative,
+                    "{reply}"
+                );
             }
             other => panic!("expected unavailable for {reply:?}, got {other:?}"),
         }
@@ -692,7 +851,13 @@ fn negative_or_ambiguous_reply_is_refused_and_invalidates_plan() {
     // The plan was invalidated after the first ambiguous reply; no execution
     // run was ever created.
     let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
-    let stored = turns[0].harness.as_ref().unwrap().execution_plan.as_ref().unwrap();
+    let stored = turns[0]
+        .harness
+        .as_ref()
+        .unwrap()
+        .execution_plan
+        .as_ref()
+        .unwrap();
     assert_eq!(stored.status, HarnessPlanStatus::Invalidated);
     assert_eq!(
         stored.invalid_reason,
@@ -718,7 +883,14 @@ fn consume_fails_for_wrong_session_or_unknown_plan() {
         .create_session(WorkflowNodeId::Goals, "另一个".into(), None, "later".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
 
     // Unknown plan id.
@@ -780,7 +952,14 @@ fn execution_write_saves_node_with_cas_and_records_audit_summary() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
     let execution_turn = running_execution_turn(&session.id, "turn-exec", "run-exec", "plan-1");
     let execution_run = run(
@@ -802,7 +981,8 @@ fn execution_write_saves_node_with_cas_and_records_audit_summary() {
         )
         .unwrap();
 
-    let proposed = "# 需求背景与建设目标\n\n## 需求背景\n旧背景\n\n## 建设目标\n新目标\n\n## 范围边界\n旧边界";
+    let proposed =
+        "# 需求背景与建设目标\n\n## 需求背景\n旧背景\n\n## 建设目标\n新目标\n\n## 范围边界\n旧边界";
     let outcome = store
         .apply_execution_write(
             WorkflowNodeId::Goals,
@@ -826,7 +1006,13 @@ fn execution_write_saves_node_with_cas_and_records_audit_summary() {
     // The audit summary is recorded on the execution turn.
     let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
     let execution = turns.iter().find(|t| t.id == "turn-exec").unwrap();
-    let record = execution.harness.as_ref().unwrap().execution.as_ref().unwrap();
+    let record = execution
+        .harness
+        .as_ref()
+        .unwrap()
+        .execution
+        .as_ref()
+        .unwrap();
     assert_eq!(record.writes.len(), 1);
     assert_eq!(record.writes[0].revision, 2);
     // The next write advances the expected revision.
@@ -955,7 +1141,14 @@ fn execution_write_conflict_and_validation_failure_write_nothing() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
     store
         .consume_execution_plan(
@@ -1037,7 +1230,14 @@ fn execution_write_crash_after_node_save_reconciles_audit_summary() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
     store
         .consume_execution_plan(
@@ -1059,7 +1259,8 @@ fn execution_write_crash_after_node_save_reconciles_audit_summary() {
 
     // Simulate a crash: the node was saved but the journal was never removed
     // and the audit record never updated.
-    let proposed = "# 需求背景与建设目标\n\n## 需求背景\n旧背景\n\n## 建设目标\n新目标\n\n## 范围边界\n旧边界";
+    let proposed =
+        "# 需求背景与建设目标\n\n## 需求背景\n旧背景\n\n## 建设目标\n新目标\n\n## 范围边界\n旧边界";
     store
         .save_node_if_revision(
             WorkflowNodeId::Goals,
@@ -1078,12 +1279,19 @@ fn execution_write_crash_after_node_save_reconciles_audit_summary() {
             plan_id: "plan-1".into(),
             expected_revision: 1,
             proposed_markdown: proposed.into(),
+            previous_markdown: Some(
+                "# 需求背景与建设目标\n\n## 需求背景\n旧背景\n\n## 建设目标\n旧目标\n\n## 范围边界\n旧边界"
+                    .into(),
+            ),
+            previous_status: Some(NodeStatus::Generated),
             summary: "保存建设目标".into(),
             now: "saved".into(),
         },
     );
 
-    store.recover_pending_execution_write(WorkflowNodeId::Goals).unwrap();
+    store
+        .recover_pending_execution_write(WorkflowNodeId::Goals)
+        .unwrap();
     // The journal is gone and the audit record now carries the write.
     assert!(
         !sion_storage::harness_testing::execution_journal_exists_for_test(
@@ -1106,6 +1314,12 @@ fn execution_write_crash_after_node_save_reconciles_audit_summary() {
     assert_eq!(record.writes[0].revision, 2);
     // The node content was NOT rewritten (revision stayed 2).
     assert_eq!(store.node(WorkflowNodeId::Goals).unwrap().revision, 2);
+    assert!(matches!(
+        store
+            .undo_latest_execution_write(WorkflowNodeId::Goals, 2, "undone".into())
+            .unwrap(),
+        ExecutionUndoOutcome::Undone { .. }
+    ));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1116,7 +1330,14 @@ fn execution_write_crash_before_node_save_recovery_writes_nothing() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
     store
         .consume_execution_plan(
@@ -1137,7 +1358,8 @@ fn execution_write_crash_before_node_save_recovery_writes_nothing() {
         .unwrap();
 
     // The journal exists but the node was never saved.
-    let proposed = "# 需求背景与建设目标\n\n## 需求背景\n旧背景\n\n## 建设目标\n新目标\n\n## 范围边界\n旧边界";
+    let proposed =
+        "# 需求背景与建设目标\n\n## 需求背景\n旧背景\n\n## 建设目标\n新目标\n\n## 范围边界\n旧边界";
     sion_storage::harness_testing::write_execution_journal_for_test(
         &store,
         WorkflowNodeId::Goals,
@@ -1147,11 +1369,15 @@ fn execution_write_crash_before_node_save_recovery_writes_nothing() {
             plan_id: "plan-1".into(),
             expected_revision: 1,
             proposed_markdown: proposed.into(),
+            previous_markdown: None,
+            previous_status: None,
             summary: "保存建设目标".into(),
             now: "saved".into(),
         },
     );
-    store.recover_pending_execution_write(WorkflowNodeId::Goals).unwrap();
+    store
+        .recover_pending_execution_write(WorkflowNodeId::Goals)
+        .unwrap();
     // Node is untouched and no audit write was recorded.
     assert_eq!(store.node(WorkflowNodeId::Goals).unwrap().revision, 1);
     let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
@@ -1176,16 +1402,32 @@ fn startup_recovery_invalidates_pending_plans_and_never_replays() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
 
     store
         .recover_pending_execution(WorkflowNodeId::Goals, "restarted".into())
         .unwrap();
     let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
-    let stored = turns[0].harness.as_ref().unwrap().execution_plan.as_ref().unwrap();
+    let stored = turns[0]
+        .harness
+        .as_ref()
+        .unwrap()
+        .execution_plan
+        .as_ref()
+        .unwrap();
     assert_eq!(stored.status, HarnessPlanStatus::Invalidated);
-    assert_eq!(stored.invalid_reason, Some(HarnessPlanInvalidReason::Restarted));
+    assert_eq!(
+        stored.invalid_reason,
+        Some(HarnessPlanInvalidReason::Restarted)
+    );
     // No execution run was created by recovery.
     assert!(
         store
@@ -1204,7 +1446,14 @@ fn invalidate_pending_plans_marks_all_plans_in_session() {
         .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
         .unwrap();
     let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
-    let plan = plan("plan-1", &session.id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    let plan = plan(
+        "plan-1",
+        &session.id,
+        "turn-plan",
+        "assistant-plan",
+        1,
+        unexpired_expiry(),
+    );
     publish(&store, &session.id, &turn, plan);
     store
         .invalidate_pending_plans(
@@ -1214,9 +1463,18 @@ fn invalidate_pending_plans_marks_all_plans_in_session() {
         )
         .unwrap();
     let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
-    let stored = turns[0].harness.as_ref().unwrap().execution_plan.as_ref().unwrap();
+    let stored = turns[0]
+        .harness
+        .as_ref()
+        .unwrap()
+        .execution_plan
+        .as_ref()
+        .unwrap();
     assert_eq!(stored.status, HarnessPlanStatus::Invalidated);
-    assert_eq!(stored.invalid_reason, Some(HarnessPlanInvalidReason::Cancelled));
+    assert_eq!(
+        stored.invalid_reason,
+        Some(HarnessPlanInvalidReason::Cancelled)
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1254,5 +1512,269 @@ fn legacy_conversation_document_without_plan_fields_still_loads() {
         .unwrap();
     let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
     assert_eq!(turns[0].harness, None);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn latest_execution_write_can_be_undone_as_a_new_revision() {
+    let (root, store) = fixture();
+    let before = store.node(WorkflowNodeId::Goals).unwrap();
+    let session = store
+        .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+        .unwrap();
+    begin_execution(&store, &session.id, "plan-undo");
+    let proposed =
+        "# 需求背景与建设目标\n\n## 需求背景\n新背景\n\n## 建设目标\n新目标\n\n## 范围边界\n新边界";
+    let saved = store
+        .apply_execution_write(
+            WorkflowNodeId::Goals,
+            &session.id,
+            "turn-exec",
+            "plan-undo",
+            before.revision,
+            proposed.into(),
+            "更新目标节点".into(),
+            "saved".into(),
+        )
+        .unwrap();
+    let ExecutionWriteOutcome::Saved { node, .. } = saved else {
+        panic!("expected execution save");
+    };
+
+    let undone = store
+        .undo_latest_execution_write(WorkflowNodeId::Goals, node.revision, "undone".into())
+        .unwrap();
+    let ExecutionUndoOutcome::Undone { node: restored } = undone else {
+        panic!("expected undo");
+    };
+    assert_eq!(restored.revision, node.revision + 1);
+    assert_eq!(restored.markdown, before.markdown);
+
+    let turns = store.turns(WorkflowNodeId::Goals, &session.id).unwrap();
+    let write = &turns
+        .iter()
+        .find(|turn| turn.id == "turn-exec")
+        .unwrap()
+        .harness
+        .as_ref()
+        .unwrap()
+        .execution
+        .as_ref()
+        .unwrap()
+        .writes[0];
+    assert_eq!(write.previous_revision, Some(before.revision));
+    assert_eq!(write.undone_at.as_deref(), Some("undone"));
+
+    assert!(matches!(
+        store
+            .undo_latest_execution_write(WorkflowNodeId::Goals, restored.revision, "again".into(),)
+            .unwrap(),
+        ExecutionUndoOutcome::Unavailable
+    ));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn execution_undo_rejects_a_later_manual_save_without_writing() {
+    let (root, store) = fixture();
+    let session = store
+        .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+        .unwrap();
+    begin_execution(&store, &session.id, "plan-conflict");
+    let saved = store
+        .apply_execution_write(
+            WorkflowNodeId::Goals,
+            &session.id,
+            "turn-exec",
+            "plan-conflict",
+            1,
+            "# 需求背景与建设目标\n\n## 需求背景\n执行修改\n\n## 建设目标\n目标\n\n## 范围边界\n边界".into(),
+            "执行修改".into(),
+            "saved".into(),
+        )
+        .unwrap();
+    let ExecutionWriteOutcome::Saved { node, .. } = saved else {
+        panic!("expected execution save");
+    };
+    let manual = store
+        .save_node_if_revision(
+            WorkflowNodeId::Goals,
+            node.revision,
+            "# 需求背景与建设目标\n\n## 需求背景\n手动修改\n\n## 建设目标\n目标\n\n## 范围边界\n边界".into(),
+            NodeStatus::Confirmed,
+            "manual".into(),
+        )
+        .unwrap();
+    let SaveNodeResult::Saved(manual) = manual else {
+        panic!("expected manual save");
+    };
+
+    let outcome = store
+        .undo_latest_execution_write(WorkflowNodeId::Goals, node.revision, "undone".into())
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        ExecutionUndoOutcome::Conflict { latest } if latest.revision == manual.revision
+    ));
+    assert_eq!(store.node(WorkflowNodeId::Goals).unwrap(), manual);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn undo_recovery_reconciles_a_node_saved_before_history_update() {
+    let (root, store) = fixture();
+    let before = store.node(WorkflowNodeId::Goals).unwrap();
+    let session = store
+        .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+        .unwrap();
+    begin_execution(&store, &session.id, "plan-undo-recovery");
+    let proposed = "# 需求背景与建设目标\n\n## 需求背景\n执行背景\n\n## 建设目标\n执行目标\n\n## 范围边界\n执行边界";
+    let saved = store
+        .apply_execution_write(
+            WorkflowNodeId::Goals,
+            &session.id,
+            "turn-exec",
+            "plan-undo-recovery",
+            before.revision,
+            proposed.into(),
+            "执行修改".into(),
+            "saved".into(),
+        )
+        .unwrap();
+    let ExecutionWriteOutcome::Saved { node: changed, .. } = saved else {
+        panic!("expected execution save");
+    };
+
+    // Simulate the undo node save landing before the history/audit update.
+    store
+        .save_node_if_revision(
+            WorkflowNodeId::Goals,
+            changed.revision,
+            before.markdown.clone(),
+            before.status.clone(),
+            "undone".into(),
+        )
+        .unwrap();
+    sion_storage::harness_testing::write_execution_undo_journal_for_test(
+        &store,
+        WorkflowNodeId::Goals,
+        &sion_storage::harness_testing::ExecutionUndoJournalForTest {
+            node_id: WorkflowNodeId::Goals,
+            owner_node_id: WorkflowNodeId::Goals,
+            session_id: session.id.clone(),
+            turn_id: "turn-exec".into(),
+            plan_id: "plan-undo-recovery".into(),
+            before_revision: before.revision,
+            after_revision: changed.revision,
+            before_markdown: before.markdown,
+            before_status: before.status,
+            now: "undone".into(),
+        },
+    );
+    store
+        .recover_pending_execution_undo(WorkflowNodeId::Goals)
+        .unwrap();
+    assert!(
+        !sion_storage::harness_testing::execution_undo_journal_exists_for_test(
+            &store,
+            WorkflowNodeId::Goals
+        )
+    );
+    let record = store
+        .turns(WorkflowNodeId::Goals, &session.id)
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.id == "turn-exec")
+        .unwrap()
+        .harness
+        .unwrap()
+        .execution
+        .unwrap();
+    assert_eq!(record.writes[0].undone_at.as_deref(), Some("undone"));
+    assert!(matches!(
+        store
+            .undo_latest_execution_write(
+                WorkflowNodeId::Goals,
+                changed.revision + 1,
+                "again".into()
+            )
+            .unwrap(),
+        ExecutionUndoOutcome::Unavailable
+    ));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn undo_is_scoped_to_the_requested_node_in_a_multi_node_execution() {
+    let (root, store) = fixture();
+    let initial_basic = store.node(WorkflowNodeId::BasicInfo).unwrap();
+    store
+        .save_node_if_revision(
+            WorkflowNodeId::BasicInfo,
+            initial_basic.revision,
+            initial_basic.markdown,
+            NodeStatus::Generated,
+            "now".into(),
+        )
+        .unwrap();
+    let basic = store.node(WorkflowNodeId::BasicInfo).unwrap();
+    let session = store
+        .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+        .unwrap();
+    let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
+    publish(&store, &session.id, &turn, multi_plan(&session.id));
+    store
+        .consume_execution_plan(
+            WorkflowNodeId::Goals,
+            &session.id,
+            "multi-plan",
+            "继续",
+            message("user-confirm", ChatRole::User, "继续"),
+            running_execution_turn(&session.id, "turn-exec", "run-exec", "multi-plan"),
+            &run(
+                "run-exec",
+                &session.id,
+                "turn-exec",
+                sion_agent::AgentRunKind::HarnessExecution,
+            ),
+            later_now().into(),
+        )
+        .unwrap();
+    let changed = format!("{}\n\n补充信息", basic.markdown);
+    let saved = store
+        .apply_execution_write_for_owner(
+            WorkflowNodeId::BasicInfo,
+            WorkflowNodeId::Goals,
+            &session.id,
+            "turn-exec",
+            "multi-plan",
+            basic.revision,
+            changed,
+            "更新基本信息".into(),
+            "saved".into(),
+        )
+        .unwrap();
+    let ExecutionWriteOutcome::Saved { node, .. } = saved else {
+        panic!("expected execution save");
+    };
+
+    assert!(matches!(
+        store
+            .undo_latest_execution_write(
+                WorkflowNodeId::Goals,
+                store.node(WorkflowNodeId::Goals).unwrap().revision,
+                "wrong-node".into(),
+            )
+            .unwrap(),
+        ExecutionUndoOutcome::Unavailable
+    ));
+    let undone = store
+        .undo_latest_execution_write(WorkflowNodeId::BasicInfo, node.revision, "undone".into())
+        .unwrap();
+    assert!(matches!(undone, ExecutionUndoOutcome::Undone { .. }));
+    assert_eq!(
+        store.node(WorkflowNodeId::BasicInfo).unwrap().markdown,
+        basic.markdown
+    );
     std::fs::remove_dir_all(root).unwrap();
 }

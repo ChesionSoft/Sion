@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { AgentRun, ChatMessage, ChatModelSelection, ChatSession, ConversationContextSnapshot, ConversationTurn, NodeStatus, ProjectFile, Provider, RecentProject, RightSurface, WorkflowNode } from "../../types";
+import type { AgentRun, ChatMessage, ChatModelSelection, ChatSession, ConversationContextSnapshot, ConversationTurn, NodeId, NodeStatus, ProjectFile, Provider, RecentProject, RightSurface, WorkflowNode } from "../../types";
 import { statusLabel } from "../../types";
 import { Button, IconButton, Popover, StatusDot, Icon } from "../ui";
 import { WORKSPACE_HEADER_ACTIONS } from "../../workspace-config";
@@ -45,6 +45,8 @@ type ProjectWorkspaceProps = {
   onApproveProposal: (turnId: string, proposalId: string) => void;
   onRejectProposal: (turnId: string, proposalId: string) => void;
   onOpenRunDetail: (runId: string) => void;
+  onUndoExecutionWrite: (nodeId: NodeId, revision: number) => void;
+  undoingWriteKey?: string;
   onMessageDraft: (value: string) => void;
   onSendMessage: () => void;
   onModelSelection: (selection: ChatModelSelection) => Promise<void>;
@@ -141,6 +143,8 @@ export function ProjectWorkspace(props: ProjectWorkspaceProps) {
             onApproveProposal={props.onApproveProposal}
             onRejectProposal={props.onRejectProposal}
             onOpenRunDetail={props.onOpenRunDetail}
+            onUndoExecutionWrite={props.onUndoExecutionWrite}
+            undoingWriteKey={props.undoingWriteKey}
             providers={props.providers}
             files={props.files}
             selectedFileIds={props.selectedFileIds}

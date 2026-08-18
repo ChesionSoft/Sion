@@ -90,6 +90,8 @@ use crate::model_stream::StreamDelta;
 pub trait HarnessObserver: Send + Sync {
     fn on_text_delta(&self, delta: &str);
     fn on_reasoning_delta(&self, delta: &str);
+    fn on_model_step_started(&self) {}
+    fn on_tool_started(&self, _call_id: &str, _name: &str) {}
     fn on_tool_activity(&self, call_id: &str, name: &str, status: HarnessToolStatus, summary: &str);
 }
 
@@ -226,6 +228,7 @@ impl<'a> HarnessRunner<'a> {
                 budget.estimated_input_tokens.saturating_add(request_input_tokens);
 
             budget.model_steps += 1;
+            observer.on_model_step_started();
             let category = if budget.model_steps <= 1 {
                 ModelCallCategory::Answer
             } else {
@@ -341,6 +344,12 @@ impl<'a> HarnessRunner<'a> {
                             // call; a failed batch is refused as a whole.
                             if let Err(error) = self.tools.validate_batch(&step.tool_calls) {
                                 for call in &step.tool_calls {
+                                    observer.on_tool_activity(
+                                        &call.id,
+                                        &call.name,
+                                        HarnessToolStatus::Error,
+                                        &format!("批量校验未通过：{}", error.message),
+                                    );
                                     messages.push(ProtocolMessage::tool(
                                         call.id.clone(),
                                         format!("批量校验未通过：{}", error.message),
@@ -353,6 +362,7 @@ impl<'a> HarnessRunner<'a> {
                                     call.name.clone(),
                                     canonicalize_arguments(&call.arguments),
                                 ));
+                                observer.on_tool_started(&call.id, &call.name);
                             }
                             // run_tool_batch returns results in provider order.
                             let results = self.run_tool_batch(&step.tool_calls);

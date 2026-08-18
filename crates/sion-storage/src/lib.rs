@@ -8,14 +8,15 @@ use std::{
 
 use calamine::{Reader, open_workbook_auto};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use sion_agent::AgentRun;
 use sion_core::{
     ChatMessage, ChatModelSelection, ChatSession, ConversationTurn, CumulativeTokenUsage,
     FileExtractionStatus, HarnessExecutionPlan, HarnessExecutionWrite, HarnessPlanInvalidReason,
-    HarnessPlanStatus, HarnessProposal, HarnessProposalKind, HarnessProposalStatus, NodeStatus, PROJECT_SCHEMA_VERSION, ProjectFile,
-    ProjectFileKind, ProjectManifest, TurnActivityStatus, TurnStatus, WorkflowNode, WorkflowNodeId,
-    aggregate_message_usage, aggregate_usages, agent_override_digest, default_nodes,
-    validate_agent_rule_override, validate_delivery_markdown,
+    HarnessPlanStatus, HarnessProposal, HarnessProposalKind, HarnessProposalStatus, NodeStatus,
+    PROJECT_SCHEMA_VERSION, ProjectFile, ProjectFileKind, ProjectManifest, TurnActivityStatus,
+    TurnStatus, WorkflowNode, WorkflowNodeId, agent_override_digest, aggregate_message_usage,
+    aggregate_usages, default_nodes, validate_agent_rule_override, validate_delivery_markdown,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -66,7 +67,26 @@ pub mod harness_testing {
         pub plan_id: String,
         pub expected_revision: u64,
         pub proposed_markdown: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub previous_markdown: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub previous_status: Option<NodeStatus>,
         pub summary: String,
+        pub now: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ExecutionUndoJournalForTest {
+        pub node_id: WorkflowNodeId,
+        pub owner_node_id: WorkflowNodeId,
+        pub session_id: String,
+        pub turn_id: String,
+        pub plan_id: String,
+        pub before_revision: u64,
+        pub after_revision: u64,
+        pub before_markdown: String,
+        pub before_status: NodeStatus,
         pub now: String,
     }
 
@@ -83,6 +103,21 @@ pub mod harness_testing {
         node_id: WorkflowNodeId,
     ) -> bool {
         store.execution_journal_path(node_id).exists()
+    }
+
+    pub fn write_execution_undo_journal_for_test(
+        store: &ProjectStore,
+        node_id: WorkflowNodeId,
+        journal: &ExecutionUndoJournalForTest,
+    ) {
+        atomic_write_json(&store.execution_undo_journal_path(node_id), journal).unwrap();
+    }
+
+    pub fn execution_undo_journal_exists_for_test(
+        store: &ProjectStore,
+        node_id: WorkflowNodeId,
+    ) -> bool {
+        store.execution_undo_journal_path(node_id).exists()
     }
 
     pub fn conversation_document_for_test(
@@ -180,6 +215,7 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 /// Creating a new session beyond this cap deletes the oldest sessions, both
 /// the index entry and its message file, so 对话记录最多保留这么多条。
 const MAX_SESSIONS_PER_NODE: usize = 10;
+const MAX_EXECUTION_HISTORY_PER_NODE: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct CreateProjectInput {
@@ -195,6 +231,19 @@ pub struct CreateProjectInput {
 pub enum SaveNodeResult {
     Saved(WorkflowNode),
     Conflict { latest: WorkflowNode },
+}
+
+/// Outcome of undoing the latest Harness write for one node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ExecutionUndoOutcome {
+    Undone { node: WorkflowNode },
+    Conflict { latest: WorkflowNode },
+    Unavailable,
 }
 
 /// Result of a digest-CAS Agent-override save used by Harness proposal
@@ -291,9 +340,7 @@ pub enum ExecutionWriteOutcome {
         actual_revision: u64,
     },
     /// Validation rejected the proposed Markdown; nothing wrote.
-    ValidationFailed {
-        public_error: String,
-    },
+    ValidationFailed { public_error: String },
 }
 
 /// Write-ahead journal for one execution write. It records the intent
@@ -314,7 +361,54 @@ struct ExecutionWriteJournal {
     plan_id: String,
     expected_revision: u64,
     proposed_markdown: String,
+    #[serde(default)]
+    previous_markdown: Option<String>,
+    #[serde(default)]
+    previous_status: Option<NodeStatus>,
     summary: String,
+    now: String,
+}
+
+/// Private, node-local history for Harness writes. Unlike the public
+/// execution audit, this may retain the previous Markdown needed for a safe
+/// CAS undo, but never leaves the project directory.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecutionHistoryEntry {
+    owner_node_id: WorkflowNodeId,
+    session_id: String,
+    turn_id: String,
+    plan_id: String,
+    before_revision: u64,
+    after_revision: u64,
+    before_markdown: String,
+    before_status: NodeStatus,
+    after_markdown_digest: String,
+    summary: String,
+    saved_at: String,
+    #[serde(default)]
+    undone_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecutionHistoryDocument {
+    #[serde(default)]
+    entries: Vec<ExecutionHistoryEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecutionUndoJournal {
+    node_id: WorkflowNodeId,
+    owner_node_id: WorkflowNodeId,
+    session_id: String,
+    turn_id: String,
+    plan_id: String,
+    before_revision: u64,
+    after_revision: u64,
+    before_markdown: String,
+    before_status: NodeStatus,
     now: String,
 }
 
@@ -1448,21 +1542,26 @@ impl ProjectStore {
         self.recover_pending_harness(node_id)?;
         self.require_session(node_id, session_id)?;
         if plan.node_id != node_id || plan.session_id != session_id {
-            return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+            return Err(StorageError::ExecutionPlanTurnUnavailable(
+                plan.plan_turn_id.clone(),
+            ));
         }
         let project_id = self.manifest()?.id;
         if plan.project_id != project_id {
-            return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+            return Err(StorageError::ExecutionPlanTurnUnavailable(
+                plan.plan_turn_id.clone(),
+            ));
         }
-        plan
-            .validate_targets()
+        plan.validate_targets()
             .map_err(|_| StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()))?;
         for target in plan.normalized_targets() {
-            let node = self
-                .node(target.node_id)
-                .map_err(|_| StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()))?;
+            let node = self.node(target.node_id).map_err(|_| {
+                StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone())
+            })?;
             if node.revision != target.base_revision {
-                return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+                return Err(StorageError::ExecutionPlanTurnUnavailable(
+                    plan.plan_turn_id.clone(),
+                ));
             }
         }
         let path = self.messages_path(node_id, session_id)?;
@@ -1476,17 +1575,26 @@ impl ProjectStore {
         if already_active {
             return Err(StorageError::ExecutionPlanAlreadyActive);
         }
-        let Some(turn) = document.turns.iter_mut().find(|turn| turn.id == plan.plan_turn_id)
+        let Some(turn) = document
+            .turns
+            .iter_mut()
+            .find(|turn| turn.id == plan.plan_turn_id)
         else {
-            return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+            return Err(StorageError::ExecutionPlanTurnUnavailable(
+                plan.plan_turn_id.clone(),
+            ));
         };
         if turn.status != TurnStatus::Completed
             || turn.assistant_message_id.as_deref() != Some(plan.plan_message_id.as_str())
         {
-            return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+            return Err(StorageError::ExecutionPlanTurnUnavailable(
+                plan.plan_turn_id.clone(),
+            ));
         }
         let Some(harness) = turn.harness.as_mut() else {
-            return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+            return Err(StorageError::ExecutionPlanTurnUnavailable(
+                plan.plan_turn_id.clone(),
+            ));
         };
         if harness.execution_plan.is_some() {
             return Err(StorageError::ExecutionPlanAlreadyActive);
@@ -1585,9 +1693,7 @@ impl ProjectStore {
             });
         };
         let project_id = self.manifest()?.id;
-        if plan.project_id != project_id
-            || plan.node_id != node_id
-            || plan.session_id != session_id
+        if plan.project_id != project_id || plan.node_id != node_id || plan.session_id != session_id
         {
             return Ok(ConsumeExecutionPlanResult::Unavailable {
                 reason: ExecutionPlanUnavailableReason::OwnershipMismatch,
@@ -1600,7 +1706,13 @@ impl ProjectStore {
         }
         if now > plan.expires_at {
             return self
-                .invalidate_execution_plan(node_id, session_id, &plan.id, HarnessPlanInvalidReason::Expired, now)
+                .invalidate_execution_plan(
+                    node_id,
+                    session_id,
+                    &plan.id,
+                    HarnessPlanInvalidReason::Expired,
+                    now,
+                )
                 .and(Ok(ConsumeExecutionPlanResult::Unavailable {
                     reason: ExecutionPlanUnavailableReason::Expired,
                 }));
@@ -1610,7 +1722,13 @@ impl ProjectStore {
             .map_err(|_| StorageError::NodeUnavailable)?;
         if latest_revision.revision != plan.base_revision {
             return self
-                .invalidate_execution_plan(node_id, session_id, &plan.id, HarnessPlanInvalidReason::NodeChanged, now)
+                .invalidate_execution_plan(
+                    node_id,
+                    session_id,
+                    &plan.id,
+                    HarnessPlanInvalidReason::NodeChanged,
+                    now,
+                )
                 .and(Ok(ConsumeExecutionPlanResult::Unavailable {
                     reason: ExecutionPlanUnavailableReason::NodeChanged,
                 }));
@@ -1650,7 +1768,13 @@ impl ProjectStore {
         let last_message_id = document.messages.last().map(|message| message.id.as_str());
         if last_message_id != Some(plan.plan_message_id.as_str()) {
             return self
-                .invalidate_execution_plan(node_id, session_id, &plan.id, HarnessPlanInvalidReason::AmbiguousConfirmation, now)
+                .invalidate_execution_plan(
+                    node_id,
+                    session_id,
+                    &plan.id,
+                    HarnessPlanInvalidReason::AmbiguousConfirmation,
+                    now,
+                )
                 .and(Ok(ConsumeExecutionPlanResult::Unavailable {
                     reason: ExecutionPlanUnavailableReason::OrderingMismatch,
                 }));
@@ -1685,7 +1809,11 @@ impl ProjectStore {
             .turns
             .iter()
             .find(|candidate| {
-                candidate.harness.as_ref().and_then(|harness| harness.execution.as_ref()).is_some()
+                candidate
+                    .harness
+                    .as_ref()
+                    .and_then(|harness| harness.execution.as_ref())
+                    .is_some()
             })
             .map(|candidate| candidate.id.clone())
             .unwrap_or_else(|| {
@@ -1794,7 +1922,9 @@ impl ProjectStore {
     ) -> Result<ExecutionWriteOutcome> {
         self.manifest()?;
         self.recover_pending_execution_write(node_id)?;
+        self.recover_pending_execution_undo(node_id)?;
         self.require_session(owner_node_id, session_id)?;
+        let previous_node = self.node(node_id)?;
         let journal = ExecutionWriteJournal {
             node_id: Some(node_id),
             owner_node_id: Some(owner_node_id),
@@ -1803,6 +1933,10 @@ impl ProjectStore {
             plan_id: plan_id.to_string(),
             expected_revision,
             proposed_markdown: proposed_markdown.clone(),
+            previous_markdown: (previous_node.revision == expected_revision)
+                .then(|| previous_node.markdown.clone()),
+            previous_status: (previous_node.revision == expected_revision)
+                .then_some(previous_node.status),
             summary: summary.clone(),
             now: now.clone(),
         };
@@ -1815,10 +1949,14 @@ impl ProjectStore {
             plan_id,
             expected_revision,
             &proposed_markdown,
+            journal.previous_markdown.as_deref(),
+            journal.previous_status,
             &summary,
             &now,
         );
-        let _ = fs::remove_file(self.execution_journal_path(node_id));
+        if result.is_ok() {
+            let _ = fs::remove_file(self.execution_journal_path(node_id));
+        }
         result
     }
 
@@ -1832,6 +1970,8 @@ impl ProjectStore {
         plan_id: &str,
         expected_revision: u64,
         proposed_markdown: &str,
+        previous_markdown: Option<&str>,
+        previous_status: Option<NodeStatus>,
         summary: &str,
         now: &str,
     ) -> Result<ExecutionWriteOutcome> {
@@ -1842,10 +1982,29 @@ impl ProjectStore {
             // The node was already saved before the conversation update.
             let write = HarnessExecutionWrite {
                 node_id: Some(node_id),
+                previous_revision: Some(expected_revision),
                 revision: latest_node.revision,
                 summary: summary.to_string(),
                 saved_at: now.to_string(),
+                undone_at: None,
             };
+            if let (Some(previous_markdown), Some(previous_status)) =
+                (previous_markdown, previous_status)
+            {
+                self.record_execution_history(
+                    node_id,
+                    owner_node_id,
+                    session_id,
+                    turn_id,
+                    plan_id,
+                    expected_revision,
+                    &latest_node,
+                    previous_markdown,
+                    previous_status,
+                    summary,
+                    now,
+                )?;
+            }
             self.record_execution_write(owner_node_id, session_id, turn_id, plan_id, &write)?;
             self.invalidate_overlapping_pending_plans(node_id, plan_id, now)?;
             return Ok(ExecutionWriteOutcome::Saved {
@@ -1874,10 +2033,29 @@ impl ProjectStore {
             SaveNodeResult::Saved(saved_node) => {
                 let write = HarnessExecutionWrite {
                     node_id: Some(node_id),
+                    previous_revision: Some(expected_revision),
                     revision: saved_node.revision,
                     summary: summary.to_string(),
                     saved_at: now.to_string(),
+                    undone_at: None,
                 };
+                if let (Some(previous_markdown), Some(previous_status)) =
+                    (previous_markdown, previous_status)
+                {
+                    self.record_execution_history(
+                        node_id,
+                        owner_node_id,
+                        session_id,
+                        turn_id,
+                        plan_id,
+                        expected_revision,
+                        &saved_node,
+                        previous_markdown,
+                        previous_status,
+                        summary,
+                        now,
+                    )?;
+                }
                 self.record_execution_write(owner_node_id, session_id, turn_id, plan_id, &write)?;
                 self.invalidate_overlapping_pending_plans(node_id, plan_id, now)?;
                 Ok(ExecutionWriteOutcome::Saved {
@@ -1928,6 +2106,187 @@ impl ProjectStore {
         self.save_turn(node_id, session_id, turn.clone())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn record_execution_history(
+        &self,
+        node_id: WorkflowNodeId,
+        owner_node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        plan_id: &str,
+        before_revision: u64,
+        saved_node: &WorkflowNode,
+        before_markdown: &str,
+        before_status: NodeStatus,
+        summary: &str,
+        saved_at: &str,
+    ) -> Result<()> {
+        let mut history = self.read_execution_history(node_id)?;
+        if history.entries.iter().any(|entry| {
+            entry.owner_node_id == owner_node_id
+                && entry.turn_id == turn_id
+                && entry.after_revision == saved_node.revision
+        }) {
+            return Ok(());
+        }
+        history.entries.push(ExecutionHistoryEntry {
+            owner_node_id,
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            plan_id: plan_id.to_string(),
+            before_revision,
+            after_revision: saved_node.revision,
+            before_markdown: before_markdown.to_string(),
+            before_status,
+            after_markdown_digest: markdown_digest(&saved_node.markdown),
+            summary: summary.to_string(),
+            saved_at: saved_at.to_string(),
+            undone_at: None,
+        });
+        if history.entries.len() > MAX_EXECUTION_HISTORY_PER_NODE {
+            let remove_count = history.entries.len() - MAX_EXECUTION_HISTORY_PER_NODE;
+            history.entries.drain(..remove_count);
+        }
+        self.save_execution_history(node_id, &history)
+    }
+
+    fn read_execution_history(&self, node_id: WorkflowNodeId) -> Result<ExecutionHistoryDocument> {
+        let path = self.execution_history_path(node_id);
+        if !path.exists() {
+            return Ok(ExecutionHistoryDocument::default());
+        }
+        read_json(&path)
+    }
+
+    fn save_execution_history(
+        &self,
+        node_id: WorkflowNodeId,
+        history: &ExecutionHistoryDocument,
+    ) -> Result<()> {
+        atomic_write_json(&self.execution_history_path(node_id), history)
+    }
+
+    /// Restores the document replaced by the latest Harness write as a new
+    /// revision. Both the caller's revision and the private history snapshot
+    /// must still match the current node, otherwise no content is written.
+    pub fn undo_latest_execution_write(
+        &self,
+        node_id: WorkflowNodeId,
+        expected_revision: u64,
+        now: String,
+    ) -> Result<ExecutionUndoOutcome> {
+        self.manifest()?;
+        self.recover_pending_execution_write(node_id)?;
+        self.recover_pending_execution_undo(node_id)?;
+        let history = self.read_execution_history(node_id)?;
+        let Some(entry) = history.entries.last().cloned() else {
+            return Ok(ExecutionUndoOutcome::Unavailable);
+        };
+        if entry.undone_at.is_some() {
+            return Ok(ExecutionUndoOutcome::Unavailable);
+        }
+        let latest = self.node(node_id)?;
+        if latest.revision != expected_revision
+            || latest.revision != entry.after_revision
+            || markdown_digest(&latest.markdown) != entry.after_markdown_digest
+        {
+            return Ok(ExecutionUndoOutcome::Conflict { latest });
+        }
+        let journal = ExecutionUndoJournal {
+            node_id,
+            owner_node_id: entry.owner_node_id,
+            session_id: entry.session_id.clone(),
+            turn_id: entry.turn_id.clone(),
+            plan_id: entry.plan_id.clone(),
+            before_revision: entry.before_revision,
+            after_revision: entry.after_revision,
+            before_markdown: entry.before_markdown.clone(),
+            before_status: entry.before_status.clone(),
+            now: now.clone(),
+        };
+        atomic_write_json(&self.execution_undo_journal_path(node_id), &journal)?;
+        let outcome = match self.save_node_if_revision(
+            node_id,
+            expected_revision,
+            entry.before_markdown,
+            entry.before_status,
+            now.clone(),
+        )? {
+            SaveNodeResult::Saved(node) => {
+                self.finalize_execution_undo(&journal)?;
+                ExecutionUndoOutcome::Undone { node }
+            }
+            SaveNodeResult::Conflict { latest } => ExecutionUndoOutcome::Conflict { latest },
+        };
+        let _ = fs::remove_file(self.execution_undo_journal_path(node_id));
+        Ok(outcome)
+    }
+
+    fn finalize_execution_undo(&self, journal: &ExecutionUndoJournal) -> Result<()> {
+        let mut history = self.read_execution_history(journal.node_id)?;
+        if let Some(entry) = history.entries.iter_mut().find(|entry| {
+            entry.owner_node_id == journal.owner_node_id
+                && entry.turn_id == journal.turn_id
+                && entry.after_revision == journal.after_revision
+        }) {
+            entry.undone_at = Some(journal.now.clone());
+            self.save_execution_history(journal.node_id, &history)?;
+        }
+        self.record_execution_undo(journal)
+    }
+
+    fn record_execution_undo(&self, journal: &ExecutionUndoJournal) -> Result<()> {
+        let path = self.messages_path(journal.owner_node_id, &journal.session_id)?;
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut document = read_conversation_document(&path)?;
+        let Some(turn) = document
+            .turns
+            .iter_mut()
+            .find(|turn| turn.id == journal.turn_id)
+        else {
+            return Ok(());
+        };
+        let Some(execution) = turn
+            .harness
+            .as_mut()
+            .and_then(|harness| harness.execution.as_mut())
+        else {
+            return Ok(());
+        };
+        let Some(write) = execution.writes.iter_mut().find(|write| {
+            write.node_id == Some(journal.node_id) && write.revision == journal.after_revision
+        }) else {
+            return Ok(());
+        };
+        write.previous_revision = Some(journal.before_revision);
+        write.undone_at = Some(journal.now.clone());
+        self.save_turn(journal.owner_node_id, &journal.session_id, turn.clone())
+    }
+
+    /// Reconciles a crash after the undo node save but before history/audit
+    /// updates. It never performs the node save itself.
+    pub fn recover_pending_execution_undo(&self, node_id: WorkflowNodeId) -> Result<()> {
+        let path = self.execution_undo_journal_path(node_id);
+        if !path.exists() {
+            return Ok(());
+        }
+        let journal: ExecutionUndoJournal = read_json(&path)?;
+        if journal.node_id != node_id {
+            let _ = fs::remove_file(path);
+            return Ok(());
+        }
+        let latest = self.node(node_id)?;
+        if latest.revision == journal.after_revision.saturating_add(1)
+            && latest.markdown == journal.before_markdown
+        {
+            self.finalize_execution_undo(&journal)?;
+        }
+        let _ = fs::remove_file(path);
+        Ok(())
+    }
+
     /// Replays a pending execution-write journal idempotently after a crash.
     /// If the node was already saved with exactly the journaled content, the
     /// write's public summary is reconciled onto the execution turn's audit
@@ -1939,23 +2298,51 @@ impl ProjectStore {
             return Ok(());
         }
         let journal: ExecutionWriteJournal = read_json(&journal_path)?;
+        if journal.node_id.is_some_and(|journal_node| journal_node != node_id) {
+            let _ = fs::remove_file(&journal_path);
+            return Ok(());
+        }
         let latest_node = self.node(node_id)?;
         if latest_node.revision == journal.expected_revision.saturating_add(1)
             && latest_node.markdown == journal.proposed_markdown
         {
+            let owner_node_id = journal.owner_node_id.unwrap_or(node_id);
             let write = HarnessExecutionWrite {
                 node_id: Some(node_id),
+                previous_revision: journal
+                    .previous_markdown
+                    .as_ref()
+                    .map(|_| journal.expected_revision),
                 revision: latest_node.revision,
                 summary: journal.summary.clone(),
                 saved_at: journal.now.clone(),
+                undone_at: None,
             };
-            let _ = self.record_execution_write(
-                journal.owner_node_id.unwrap_or(node_id),
+            if let (Some(previous_markdown), Some(previous_status)) = (
+                journal.previous_markdown.as_deref(),
+                journal.previous_status,
+            ) {
+                self.record_execution_history(
+                    node_id,
+                    owner_node_id,
+                    &journal.session_id,
+                    &journal.turn_id,
+                    &journal.plan_id,
+                    journal.expected_revision,
+                    &latest_node,
+                    previous_markdown,
+                    previous_status,
+                    &journal.summary,
+                    &journal.now,
+                )?;
+            }
+            self.record_execution_write(
+                owner_node_id,
                 &journal.session_id,
                 &journal.turn_id,
                 &journal.plan_id,
                 &write,
-            );
+            )?;
         }
         let _ = fs::remove_file(&journal_path);
         Ok(())
@@ -1966,6 +2353,7 @@ impl ProjectStore {
     /// an interrupted active run or stale authorization is never replayed.
     pub fn recover_pending_execution(&self, node_id: WorkflowNodeId, now: String) -> Result<()> {
         self.recover_pending_execution_write(node_id)?;
+        self.recover_pending_execution_undo(node_id)?;
         self.invalidate_pending_plans(node_id, HarnessPlanInvalidReason::Restarted, now)
     }
 
@@ -2031,7 +2419,11 @@ impl ProjectStore {
                     if plan.id == consumed_plan_id || plan.status != HarnessPlanStatus::Pending {
                         continue;
                     }
-                    if plan.normalized_targets().iter().any(|target| target.node_id == changed_node) {
+                    if plan
+                        .normalized_targets()
+                        .iter()
+                        .any(|target| target.node_id == changed_node)
+                    {
                         plan.status = HarnessPlanStatus::Invalidated;
                         plan.invalidated_at = Some(now.to_string());
                         plan.invalid_reason = Some(HarnessPlanInvalidReason::TargetChanged);
@@ -2061,13 +2453,19 @@ impl ProjectStore {
         let path = self.messages_path(node_id, session_id)?;
         let mut document = read_conversation_document(&path)?;
         let Some(turn) = document.turns.iter_mut().find(|turn| turn.id == turn_id) else {
-            return Err(StorageError::HarnessProposalUnavailable(proposal_id.to_string()));
+            return Err(StorageError::HarnessProposalUnavailable(
+                proposal_id.to_string(),
+            ));
         };
         let Some(harness) = turn.harness.as_mut() else {
-            return Err(StorageError::HarnessProposalUnavailable(proposal_id.to_string()));
+            return Err(StorageError::HarnessProposalUnavailable(
+                proposal_id.to_string(),
+            ));
         };
         let Some(proposal) = harness.proposal_mut(proposal_id) else {
-            return Err(StorageError::HarnessProposalUnavailable(proposal_id.to_string()));
+            return Err(StorageError::HarnessProposalUnavailable(
+                proposal_id.to_string(),
+            ));
         };
         proposal.status = status;
         proposal.resolved_at = Some(resolved_at.to_string());
@@ -2084,7 +2482,8 @@ impl ProjectStore {
         session_id: &str,
         document: &ConversationDocument,
         updated_at: String,
-    ) -> Result<ChatSession> {        let journal = PendingConversationWrite {
+    ) -> Result<ChatSession> {
+        let journal = PendingConversationWrite {
             session_id: session_id.to_string(),
             document: document.clone(),
             updated_at: updated_at.clone(),
@@ -2522,6 +2921,12 @@ impl ProjectStore {
     fn execution_journal_path(&self, id: WorkflowNodeId) -> PathBuf {
         self.chat_node_dir(id).join(".execution-journal.json")
     }
+    fn execution_history_path(&self, id: WorkflowNodeId) -> PathBuf {
+        self.chat_node_dir(id).join(".execution-history.json")
+    }
+    fn execution_undo_journal_path(&self, id: WorkflowNodeId) -> PathBuf {
+        self.chat_node_dir(id).join(".execution-undo-journal.json")
+    }
     fn files_dir(&self) -> PathBuf {
         self.project_root.join("files")
     }
@@ -2537,6 +2942,13 @@ impl ProjectStore {
         }
         Ok(self.runs_dir().join(format!("{run_id}.json")))
     }
+}
+
+fn markdown_digest(markdown: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"sion-execution-markdown:");
+    hasher.update(markdown.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn is_safe_file_component(value: &str) -> bool {
@@ -3772,11 +4184,7 @@ mod tests {
         let current = sion_core::agent_override_digest(Some("只使用确认的目标。"));
         assert!(matches!(
             store
-                .save_agent_override_if_digest(
-                    WorkflowNodeId::Goals,
-                    &current,
-                    " \n ".into(),
-                )
+                .save_agent_override_if_digest(WorkflowNodeId::Goals, &current, " \n ".into(),)
                 .unwrap(),
             SaveAgentOverrideResult::Saved(None)
         ));

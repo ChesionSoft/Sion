@@ -18,6 +18,7 @@ import {
   getNode,
   getProjects,
   getSettings,
+  harnessExecutionUndoLatest,
   importFile as importFileApi,
   listConversationTurns,
   listFiles,
@@ -126,6 +127,7 @@ export function App() {
   const [exportRefreshByProject, setExportRefreshByProject] = useState<Record<string, number>>({});
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [resolvingProposalIds, setResolvingProposalIds] = useState<Record<string, true>>({});
+  const [undoingExecutionWriteKeys, setUndoingExecutionWriteKeys] = useState<Record<string, true>>({});
   const [liveReasoningByRun, setLiveReasoningByRun] = useState<LiveReasoningByRun>({});
   const [generationProgressByScope, setGenerationProgressByScope] = useState<DeliveryGenerationProgressByScope>({});
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
@@ -900,6 +902,43 @@ export function App() {
     }
   }
 
+  async function undoHarnessExecutionWrite(targetNodeId: NodeId, expectedRevision: number): Promise<void> {
+    if (!project) return;
+    const projectId = project.id;
+    const key = `${targetNodeId}:${expectedRevision}`;
+    const targetSessionId = activeSessionId;
+    setUndoingExecutionWriteKeys((current) => ({ ...current, [key]: true }));
+    try {
+      const outcome = await harnessExecutionUndoLatest(projectId, targetNodeId, expectedRevision, now());
+      if (projectScopeRef.current !== projectId) return;
+      if (outcome.kind === "undone") {
+        if (targetNodeId === nodeId) {
+          const reconciled = reconcileSavedNode(nodeRef.current, draftRef.current, outcome.node);
+          setNode(reconciled.node);
+          setDraft(reconciled.draft);
+          if (targetSessionId && modelSelection) {
+            void loadConversationContext(projectId, nodeId, targetSessionId, modelSelection, selectedFileIds);
+          }
+        }
+        if (targetSessionId) await loadTurns(projectId, nodeId, targetSessionId);
+        setNotice(`已撤销 ${targetNodeId} 的 revision ${expectedRevision}，当前 revision ${outcome.node.revision}`);
+      } else if (outcome.kind === "conflict") {
+        if (targetNodeId === nodeId) setConflictLatest(outcome.latest);
+        setNotice("该修改之后已有新的保存，未撤销最新内容");
+        if (targetSessionId) await loadTurns(projectId, nodeId, targetSessionId);
+      } else {
+        setNotice("没有可撤销的最近一次 Harness 修改");
+      }
+    } catch (error) {
+      if (projectScopeRef.current === projectId) setNotice(`撤销修改失败：${String(error)}`);
+    } finally {
+      setUndoingExecutionWriteKeys((current) => {
+        const { [key]: _removed, ...rest } = current;
+        return rest;
+      });
+    }
+  }
+
   async function startRegeneration() {
     if (!project || !node || !activeSessionId) return;
     const activeGenerationId = crypto.randomUUID();
@@ -1450,6 +1489,8 @@ export function App() {
       onApproveProposal={(turnId, proposalId) => void resolveHarnessProposal(turnId, proposalId, "apply")}
       onRejectProposal={(turnId, proposalId) => void resolveHarnessProposal(turnId, proposalId, "reject")}
       onOpenRunDetail={openRunDetail}
+      onUndoExecutionWrite={(targetNodeId, revision) => void undoHarnessExecutionWrite(targetNodeId, revision)}
+      undoingWriteKey={Object.keys(undoingExecutionWriteKeys)[0]}
       messageDraft={messageDraft}
       onMessageDraft={setMessageDraft}
       onSendMessage={() => void sendMessage()}

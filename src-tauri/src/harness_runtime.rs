@@ -201,27 +201,127 @@ impl HarnessEventBridge {
         );
     }
 
-    fn record_activity(&self, kind: TurnActivityKind, status: TurnActivityStatus, label: &str, summary: Option<&str>) {
-        let now = (self.now)();
-        let mut live = self.live.lock().unwrap();
-        let activity_id = format!("{}-{}", kind.as_str(), live.activities.len());
+    fn append_activity(
+        live: &mut HarnessLiveState,
+        id: String,
+        kind: TurnActivityKind,
+        status: TurnActivityStatus,
+        label: &str,
+        summary: Option<&str>,
+        now: &str,
+    ) {
         live.activities.push(TurnActivity {
-            id: activity_id,
+            id,
             kind,
             status,
             label: label.to_string(),
             public_summary: summary.map(ToString::to_string),
-            started_at: Some(now.clone()),
+            started_at: Some(now.to_string()),
             finished_at: (!matches!(
                 status,
                 TurnActivityStatus::Pending | TurnActivityStatus::Running
             ))
-            .then_some(now),
+            .then_some(now.to_string()),
         });
+    }
+
+    fn finish_running_response(live: &mut HarnessLiveState, label: &str, now: &str) -> bool {
+        let Some(activity) = live
+            .activities
+            .iter_mut()
+            .rev()
+            .find(|activity| {
+                activity.kind == TurnActivityKind::Response
+                    && activity.status == TurnActivityStatus::Running
+            })
+        else {
+            return false;
+        };
+        activity.status = TurnActivityStatus::Completed;
+        activity.label = label.to_string();
+        activity.finished_at = Some(now.to_string());
+        true
+    }
+
+    fn emit_if_changed(&self, changed: bool) {
+        if changed {
+            self.emit_turn_snapshot();
+        }
+    }
+
+    fn tool_started(&self, call_id: &str, name: &str) {
+        let now = (self.now)();
+        let mut live = self.live.lock().unwrap();
+        Self::finish_running_response(&mut live, "模型分析完成", &now);
+        let id = format!("tool-{call_id}");
+        if live.activities.iter().any(|activity| activity.id == id) {
+            return;
+        }
+        Self::append_activity(
+            &mut live,
+            id,
+            tool_activity_kind(name),
+            TurnActivityStatus::Running,
+            tool_activity_running_label(name),
+            None,
+            &now,
+        );
+    }
+
+    fn tool_finished(&self, call_id: &str, name: &str, status: HarnessToolStatus, summary: &str) {
+        let now = (self.now)();
+        let mut live = self.live.lock().unwrap();
+        let id = format!("tool-{call_id}");
+        let activity_status = tool_activity_status(status);
+        let label = tool_activity_terminal_label(name, status);
+        if let Some(activity) = live.activities.iter_mut().find(|activity| activity.id == id) {
+            activity.status = activity_status;
+            activity.label = label.to_string();
+            activity.public_summary = Some(summary.to_string());
+            activity.finished_at = Some(now);
+            return;
+        }
+        Self::append_activity(
+            &mut live,
+            id,
+            tool_activity_kind(name),
+            activity_status,
+            label,
+            Some(summary),
+            &now,
+        );
     }
 }
 
 impl HarnessObserver for HarnessEventBridge {
+    fn on_model_step_started(&self) {
+        let now = (self.now)();
+        let mut live = self.live.lock().unwrap();
+        let changed = !live.activities.iter().rev().any(|activity| {
+            activity.kind == TurnActivityKind::Response
+                && activity.status == TurnActivityStatus::Running
+        });
+        if changed {
+            let id = format!("response-{}", live.activities.len());
+            Self::append_activity(
+                &mut live,
+                id,
+                TurnActivityKind::Response,
+                TurnActivityStatus::Running,
+                "Agent 正在分析并回复",
+                None,
+                &now,
+            );
+        }
+        drop(live);
+        self.emit_if_changed(changed);
+    }
+
+    fn on_tool_started(&self, call_id: &str, name: &str) {
+        self.tool_started(call_id, name);
+        self.emit_turn_snapshot();
+    }
+
     fn on_text_delta(&self, delta: &str) {
         let _ = self.app.emit(
             "agent-token",
@@ -250,64 +350,65 @@ impl HarnessObserver for HarnessEventBridge {
 
     fn on_tool_activity(
         &self,
-        _call_id: &str,
+        call_id: &str,
         name: &str,
         status: HarnessToolStatus,
         summary: &str,
     ) {
-        let (kind, label, activity_status) = if is_execution_tool(name) {
-            (
-                TurnActivityKind::DeliverySave,
-                if status == HarnessToolStatus::Completed {
-                    "已保存当前节点交付稿"
-                } else {
-                    "当前节点交付稿保存失败"
-                },
-                if status == HarnessToolStatus::Completed {
-                    TurnActivityStatus::Completed
-                } else {
-                    TurnActivityStatus::Failed
-                },
-            )
-        } else if is_proposal_tool(name) {
-            (
-                TurnActivityKind::Proposal,
-                if status == HarnessToolStatus::Error {
-                    "准备交付提案（校验失败，修正中）"
-                } else {
-                    "正在准备交付提案"
-                },
-                if status == HarnessToolStatus::Completed {
-                    TurnActivityStatus::Completed
-                } else if status == HarnessToolStatus::Error {
-                    TurnActivityStatus::Failed
-                } else {
-                    TurnActivityStatus::Running
-                },
-            )
-        } else if name == "search_allowed_context" {
-            (
-                TurnActivityKind::Search,
-                "正在搜索授权的项目上下文",
-                if status == HarnessToolStatus::Completed {
-                    TurnActivityStatus::Completed
-                } else {
-                    TurnActivityStatus::Failed
-                },
-            )
-        } else {
-            (
-                TurnActivityKind::ToolRead,
-                "正在读取项目文档",
-                if status == HarnessToolStatus::Completed {
-                    TurnActivityStatus::Completed
-                } else {
-                    TurnActivityStatus::Failed
-                },
-            )
-        };
-        self.record_activity(kind, activity_status, label, Some(summary));
+        self.tool_finished(call_id, name, status, summary);
         self.emit_turn_snapshot();
+    }
+}
+
+fn tool_activity_kind(name: &str) -> TurnActivityKind {
+    if is_execution_tool(name) {
+        TurnActivityKind::DeliverySave
+    } else if is_proposal_tool(name) {
+        TurnActivityKind::Proposal
+    } else if name == "search_allowed_context" {
+        TurnActivityKind::Search
+    } else if is_read_tool(name) {
+        TurnActivityKind::ToolRead
+    } else {
+        TurnActivityKind::Other
+    }
+}
+
+fn tool_activity_running_label(name: &str) -> &'static str {
+    if is_execution_tool(name) {
+        "正在保存当前节点交付稿"
+    } else if is_proposal_tool(name) {
+        "正在准备交付提案"
+    } else if name == "search_allowed_context" {
+        "正在搜索授权的项目上下文"
+    } else if is_read_tool(name) {
+        "正在读取项目文档"
+    } else {
+        "正在执行工具"
+    }
+}
+
+fn tool_activity_status(status: HarnessToolStatus) -> TurnActivityStatus {
+    match status {
+        HarnessToolStatus::Completed => TurnActivityStatus::Completed,
+        HarnessToolStatus::Skipped => TurnActivityStatus::Skipped,
+        HarnessToolStatus::Error | HarnessToolStatus::Unauthorized => TurnActivityStatus::Failed,
+    }
+}
+
+fn tool_activity_terminal_label(name: &str, status: HarnessToolStatus) -> &'static str {
+    match (tool_activity_kind(name), status) {
+        (TurnActivityKind::DeliverySave, HarnessToolStatus::Completed) => "已保存当前节点交付稿",
+        (TurnActivityKind::DeliverySave, _) => "当前节点交付稿保存失败",
+        (TurnActivityKind::Proposal, HarnessToolStatus::Completed) => "交付提案已准备",
+        (TurnActivityKind::Proposal, HarnessToolStatus::Error) => "交付提案准备失败",
+        (TurnActivityKind::Proposal, _) => "交付提案未执行",
+        (TurnActivityKind::Search, HarnessToolStatus::Completed) => "已搜索授权的项目上下文",
+        (TurnActivityKind::Search, _) => "搜索授权项目上下文失败",
+        (TurnActivityKind::ToolRead, HarnessToolStatus::Completed) => "已读取项目文档",
+        (TurnActivityKind::ToolRead, _) => "读取项目文档失败",
+        (_, HarnessToolStatus::Completed) => "工具执行完成",
+        (_, _) => "工具执行失败",
     }
 }
 
@@ -423,9 +524,11 @@ impl HarnessToolExecutor for HarnessToolExecutorImpl<'_> {
                         if let Ok(mut writes) = self.execution_writes.lock() {
                             writes.push(HarnessExecutionWrite {
                                 node_id: Some(target_node),
+                                previous_revision: Some(revision.saturating_sub(1)),
                                 revision,
                                 summary: write.summary.clone(),
                                 saved_at: now,
+                                undone_at: None,
                             });
                         }
                     }
@@ -1124,6 +1227,29 @@ fn running_response_activity(now: &str) -> TurnActivity {
     }
 }
 
+fn finalize_response_activity(activities: &mut [TurnActivity], status: TurnStatus, finished_at: &str) {
+    let Some(activity) = activities.iter_mut().rev().find(|activity| {
+        activity.kind == TurnActivityKind::Response
+            && activity.status == TurnActivityStatus::Running
+    }) else {
+        return;
+    };
+    activity.status = match status {
+        TurnStatus::Completed => TurnActivityStatus::Completed,
+        TurnStatus::Failed => TurnActivityStatus::Failed,
+        TurnStatus::Cancelled | TurnStatus::Interrupted => TurnActivityStatus::Skipped,
+        TurnStatus::Queued | TurnStatus::Running => return,
+    };
+    activity.label = match status {
+        TurnStatus::Completed => "回复已完成",
+        TurnStatus::Failed => "回复失败",
+        TurnStatus::Cancelled | TurnStatus::Interrupted => "回复已取消",
+        TurnStatus::Queued | TurnStatus::Running => return,
+    }
+    .to_string();
+    activity.finished_at = Some(finished_at.to_string());
+}
+
 
 /// Terminal checkpoint for a Harness turn. Persists the assistant message (when
 /// one exists), the terminal turn with durable proposals/diagnostics, and the
@@ -1274,6 +1400,8 @@ fn complete_harness_run(
         }
         HarnessRunMode::Planning => None,
     };
+    let mut terminal_activities = live_activities;
+    finalize_response_activity(&mut terminal_activities, turn_status, &finished_at);
     let terminal_turn = ConversationTurn {
         id: job.turn_id.clone(),
         project_id: job.project_id.clone(),
@@ -1283,7 +1411,7 @@ fn complete_harness_run(
         user_message_id: job.user_message_id.clone(),
         assistant_message_id: assistant_message.as_ref().map(|message| message.id.clone()),
         status: turn_status,
-        activities: live_activities,
+        activities: terminal_activities,
         reasoning_summary: None,
         delivery_outcome: None,
         delivery_inspection: None,
@@ -1644,5 +1772,44 @@ mod tests {
         assert!(result.content.contains("旧目标"));
         assert_eq!(store.node(WorkflowNodeId::Goals).unwrap().revision, 1);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_response_finalization_preserves_each_other_activity_state() {
+        let mut activities = vec![
+            TurnActivity {
+                id: "response-0".into(),
+                kind: TurnActivityKind::Response,
+                status: TurnActivityStatus::Completed,
+                label: "模型分析完成".into(),
+                public_summary: None,
+                started_at: Some("a".into()),
+                finished_at: Some("b".into()),
+            },
+            TurnActivity {
+                id: "tool-c-1".into(),
+                kind: TurnActivityKind::ToolRead,
+                status: TurnActivityStatus::Completed,
+                label: "已读取项目文档".into(),
+                public_summary: Some("读取完成".into()),
+                started_at: Some("b".into()),
+                finished_at: Some("c".into()),
+            },
+            TurnActivity {
+                id: "response-2".into(),
+                kind: TurnActivityKind::Response,
+                status: TurnActivityStatus::Running,
+                label: "Agent 正在分析并回复".into(),
+                public_summary: None,
+                started_at: Some("c".into()),
+                finished_at: None,
+            },
+        ];
+        finalize_response_activity(&mut activities, TurnStatus::Completed, "d");
+        assert_eq!(activities[0].status, TurnActivityStatus::Completed);
+        assert_eq!(activities[1].status, TurnActivityStatus::Completed);
+        assert_eq!(activities[2].status, TurnActivityStatus::Completed);
+        assert_eq!(activities[2].label, "回复已完成");
+        assert_eq!(activities[2].finished_at.as_deref(), Some("d"));
     }
 }

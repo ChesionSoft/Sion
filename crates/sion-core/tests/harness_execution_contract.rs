@@ -94,15 +94,19 @@ fn execution_record_audits_writes_without_content_or_secrets() {
         writes: vec![
             HarnessExecutionWrite {
                 node_id: Some(WorkflowNodeId::BusinessFlow),
+                previous_revision: Some(7),
                 revision: 8,
                 summary: "保存核心业务流程章节".into(),
                 saved_at: "s1".into(),
+                undone_at: None,
             },
             HarnessExecutionWrite {
                 node_id: Some(WorkflowNodeId::BusinessFlow),
+                previous_revision: Some(8),
                 revision: 9,
                 summary: "保存流程步骤章节".into(),
                 saved_at: "s2".into(),
+                undone_at: None,
             },
         ],
         completed_targets: vec![WorkflowNodeId::BusinessFlow],
@@ -278,9 +282,11 @@ fn execution_turn_with_audit_record_round_trips() {
         status: HarnessExecutionStatus::Failed,
         writes: vec![HarnessExecutionWrite {
             node_id: Some(WorkflowNodeId::Goals),
+            previous_revision: Some(2),
             revision: 3,
             summary: "保存建设目标".into(),
             saved_at: "s".into(),
+            undone_at: None,
         }],
         completed_targets: vec![WorkflowNodeId::Goals],
         stopped_target: None,

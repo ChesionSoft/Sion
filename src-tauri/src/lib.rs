@@ -16,7 +16,7 @@ use sion_core::{
 };
 use sion_storage::{
     CreateProjectInput, FilePreview, ProjectDiscovery, ProjectRegistry, ProjectStore,
-    RecentProject, SaveNodeResult,
+    ExecutionUndoOutcome, RecentProject, SaveNodeResult,
 };
 use std::{
     collections::HashMap,
@@ -1434,6 +1434,38 @@ enum HarnessProposalResolution {
 #[serde(rename_all = "camelCase")]
 struct HarnessProposalRejected {
     turn: ConversationTurn,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HarnessExecutionUndoRequest {
+    #[serde(flatten)]
+    version: VersionedRequest,
+    project_id: String,
+    node_id: WorkflowNodeId,
+    expected_revision: u64,
+    now: String,
+}
+
+/// Safely undoes the latest successful Harness write for one node. The
+/// storage layer requires both the caller's revision and the private history
+/// snapshot to match, so a later save is reported as a conflict without any
+/// content mutation.
+#[tauri::command]
+fn harness_execution_undo_latest(
+    request: HarnessExecutionUndoRequest,
+    app: tauri::AppHandle,
+) -> Result<VersionedResponse<ExecutionUndoOutcome>, ApiError> {
+    assert_api_version(&request.version)?;
+    let project_root = resolve_registered_project_root(&app, &request.project_id)?;
+    let store = ProjectStore::at(project_root);
+    let outcome = store
+        .undo_latest_execution_write(request.node_id, request.expected_revision, request.now)
+        .map_err(|error| ApiError::CheckFailed(error.to_string()))?;
+    Ok(VersionedResponse {
+        api_version: API_VERSION,
+        payload: outcome,
+    })
 }
 
 /// Loads the turn after a resolution so the response carries the updated
@@ -4110,6 +4142,7 @@ pub fn run() {
             agent_run_detail,
             agent_run_cancel,
             conversation_turn_list,
+            harness_execution_undo_latest,
             harness_proposal_apply,
             harness_proposal_reject,
             delivery_regeneration_start,

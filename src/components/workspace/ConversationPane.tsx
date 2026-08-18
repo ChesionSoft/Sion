@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import type { ChatMessage, ChatModelSelection, ConversationContextSnapshot, ConversationTurn, ProjectFile, Provider } from "../../types";
+import type { ChatMessage, ChatModelSelection, ConversationContextSnapshot, ConversationTurn, NodeId, ProjectFile, Provider } from "../../types";
 import { Button } from "../ui";
 import { ConversationModelMenu } from "./ConversationModelMenu";
 import { ConversationFileMenu } from "./ConversationFileMenu";
@@ -28,6 +28,8 @@ export type ConversationPaneProps = {
   onApproveProposal: (turnId: string, proposalId: string) => void;
   onRejectProposal: (turnId: string, proposalId: string) => void;
   onOpenRunDetail: (runId: string) => void;
+  onUndoExecutionWrite: (nodeId: NodeId, revision: number) => void;
+  undoingWriteKey?: string;
   providers: Provider[];
   files: ProjectFile[];
   selectedFileIds: string[];
@@ -47,7 +49,7 @@ const reasoningLabel: Record<string, string> = { off: "关闭", low: "低", medi
 export function ConversationPane(props: ConversationPaneProps) {
   const {
     nodeAvailable, messages, turns, liveReasoningByRun, activeRunId, sendingMessage, messageDraft, markdownDirty, agentRulesDirty, resolvingProposalIds,
-    onMessageDraft, onSend, onCancel, onApproveProposal, onRejectProposal, onOpenRunDetail,
+    onMessageDraft, onSend, onCancel, onApproveProposal, onRejectProposal, onOpenRunDetail, onUndoExecutionWrite, undoingWriteKey,
     providers, files, selectedFileIds, importing, modelSelection, savingModelSelection,
     conversationContext, loadingConversationContext, conversationContextError, onModelSelection, onToggleFile, onImportFile,
   } = props;
@@ -131,6 +133,8 @@ export function ConversationPane(props: ConversationPaneProps) {
               onApproveProposal={onApproveProposal}
               onRejectProposal={onRejectProposal}
               onOpenRunDetail={onOpenRunDetail}
+              onUndoExecutionWrite={onUndoExecutionWrite}
+              undoingWriteKey={undoingWriteKey}
             />
           );
         })}

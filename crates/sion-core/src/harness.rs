@@ -340,9 +340,15 @@ pub struct HarnessExecutionWrite {
     /// `None` preserves legacy single-node audit records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<WorkflowNodeId>,
+    /// Revision replaced by this write. Absent on legacy audit records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_revision: Option<u64>,
     pub revision: u64,
     pub summary: String,
     pub saved_at: String,
+    /// Set when this exact write was safely undone as a later CAS revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undone_at: Option<String>,
 }
 
 /// Durable public audit of a completed, failed, cancelled, or interrupted
@@ -1030,9 +1036,11 @@ mod tests {
             status: HarnessExecutionStatus::Completed,
             writes: vec![HarnessExecutionWrite {
                 node_id: Some(WorkflowNodeId::Goals),
+                previous_revision: Some(3),
                 revision: 4,
                 summary: "保存建设目标章节".into(),
                 saved_at: "saved".into(),
+                undone_at: None,
             }],
             completed_targets: vec![WorkflowNodeId::Goals],
             stopped_target: None,

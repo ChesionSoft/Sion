@@ -418,8 +418,12 @@
 .harness-execution-confirm { color: #2563eb; }
 .harness-execution-note { color: var(--text-muted); }
 .harness-execution-writes { display: grid; gap: 5px; margin: 2px 0 0; padding: 0; list-style: none; }
-.harness-execution-writes li { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 9px; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+.harness-execution-writes li { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 9px; align-items: center; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .harness-execution-writes li span:first-child { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 650; }
+.harness-execution-undo-state { color: var(--text-muted); }
+.harness-execution-undo { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; color: var(--accent); cursor: pointer; font: inherit; padding: 2px 0; }
+.harness-execution-undo:disabled { cursor: wait; opacity: .65; }
+.harness-execution-undo .ui-icon { width: 13px; height: 13px; }
 .conversation-turn-block { display: grid; gap: 7px; }
 .conversation-turn-block.is-user { justify-items: end; margin-bottom: 3px; }
 .conversation-turn-speaker { color: var(--text); font-size: 12px; font-weight: 560; }
