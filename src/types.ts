@@ -155,7 +155,7 @@ export type Provider = {
   hasApiKey: boolean;
 };
 
-export type AgentRunKind = "conversation" | "delivery_decision" | "delivery_retry" | "delivery_regeneration" | "harness";
+export type AgentRunKind = "conversation" | "delivery_decision" | "delivery_retry" | "delivery_regeneration" | "harness" | "harness_execution";
 export type AgentRun = {
   id: string;
   projectId: string;
@@ -250,9 +250,40 @@ export type HarnessDiagnostics = {
   limitReached?: HarnessLimitKind;
   toolTraces: SanitizedToolTrace[];
 };
+export type HarnessPlanStatus = "pending" | "consumed" | "invalidated";
+export type HarnessPlanInvalidReason = "expired" | "node_changed" | "session_deleted" | "cancelled" | "restarted" | "ambiguous_confirmation" | "manual_edit";
+export type HarnessExecutionPlan = {
+  id: string;
+  projectId: string;
+  nodeId: NodeId;
+  sessionId: string;
+  planTurnId: string;
+  planMessageId: string;
+  baseRevision: number;
+  summary: string;
+  status: HarnessPlanStatus;
+  createdAt: string;
+  expiresAt: string;
+  consumedAt?: string;
+  invalidatedAt?: string;
+  invalidReason?: HarnessPlanInvalidReason;
+};
+export type HarnessExecutionStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type HarnessExecutionWrite = { revision: number; summary: string; savedAt: string };
+export type HarnessExecutionRecord = {
+  runId: string;
+  turnId: string;
+  startedAt: string;
+  finishedAt?: string;
+  status: HarnessExecutionStatus;
+  writes: HarnessExecutionWrite[];
+  publicError?: string;
+};
 export type HarnessTurnState = {
   proposals: HarnessProposal[];
   diagnostics?: HarnessDiagnostics;
+  executionPlan?: HarnessExecutionPlan;
+  execution?: HarnessExecutionRecord;
 };
 export type ConversationTurn = {
   id: string;

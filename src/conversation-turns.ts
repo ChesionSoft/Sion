@@ -269,6 +269,10 @@ export function turnHeadline(turn: ConversationTurn): string {
   if (turn.harness) {
     if (turn.status === "queued") return "Agent 已排队";
     if (turn.status === "running") return "Sion 正在处理";
+    if (turn.harness.executionPlan?.status === "pending") return "等待确认执行计划";
+    if (turn.harness.execution?.status === "completed") return "已完成确认修改";
+    if (turn.harness.execution?.status === "failed") return "修改已部分执行，运行失败";
+    if (turn.harness.execution?.status === "cancelled") return "修改执行已取消";
     const ready = turn.harness.proposals.filter((proposal) => proposal.status === "ready").length;
     if (ready > 0) return `已准备 ${ready} 项文稿提案`;
     if (turn.status === "failed") return "文档 Harness 运行失败";

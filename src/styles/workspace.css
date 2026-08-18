@@ -399,6 +399,21 @@
 .workspace-overflow-menu p { margin: 6px 10px; color: var(--text-muted); font-size: 11px; }
 
 .conversation-turn { display: grid; gap: 12px; max-width: 760px; margin: 0 auto 34px; }
+.harness-execution-card { display: grid; gap: 12px; border: 1px solid color-mix(in srgb, var(--border) 78%, #3b82f6 22%); border-left: 3px solid #3b82f6; border-radius: 8px; padding: 12px 14px; background: color-mix(in srgb, var(--bg-subtle) 92%, #3b82f6 8%); }
+.harness-execution-plan, .harness-execution-audit { display: grid; gap: 6px; min-width: 0; }
+.harness-execution-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; color: var(--text); font-size: 12px; }
+.harness-execution-heading strong { min-width: 0; font-weight: 650; }
+.harness-execution-status { flex: 0 0 auto; color: var(--text-muted); font-size: 10px; font-weight: 650; }
+.harness-execution-status.is-pending, .harness-execution-status.is-running { color: #2563eb; }
+.harness-execution-status.is-invalidated, .harness-execution-status.is-failed, .harness-execution-status.is-interrupted { color: #b42318; }
+.harness-execution-status.is-completed { color: #217346; }
+.harness-execution-summary, .harness-execution-confirm, .harness-execution-note { margin: 0; overflow-wrap: anywhere; font-size: 12px; line-height: 1.55; }
+.harness-execution-summary { color: var(--text); }
+.harness-execution-confirm { color: #2563eb; }
+.harness-execution-note { color: var(--text-muted); }
+.harness-execution-writes { display: grid; gap: 5px; margin: 2px 0 0; padding: 0; list-style: none; }
+.harness-execution-writes li { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 9px; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+.harness-execution-writes li span:first-child { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 650; }
 .conversation-turn-block { display: grid; gap: 7px; }
 .conversation-turn-block.is-user { justify-items: end; margin-bottom: 3px; }
 .conversation-turn-speaker { color: var(--text); font-size: 12px; font-weight: 560; }

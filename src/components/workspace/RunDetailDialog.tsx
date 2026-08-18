@@ -19,6 +19,7 @@ const RUN_KIND_LABEL: Record<AgentRun["kind"], string> = {
   delivery_retry: "交付重试",
   delivery_regeneration: "重新生成交付稿",
   harness: "文档 Harness",
+  harness_execution: "确认执行修改",
 };
 
 const CONTEXT_STATUS_LABEL = { ready: "正常", warning: "接近上限", blocked: "超过上限" } as const;
@@ -193,6 +194,23 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
                     </li>
                   ))}
                 </ol>
+              ) : null}
+              {turn?.harness?.execution ? (
+                <div className="run-detail-execution-audit">
+                  <strong>保存审计 · {turn.harness.execution.status}</strong>
+                  {turn.harness.execution.writes.length ? (
+                    <ol className="run-detail-calls">
+                      {turn.harness.execution.writes.map((write) => (
+                        <li key={`${write.revision}-${write.savedAt}`}>
+                          <strong>revision {write.revision}</strong>
+                          <span>{write.summary}</span>
+                          <small>{formatTime(write.savedAt)}</small>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : null}
+                  {turn.harness.execution.publicError ? <p className="run-detail-missing">{turn.harness.execution.publicError}</p> : null}
+                </div>
               ) : null}
             </section>
           ) : null}

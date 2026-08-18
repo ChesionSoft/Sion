@@ -11,6 +11,7 @@ import { ConversationStreamingResponse } from "./ConversationStreamingResponse";
 import { ConversationDeliveryGeneration } from "./ConversationDeliveryGeneration";
 import { DeliveryDecisionDetails } from "./DeliveryDecisionDetails";
 import { HarnessProposalCard } from "./HarnessProposalCard";
+import { HarnessExecutionPlanCard } from "./HarnessExecutionPlanCard";
 import { SafeMarkdown } from "./SafeMarkdown";
 
 export type ConversationTurnCardProps = {
@@ -109,6 +110,12 @@ export function ConversationTurnCard({
         <DeliveryDecisionDetails
           inspection={turn.deliveryInspection}
           outcome={turn.deliveryOutcome}
+        />
+      ) : null}
+      {turn.harness?.executionPlan || turn.harness?.execution ? (
+        <HarnessExecutionPlanCard
+          plan={turn.harness.executionPlan}
+          execution={turn.harness.execution}
         />
       ) : null}
       {turn.harness?.proposals.map((proposal) => (

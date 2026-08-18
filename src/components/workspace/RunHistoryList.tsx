@@ -16,6 +16,7 @@ const RUN_KIND_LABEL: Record<AgentRun["kind"], string> = {
   delivery_retry: "交付重试",
   delivery_regeneration: "重新生成交付稿",
   harness: "文档 Harness",
+  harness_execution: "确认执行修改",
 };
 
 function statusKind(status: AgentRun["status"]) {
