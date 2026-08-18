@@ -135,6 +135,7 @@ pub struct RunScheduler {
     queue: VecDeque<String>,
     active: HashSet<String>,
     reserved_nodes: HashSet<(String, WorkflowNodeId)>,
+    run_reserved_nodes: HashMap<String, Vec<(String, WorkflowNodeId)>>,
 }
 
 impl Default for RunScheduler {
@@ -152,15 +153,38 @@ impl RunScheduler {
             queue: VecDeque::new(),
             active: HashSet::new(),
             reserved_nodes: HashSet::new(),
+            run_reserved_nodes: HashMap::new(),
         }
     }
 
     pub fn enqueue(&mut self, request: RunRequest) -> Result<AgentRun, SchedulerError> {
-        let key = (request.project_id.clone(), request.node_id);
-        if self.reserved_nodes.contains(&key) {
+        let node_id = request.node_id;
+        self.enqueue_with_reserved_nodes(request, vec![node_id])
+    }
+
+    /// Enqueues one run while atomically reserving every project node in the
+    /// supplied set. A conflict leaves both the queue and all reservations
+    /// unchanged, so multi-node execution cannot partially lock its targets.
+    pub fn enqueue_with_reserved_nodes(
+        &mut self,
+        request: RunRequest,
+        reserved_node_ids: Vec<WorkflowNodeId>,
+    ) -> Result<AgentRun, SchedulerError> {
+        let mut node_ids = reserved_node_ids;
+        if node_ids.is_empty() {
+            node_ids.push(request.node_id);
+        }
+        node_ids.sort_by_key(|node_id| node_id.as_str());
+        node_ids.dedup();
+        let keys: Vec<_> = node_ids
+            .iter()
+            .copied()
+            .map(|node_id| (request.project_id.clone(), node_id))
+            .collect();
+        if let Some((_, busy_node)) = keys.iter().find(|key| self.reserved_nodes.contains(key)) {
             return Err(SchedulerError::NodeBusy {
                 project_id: request.project_id,
-                node_id: request.node_id.as_str().to_string(),
+                node_id: busy_node.as_str().to_string(),
             });
         }
         let run = AgentRun {
@@ -183,7 +207,10 @@ impl RunScheduler {
             usage: None,
             duration_ms: None,
         };
-        self.reserved_nodes.insert(key);
+        for key in &keys {
+            self.reserved_nodes.insert(key.clone());
+        }
+        self.run_reserved_nodes.insert(run.id.clone(), keys);
         self.queue.push_back(run.id.clone());
         self.runs.insert(run.id.clone(), run.clone());
         self.promote(&request.created_at);
@@ -308,8 +335,14 @@ impl RunScheduler {
             .get_mut(run_id)
             .ok_or_else(|| SchedulerError::NotFound(run_id.to_string()))?;
         self.active.remove(run_id);
-        self.reserved_nodes
-            .remove(&(run.project_id.clone(), run.node_id));
+        if let Some(keys) = self.run_reserved_nodes.remove(run_id) {
+            for key in keys {
+                self.reserved_nodes.remove(&key);
+            }
+        } else {
+            self.reserved_nodes
+                .remove(&(run.project_id.clone(), run.node_id));
+        }
         run.status = status;
         run.finished_at = Some(finished_at);
         run.summary = summary;
@@ -411,6 +444,68 @@ mod tests {
                 })
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn multi_node_reservation_is_atomic_and_released_together() {
+        let mut scheduler = RunScheduler::new(1);
+        let first = scheduler
+            .enqueue_with_reserved_nodes(
+                RunRequest {
+                    project_id: "project-a".to_string(),
+                    node_id: WorkflowNodeId::Goals,
+                    provider_id: "provider-a".to_string(),
+                    model: "model-a".to_string(),
+                    reasoning_effort: ReasoningEffort::Medium,
+                    file_ids: Vec::new(),
+                    kind: AgentRunKind::HarnessExecution,
+                    created_at: "now".to_string(),
+                    session_id: None,
+                    turn_id: None,
+                    context_snapshot: None,
+                },
+                vec![WorkflowNodeId::Goals, WorkflowNodeId::BusinessFlow],
+            )
+            .unwrap();
+        let rejected = scheduler.enqueue_with_reserved_nodes(
+            RunRequest {
+                project_id: "project-a".to_string(),
+                node_id: WorkflowNodeId::FeatureDesign,
+                provider_id: "provider-a".to_string(),
+                model: "model-a".to_string(),
+                reasoning_effort: ReasoningEffort::Medium,
+                file_ids: Vec::new(),
+                kind: AgentRunKind::HarnessExecution,
+                created_at: "later".to_string(),
+                session_id: None,
+                turn_id: None,
+                context_snapshot: None,
+            },
+            vec![WorkflowNodeId::FeatureDesign, WorkflowNodeId::BusinessFlow],
+        );
+        assert!(matches!(rejected, Err(SchedulerError::NodeBusy { .. })));
+        assert_eq!(scheduler.queued_count(), 0);
+        scheduler
+            .complete(&first.id, "done".to_string(), None)
+            .unwrap();
+        assert!(scheduler
+            .enqueue_with_reserved_nodes(
+                RunRequest {
+                    project_id: "project-a".to_string(),
+                    node_id: WorkflowNodeId::FeatureDesign,
+                    provider_id: "provider-a".to_string(),
+                    model: "model-a".to_string(),
+                    reasoning_effort: ReasoningEffort::Medium,
+                    file_ids: Vec::new(),
+                    kind: AgentRunKind::HarnessExecution,
+                    created_at: "after".to_string(),
+                    session_id: None,
+                    turn_id: None,
+                    context_snapshot: None,
+                },
+                vec![WorkflowNodeId::FeatureDesign, WorkflowNodeId::BusinessFlow],
+            )
+            .is_ok());
     }
 
     #[test]

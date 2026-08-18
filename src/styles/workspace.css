@@ -409,6 +409,12 @@
 .harness-execution-status.is-completed { color: #217346; }
 .harness-execution-summary, .harness-execution-confirm, .harness-execution-note { margin: 0; overflow-wrap: anywhere; font-size: 12px; line-height: 1.55; }
 .harness-execution-summary { color: var(--text); }
+.harness-execution-targets, .harness-execution-target-audit { display: grid; gap: 5px; margin: 2px 0 0; padding: 0; list-style: none; }
+.harness-execution-targets li, .harness-execution-target-audit li { display: flex; justify-content: space-between; gap: 10px; color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+.harness-execution-target-index { flex: 0 0 18px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.harness-execution-target-revision { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.harness-execution-target-audit li[data-state="saved"] span:last-child { color: #217346; }
+.harness-execution-target-audit li[data-state="stopped"] span:last-child { color: #b42318; }
 .harness-execution-confirm { color: #2563eb; }
 .harness-execution-note { color: var(--text-muted); }
 .harness-execution-writes { display: grid; gap: 5px; margin: 2px 0 0; padding: 0; list-style: none; }

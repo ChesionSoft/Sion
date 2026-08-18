@@ -303,6 +303,12 @@ pub enum ExecutionWriteOutcome {
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExecutionWriteJournal {
+    #[serde(default)]
+    node_id: Option<WorkflowNodeId>,
+    /// Node whose session contains the execution turn/audit. Legacy journals
+    /// omitted this and therefore fall back to the target node.
+    #[serde(default)]
+    owner_node_id: Option<WorkflowNodeId>,
     session_id: String,
     turn_id: String,
     plan_id: String,
@@ -1448,6 +1454,17 @@ impl ProjectStore {
         if plan.project_id != project_id {
             return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
         }
+        plan
+            .validate_targets()
+            .map_err(|_| StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()))?;
+        for target in plan.normalized_targets() {
+            let node = self
+                .node(target.node_id)
+                .map_err(|_| StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()))?;
+            if node.revision != target.base_revision {
+                return Err(StorageError::ExecutionPlanTurnUnavailable(plan.plan_turn_id.clone()));
+            }
+        }
         let path = self.messages_path(node_id, session_id)?;
         let mut document = read_conversation_document(&path)?;
         let already_active = document.turns.iter().any(|turn| {
@@ -1598,6 +1615,37 @@ impl ProjectStore {
                     reason: ExecutionPlanUnavailableReason::NodeChanged,
                 }));
         }
+        plan.validate_targets()
+            .map_err(|_| StorageError::ExecutionPlanTurnUnavailable(plan.id.clone()))?;
+        for target in plan.normalized_targets() {
+            let latest_target = match self.node(target.node_id) {
+                Ok(node) => node,
+                Err(_) => {
+                    self.invalidate_execution_plan(
+                        node_id,
+                        session_id,
+                        &plan.id,
+                        HarnessPlanInvalidReason::TargetMissing,
+                        now,
+                    )?;
+                    return Ok(ConsumeExecutionPlanResult::Unavailable {
+                        reason: ExecutionPlanUnavailableReason::NodeChanged,
+                    });
+                }
+            };
+            if latest_target.revision != target.base_revision {
+                self.invalidate_execution_plan(
+                    node_id,
+                    session_id,
+                    &plan.id,
+                    HarnessPlanInvalidReason::TargetChanged,
+                    now,
+                )?;
+                return Ok(ConsumeExecutionPlanResult::Unavailable {
+                    reason: ExecutionPlanUnavailableReason::NodeChanged,
+                });
+            }
+        }
         // The confirmation must immediately follow the plan's assistant message.
         let last_message_id = document.messages.last().map(|message| message.id.as_str());
         if last_message_id != Some(plan.plan_message_id.as_str()) {
@@ -1715,10 +1763,41 @@ impl ProjectStore {
         summary: String,
         now: String,
     ) -> Result<ExecutionWriteOutcome> {
+        self.apply_execution_write_for_owner(
+            node_id,
+            node_id,
+            session_id,
+            turn_id,
+            plan_id,
+            expected_revision,
+            proposed_markdown,
+            summary,
+            now,
+        )
+    }
+
+    /// Applies a write to `node_id` while recording its audit in the owner
+    /// node's session. Multi-node Harness executions use this boundary because
+    /// target nodes do not share the owner conversation session.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_execution_write_for_owner(
+        &self,
+        node_id: WorkflowNodeId,
+        owner_node_id: WorkflowNodeId,
+        session_id: &str,
+        turn_id: &str,
+        plan_id: &str,
+        expected_revision: u64,
+        proposed_markdown: String,
+        summary: String,
+        now: String,
+    ) -> Result<ExecutionWriteOutcome> {
         self.manifest()?;
         self.recover_pending_execution_write(node_id)?;
-        self.require_session(node_id, session_id)?;
+        self.require_session(owner_node_id, session_id)?;
         let journal = ExecutionWriteJournal {
+            node_id: Some(node_id),
+            owner_node_id: Some(owner_node_id),
             session_id: session_id.to_string(),
             turn_id: turn_id.to_string(),
             plan_id: plan_id.to_string(),
@@ -1730,6 +1809,7 @@ impl ProjectStore {
         atomic_write_json(&self.execution_journal_path(node_id), &journal)?;
         let result = self.apply_execution_write_inner(
             node_id,
+            owner_node_id,
             session_id,
             turn_id,
             plan_id,
@@ -1746,6 +1826,7 @@ impl ProjectStore {
     fn apply_execution_write_inner(
         &self,
         node_id: WorkflowNodeId,
+        owner_node_id: WorkflowNodeId,
         session_id: &str,
         turn_id: &str,
         plan_id: &str,
@@ -1760,11 +1841,13 @@ impl ProjectStore {
         {
             // The node was already saved before the conversation update.
             let write = HarnessExecutionWrite {
+                node_id: Some(node_id),
                 revision: latest_node.revision,
                 summary: summary.to_string(),
                 saved_at: now.to_string(),
             };
-            self.record_execution_write(node_id, session_id, turn_id, plan_id, &write)?;
+            self.record_execution_write(owner_node_id, session_id, turn_id, plan_id, &write)?;
+            self.invalidate_overlapping_pending_plans(node_id, plan_id, now)?;
             return Ok(ExecutionWriteOutcome::Saved {
                 node: latest_node,
                 write,
@@ -1790,11 +1873,13 @@ impl ProjectStore {
         )? {
             SaveNodeResult::Saved(saved_node) => {
                 let write = HarnessExecutionWrite {
+                    node_id: Some(node_id),
                     revision: saved_node.revision,
                     summary: summary.to_string(),
                     saved_at: now.to_string(),
                 };
-                self.record_execution_write(node_id, session_id, turn_id, plan_id, &write)?;
+                self.record_execution_write(owner_node_id, session_id, turn_id, plan_id, &write)?;
+                self.invalidate_overlapping_pending_plans(node_id, plan_id, now)?;
                 Ok(ExecutionWriteOutcome::Saved {
                     node: saved_node,
                     write,
@@ -1828,10 +1913,17 @@ impl ProjectStore {
         let Some(execution) = harness.execution.as_mut() else {
             return Ok(());
         };
-        if execution.writes.iter().any(|existing| existing.revision == write.revision) {
+        if execution.writes.iter().any(|existing| {
+            existing.node_id == write.node_id && existing.revision == write.revision
+        }) {
             return Ok(());
         }
         execution.writes.push(write.clone());
+        if let Some(target_node) = write.node_id
+            && !execution.completed_targets.contains(&target_node)
+        {
+            execution.completed_targets.push(target_node);
+        }
         let _ = plan_id;
         self.save_turn(node_id, session_id, turn.clone())
     }
@@ -1852,12 +1944,13 @@ impl ProjectStore {
             && latest_node.markdown == journal.proposed_markdown
         {
             let write = HarnessExecutionWrite {
+                node_id: Some(node_id),
                 revision: latest_node.revision,
                 summary: journal.summary.clone(),
                 saved_at: journal.now.clone(),
             };
             let _ = self.record_execution_write(
-                node_id,
+                journal.owner_node_id.unwrap_or(node_id),
                 &journal.session_id,
                 &journal.turn_id,
                 &journal.plan_id,
@@ -1907,6 +2000,47 @@ impl ProjectStore {
             }
             if changed {
                 self.persist_conversation(node_id, &session.id, &document, now.clone())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Invalidates pending plans in any node session that include a target
+    /// which has just been saved by another execution. This prevents a second
+    /// confirmation from applying a stale overlapping plan.
+    fn invalidate_overlapping_pending_plans(
+        &self,
+        changed_node: WorkflowNodeId,
+        consumed_plan_id: &str,
+        now: &str,
+    ) -> Result<()> {
+        for owner_node in WorkflowNodeId::ALL {
+            let sessions = self.list_sessions(owner_node)?;
+            for session in sessions {
+                let path = self.messages_path(owner_node, &session.id)?;
+                let mut document = read_conversation_document(&path)?;
+                let mut changed = false;
+                for turn in &mut document.turns {
+                    let Some(plan) = turn
+                        .harness
+                        .as_mut()
+                        .and_then(|harness| harness.execution_plan.as_mut())
+                    else {
+                        continue;
+                    };
+                    if plan.id == consumed_plan_id || plan.status != HarnessPlanStatus::Pending {
+                        continue;
+                    }
+                    if plan.normalized_targets().iter().any(|target| target.node_id == changed_node) {
+                        plan.status = HarnessPlanStatus::Invalidated;
+                        plan.invalidated_at = Some(now.to_string());
+                        plan.invalid_reason = Some(HarnessPlanInvalidReason::TargetChanged);
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.persist_conversation(owner_node, &session.id, &document, now.to_string())?;
+                }
             }
         }
         Ok(())

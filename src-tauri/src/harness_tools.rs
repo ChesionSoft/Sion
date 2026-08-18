@@ -9,6 +9,7 @@
 // The harness runtime gains its orchestration callers in Tasks 7 and 8.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use sion_core::{
@@ -153,6 +154,16 @@ pub(crate) fn tool_definitions() -> Vec<HarnessToolDefinition> {
             serde_json::json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         ),
         tool(
+            "read_project_node",
+            "按 nodeId 读取当前项目任意工作流节点的交付稿（只读，含 revision），用于跨节点协作。不能读取其他项目或附件。",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "nodeId": { "type": "string" } },
+                "required": ["nodeId"],
+                "additionalProperties": false
+            }),
+        ),
+        tool(
             "read_effective_agent_rule",
             "读取当前节点的有效 Agent 规则（内置规则与项目覆盖规则合并后的文本）。只读。",
             serde_json::json!({ "type": "object", "properties": {}, "additionalProperties": false }),
@@ -169,6 +180,7 @@ pub(crate) struct HarnessToolRegistry<'a> {
     node: WorkflowNode,
     dependency_nodes: Vec<DependencyNodeContext>,
     effective_rules: String,
+    target_snapshots: HashMap<WorkflowNodeId, (u64, String)>,
     search_index: Mutex<Option<HarnessSearchIndex>>,
 }
 
@@ -178,12 +190,18 @@ impl<'a> HarnessToolRegistry<'a> {
             .node(scope.node_id)
             .map_err(|_| "当前节点交付稿读取失败".to_string())?;
         let dependency_nodes = dependency_context::load(store, scope.node_id)?;
+        let target_snapshots = scope
+            .target_scopes
+            .iter()
+            .map(|target| (target.node_id, (target.expected_revision, target.current_markdown.clone())))
+            .collect();
         Ok(Self {
             scope,
             store,
             node,
             dependency_nodes,
             effective_rules: scope.rule_snapshot.effective_markdown.clone(),
+            target_snapshots,
             search_index: Mutex::new(None),
         })
     }
@@ -194,6 +212,14 @@ impl<'a> HarnessToolRegistry<'a> {
     pub(crate) fn update_node_snapshot(&mut self, node: WorkflowNode) {
         self.node = node;
         *self.search_index.get_mut().unwrap() = None;
+    }
+
+    pub(crate) fn update_target_snapshot(&mut self, node: WorkflowNode) {
+        self.target_snapshots
+            .insert(node.id, (node.revision, node.markdown.clone()));
+        if node.id == self.node.id {
+            self.update_node_snapshot(node);
+        }
     }
 
     /// The current trusted node revision seen by read tools.
@@ -220,6 +246,7 @@ impl<'a> HarnessToolRegistry<'a> {
             "read_dependency_section" => self.read_dependency_section(&call.arguments),
             "search_allowed_context" => self.search_allowed_context(&call.arguments),
             "read_current_delivery" => self.read_current_delivery(),
+            "read_project_node" => self.read_project_node(&call.arguments),
             "read_effective_agent_rule" => self.read_effective_agent_rule(),
             other => Err(ToolError::InvalidArguments(format!(
                 "未知工具：{other}"
@@ -288,6 +315,14 @@ impl<'a> HarnessToolRegistry<'a> {
             }
             "read_current_delivery" => {
                 validate_tool_arguments(&tool_by_name("read_current_delivery"), &call.arguments)?;
+                Ok(())
+            }
+            "read_project_node" => {
+                let arguments = validate_tool_arguments(&tool_by_name("read_project_node"), &call.arguments)?;
+                let node_id = required_node_id(&arguments, "nodeId")?;
+                if !WorkflowNodeId::ALL.contains(&node_id) {
+                    return Err(ToolError::Unauthorized("节点不属于当前工作流".to_string()));
+                }
                 Ok(())
             }
             "read_effective_agent_rule" => {
@@ -487,6 +522,32 @@ impl<'a> HarnessToolRegistry<'a> {
                 self.node.revision, truncated
             ),
             summary: "已读取当前交付稿".to_string(),
+        })
+    }
+
+    fn read_project_node(&self, args: &str) -> Result<ToolExecution, ToolError> {
+        let arguments = validate_tool_arguments(&tool_by_name("read_project_node"), args)?;
+        let node_id = required_node_id(&arguments, "nodeId")?;
+        if !WorkflowNodeId::ALL.contains(&node_id) {
+            return Err(ToolError::Unauthorized("节点不属于当前工作流".to_string()));
+        }
+        let (revision, source_markdown) = if let Some((revision, markdown)) = self.target_snapshots.get(&node_id) {
+            (*revision, markdown.clone())
+        } else {
+            let node = self
+                .store
+                .node(node_id)
+                .map_err(|_| ToolError::NotFound("节点交付稿不存在".to_string()))?;
+            (node.revision, node.markdown)
+        };
+        let (markdown, truncated) = bound_text(&source_markdown, MAX_TOOL_EXCERPT_CHARS);
+        Ok(ToolExecution {
+            status: HarnessToolStatus::Completed,
+            content: format!(
+                "<project-node id=\"{}\" revision=\"{}\" truncated=\"{}\">\n{}\n</project-node>",
+                node_id.as_str(), revision, truncated, markdown
+            ),
+            summary: format!("已读取节点 {}", node_id.as_str()),
         })
     }
 

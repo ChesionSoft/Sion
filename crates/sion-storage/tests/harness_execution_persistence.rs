@@ -121,6 +121,9 @@ fn running_execution_turn(
                 finished_at: None,
                 status: HarnessExecutionStatus::Running,
                 writes: Vec::new(),
+                completed_targets: Vec::new(),
+                stopped_target: None,
+                stopped_reason: None,
                 public_error: None,
             }),
         }),
@@ -173,6 +176,7 @@ fn plan(
         plan_turn_id: turn_id.into(),
         plan_message_id: message_id.into(),
         base_revision,
+        targets: Vec::new(),
         summary: "补充建设目标与范围边界".into(),
         status: HarnessPlanStatus::Pending,
         created_at: "2026-08-17T00:00:00.000Z".into(),
@@ -181,6 +185,23 @@ fn plan(
         invalidated_at: None,
         invalid_reason: None,
     }
+}
+
+fn multi_plan(session_id: &str) -> HarnessExecutionPlan {
+    let mut plan = plan("multi-plan", session_id, "turn-plan", "assistant-plan", 1, unexpired_expiry());
+    plan.targets = vec![
+        sion_core::HarnessExecutionTarget {
+            node_id: WorkflowNodeId::Goals,
+            base_revision: 1,
+            display_name: None,
+        },
+        sion_core::HarnessExecutionTarget {
+            node_id: WorkflowNodeId::BasicInfo,
+            base_revision: 1,
+            display_name: None,
+        },
+    ];
+    plan
 }
 
 /// A far-future expiry so normal consume tests never trip the expiry check.
@@ -265,6 +286,71 @@ fn publish_execution_plan_links_to_completed_turn_and_assistant_message() {
     assert_eq!(stored.status, HarnessPlanStatus::Pending);
     assert_eq!(stored.plan_message_id, "assistant-plan");
     assert_eq!(stored.base_revision, 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn multi_target_plan_requires_every_target_revision_before_publish_and_consume() {
+    let (root, store) = fixture();
+    assert!(matches!(
+        store
+            .save_node_if_revision(
+                WorkflowNodeId::BasicInfo,
+                0,
+                "# 项目基本信息\n\n## 基础信息表\n旧信息".into(),
+                NodeStatus::Generated,
+                "now".into(),
+            )
+            .unwrap(),
+        SaveNodeResult::Saved(_)
+    ));
+    let session = store
+        .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+        .unwrap();
+    let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
+    let plan = multi_plan(&session.id);
+    publish(&store, &session.id, &turn, plan.clone());
+    let execution_turn = running_execution_turn(&session.id, "turn-exec", "run-exec", "multi-plan");
+    let execution_run = run(
+        "run-exec",
+        &session.id,
+        "turn-exec",
+        sion_agent::AgentRunKind::HarnessExecution,
+    );
+    let result = store
+        .consume_execution_plan(
+            WorkflowNodeId::Goals,
+            &session.id,
+            "multi-plan",
+            "继续",
+            message("user-confirm", ChatRole::User, "继续"),
+            execution_turn,
+            &execution_run,
+            later_now().into(),
+        )
+        .unwrap();
+    assert!(matches!(result, ConsumeExecutionPlanResult::Consumed { .. }));
+
+    // A second plan with a stale non-owner target is rejected at publication,
+    // proving the owner revision is not the only frozen safety check.
+    let stale_turn = completed_turn(&session.id, "turn-stale", "assistant-stale");
+    let mut stale = multi_plan(&session.id);
+    stale.id = "stale-plan".into();
+    stale.plan_turn_id = "turn-stale".into();
+    stale.plan_message_id = "assistant-stale".into();
+    stale.targets[1].base_revision = 0;
+    let error = store
+        .complete_harness_turn(
+            WorkflowNodeId::Goals,
+            &session.id,
+            Some(message("assistant-stale", ChatRole::Assistant, "计划")),
+            stale_turn,
+            &run("run-stale", &session.id, "turn-stale", sion_agent::AgentRunKind::Harness),
+            "finished".into(),
+        )
+        .and_then(|_| store.publish_execution_plan(WorkflowNodeId::Goals, &session.id, stale, "later".into()))
+        .unwrap_err();
+    assert!(matches!(error, sion_storage::StorageError::ExecutionPlanTurnUnavailable(_)));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -770,6 +856,95 @@ fn execution_write_saves_node_with_cas_and_records_audit_summary() {
         .unwrap();
     assert_eq!(record.writes.len(), 2);
     assert_eq!(store.node(WorkflowNodeId::Goals).unwrap().revision, 3);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn multi_target_write_uses_owner_session_and_keeps_same_revision_audits() {
+    let (root, store) = fixture();
+    let session = store
+        .create_session(WorkflowNodeId::Goals, "讨论".into(), None, "now".into())
+        .unwrap();
+    let basic_info = store.node(WorkflowNodeId::BasicInfo).unwrap();
+    store
+        .save_node_if_revision(
+            WorkflowNodeId::BasicInfo,
+            basic_info.revision,
+            basic_info.markdown,
+            NodeStatus::Generated,
+            "now".into(),
+        )
+        .unwrap();
+    let turn = completed_turn(&session.id, "turn-plan", "assistant-plan");
+    publish(&store, &session.id, &turn, multi_plan(&session.id));
+    store
+        .consume_execution_plan(
+            WorkflowNodeId::Goals,
+            &session.id,
+            "multi-plan",
+            "继续",
+            message("user-confirm", ChatRole::User, "继续"),
+            running_execution_turn(&session.id, "turn-exec", "run-exec", "multi-plan"),
+            &run(
+                "run-exec",
+                &session.id,
+                "turn-exec",
+                sion_agent::AgentRunKind::HarnessExecution,
+            ),
+            later_now().into(),
+        )
+        .unwrap();
+
+    let goals = "# 需求背景与建设目标\n\n## 需求背景\n更新背景\n\n## 建设目标\n更新目标\n\n## 范围边界\n更新边界";
+    assert!(matches!(
+        store
+            .apply_execution_write_for_owner(
+                WorkflowNodeId::Goals,
+                WorkflowNodeId::Goals,
+                &session.id,
+                "turn-exec",
+                "multi-plan",
+                1,
+                goals.into(),
+                "保存目标节点".into(),
+                "saved-a".into(),
+            )
+            .unwrap(),
+        ExecutionWriteOutcome::Saved { .. }
+    ));
+    let basic_info = store.node(WorkflowNodeId::BasicInfo).unwrap().markdown;
+    assert!(matches!(
+        store
+            .apply_execution_write_for_owner(
+                WorkflowNodeId::BasicInfo,
+                WorkflowNodeId::Goals,
+                &session.id,
+                "turn-exec",
+                "multi-plan",
+                1,
+                basic_info,
+                "保存基本信息节点".into(),
+                "saved-b".into(),
+            )
+            .unwrap(),
+        ExecutionWriteOutcome::Saved { .. }
+    ));
+
+    let record = store
+        .turns(WorkflowNodeId::Goals, &session.id)
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.id == "turn-exec")
+        .unwrap()
+        .harness
+        .unwrap()
+        .execution
+        .unwrap();
+    assert_eq!(record.writes.len(), 2);
+    assert_eq!(record.writes[0].node_id, Some(WorkflowNodeId::Goals));
+    assert_eq!(record.writes[1].node_id, Some(WorkflowNodeId::BasicInfo));
+    assert_eq!(record.completed_targets.len(), 2);
+    assert_eq!(record.writes[0].revision, record.writes[1].revision);
     std::fs::remove_dir_all(root).unwrap();
 }
 

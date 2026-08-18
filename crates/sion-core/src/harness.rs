@@ -235,6 +235,22 @@ pub enum HarnessPlanInvalidReason {
     AmbiguousConfirmation,
     /// Another successful node save invalidated the plan.
     ManualEdit,
+    /// One of the explicitly listed target nodes changed or disappeared.
+    TargetChanged,
+    /// One of the explicitly listed target nodes no longer exists.
+    TargetMissing,
+}
+
+/// Trusted metadata for one node covered by a confirmed execution plan.
+/// Revisions are captured by Rust when the plan is published; the model and
+/// frontend may only request node IDs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessExecutionTarget {
+    pub node_id: WorkflowNodeId,
+    pub base_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// A durable pending execution plan created by a completed planning Harness
@@ -257,6 +273,10 @@ pub struct HarnessExecutionPlan {
     /// Node revision the plan was recorded against; the confirmation must see
     /// the same revision or the plan is invalidated.
     pub base_revision: u64,
+    /// Explicit target set for new plans. Empty means legacy single-node plan;
+    /// use `normalized_targets` before authorization or execution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<HarnessExecutionTarget>,
     /// Bounded public summary of the intended document changes.
     pub summary: String,
     pub status: HarnessPlanStatus,
@@ -268,6 +288,36 @@ pub struct HarnessExecutionPlan {
     pub invalidated_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invalid_reason: Option<HarnessPlanInvalidReason>,
+}
+
+impl HarnessExecutionPlan {
+    /// Returns the explicit target set, or a compatibility target synthesized
+    /// from the legacy owner node/revision fields.
+    pub fn normalized_targets(&self) -> Vec<HarnessExecutionTarget> {
+        if self.targets.is_empty() {
+            vec![HarnessExecutionTarget {
+                node_id: self.node_id,
+                base_revision: self.base_revision,
+                display_name: None,
+            }]
+        } else {
+            self.targets.clone()
+        }
+    }
+
+    /// Validates target cardinality and duplicate IDs without consulting
+    /// storage. Project membership and revisions are checked by storage.
+    pub fn validate_targets(&self) -> Result<(), &'static str> {
+        let targets = self.normalized_targets();
+        if targets.is_empty() {
+            return Err("execution plan must contain at least one target");
+        }
+        let mut seen = std::collections::HashSet::new();
+        if targets.iter().any(|target| !seen.insert(target.node_id)) {
+            return Err("execution plan contains duplicate targets");
+        }
+        Ok(())
+    }
 }
 
 /// Status of one execution run, persisted as a public audit record.
@@ -287,6 +337,9 @@ pub enum HarnessExecutionStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessExecutionWrite {
+    /// `None` preserves legacy single-node audit records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<WorkflowNodeId>,
     pub revision: u64,
     pub summary: String,
     pub saved_at: String,
@@ -306,8 +359,39 @@ pub struct HarnessExecutionRecord {
     pub status: HarnessExecutionStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub writes: Vec<HarnessExecutionWrite>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completed_targets: Vec<WorkflowNodeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_target: Option<WorkflowNodeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_error: Option<String>,
+}
+
+/// Finite verdict emitted by the independent semantic reviewer. The reviewer
+/// never returns replacement Markdown or a write instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticReviewVerdict {
+    Pass,
+    Revise,
+}
+
+/// Bounded semantic review output safe to pass back to the execution model and
+/// to the public audit. All strings are capped by the caller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticReviewResult {
+    pub verdict: SemanticReviewVerdict,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_requirements: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub out_of_plan_content: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cross_node_conflicts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Result of one `apply_current_delivery_change` execution write. This is the
@@ -889,6 +973,7 @@ mod tests {
             plan_turn_id: "turn-1".into(),
             plan_message_id: "message-1".into(),
             base_revision: 3,
+            targets: Vec::new(),
             summary: "补充建设目标与验收标准".into(),
             status: HarnessPlanStatus::Pending,
             created_at: "now".into(),
@@ -944,10 +1029,14 @@ mod tests {
             finished_at: Some("finish".into()),
             status: HarnessExecutionStatus::Completed,
             writes: vec![HarnessExecutionWrite {
+                node_id: Some(WorkflowNodeId::Goals),
                 revision: 4,
                 summary: "保存建设目标章节".into(),
                 saved_at: "saved".into(),
             }],
+            completed_targets: vec![WorkflowNodeId::Goals],
+            stopped_target: None,
+            stopped_reason: None,
             public_error: None,
         };
         let value = serde_json::to_value(&record).unwrap();

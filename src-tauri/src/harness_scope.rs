@@ -49,6 +49,27 @@ pub(crate) struct HarnessScope {
     pub(crate) model_selection: ChatModelSelection,
     pub(crate) rewrite_authorized: bool,
     pub(crate) rule_write_authorized: bool,
+    /// Frozen read/write metadata for every explicitly planned target. The
+    /// legacy scalar fields remain for current-node planning compatibility.
+    pub(crate) target_scopes: Vec<HarnessTargetScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HarnessTargetScope {
+    pub(crate) node_id: WorkflowNodeId,
+    pub(crate) expected_revision: u64,
+    pub(crate) current_markdown: String,
+    pub(crate) rule_snapshot: EffectiveRuleSnapshot,
+}
+
+impl HarnessScope {
+    pub(crate) fn target_scope(&self, node_id: WorkflowNodeId) -> Option<&HarnessTargetScope> {
+        self.target_scopes.iter().find(|target| target.node_id == node_id)
+    }
+
+    pub(crate) fn target_ids(&self) -> Vec<WorkflowNodeId> {
+        self.target_scopes.iter().map(|target| target.node_id).collect()
+    }
 }
 
 impl HarnessScope {
@@ -87,6 +108,17 @@ pub(crate) fn freeze_harness_scope(
     let files = store.list_files().map_err(|_| "项目附件读取失败".to_string())?;
     let attachment_ids = files.into_iter().map(|file| file.id).collect();
     let authorization = authorize_latest_user_message(latest_user_message);
+    let current_target = HarnessTargetScope {
+        node_id,
+        expected_revision: node.revision,
+        current_markdown: node.markdown.clone(),
+        rule_snapshot: EffectiveRuleSnapshot {
+            built_in_markdown: effective.built_in_markdown.clone(),
+            custom_markdown: effective.custom_markdown.clone(),
+            effective_markdown: effective.effective_markdown.clone(),
+            digest: agent_override_digest(effective.custom_markdown.as_deref()),
+        },
+    };
     Ok(HarnessScope {
         project_id,
         canonical_project_root,
@@ -104,6 +136,7 @@ pub(crate) fn freeze_harness_scope(
         model_selection,
         rewrite_authorized: authorization.complete_delivery_rewrite,
         rule_write_authorized: authorization.agent_rule_proposal,
+        target_scopes: vec![current_target],
     })
 }
 
@@ -144,6 +177,27 @@ pub(crate) fn freeze_execution_scope(
     let dependency_ids = readable_dependency_ids(node_id);
     let files = store.list_files().map_err(|_| "项目附件读取失败".to_string())?;
     let attachment_ids = files.into_iter().map(|file| file.id).collect();
+    let mut target_scopes = Vec::new();
+    for target in plan.normalized_targets() {
+        let target_node = store
+            .node(target.node_id)
+            .map_err(|_| "计划目标节点读取失败".to_string())?;
+        let target_override = store
+            .agent_override(target.node_id)
+            .map_err(|_| "计划目标 Agent 规则读取失败".to_string())?;
+        let target_effective = compose_effective_agent_rules(target.node_id, target_override);
+        target_scopes.push(HarnessTargetScope {
+            node_id: target.node_id,
+            expected_revision: target.base_revision,
+            current_markdown: target_node.markdown,
+            rule_snapshot: EffectiveRuleSnapshot {
+                built_in_markdown: target_effective.built_in_markdown,
+                custom_markdown: target_effective.custom_markdown.clone(),
+                effective_markdown: target_effective.effective_markdown,
+                digest: agent_override_digest(target_effective.custom_markdown.as_deref()),
+            },
+        });
+    }
     Ok(HarnessScope {
         project_id,
         canonical_project_root,
@@ -163,6 +217,7 @@ pub(crate) fn freeze_execution_scope(
         rewrite_authorized: true,
         // Execution never changes Agent rules.
         rule_write_authorized: false,
+        target_scopes,
     })
 }
 
@@ -366,6 +421,7 @@ mod tests {
             plan_turn_id: "turn-plan".into(),
             plan_message_id: "message-plan".into(),
             base_revision: 1,
+            targets: Vec::new(),
             summary: "补充目标".into(),
             status: HarnessPlanStatus::Pending,
             created_at: "now".into(),
@@ -413,6 +469,7 @@ mod tests {
             plan_turn_id: "turn-plan".into(),
             plan_message_id: "message-plan".into(),
             base_revision: 1,
+            targets: Vec::new(),
             summary: "s".into(),
             status: HarnessPlanStatus::Pending,
             created_at: "now".into(),
@@ -443,6 +500,7 @@ mod tests {
             plan_turn_id: "turn-plan".into(),
             plan_message_id: "message-plan".into(),
             base_revision: 2,
+            targets: Vec::new(),
             summary: "s".into(),
             status: HarnessPlanStatus::Pending,
             created_at: "now".into(),

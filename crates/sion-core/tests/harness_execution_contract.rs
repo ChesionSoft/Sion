@@ -23,6 +23,7 @@ fn plan_contract_pins_wire_names_and_optional_lifecycle() {
         plan_turn_id: "turn-1".into(),
         plan_message_id: "message-1".into(),
         base_revision: 7,
+        targets: Vec::new(),
         summary: "补充流程步骤并调整核心业务流程".into(),
         status: HarnessPlanStatus::Pending,
         created_at: "now".into(),
@@ -75,6 +76,8 @@ fn plan_status_and_invalid_reason_cover_all_terminal_paths() {
         (HarnessPlanInvalidReason::Restarted, "restarted"),
         (HarnessPlanInvalidReason::AmbiguousConfirmation, "ambiguous_confirmation"),
         (HarnessPlanInvalidReason::ManualEdit, "manual_edit"),
+        (HarnessPlanInvalidReason::TargetChanged, "target_changed"),
+        (HarnessPlanInvalidReason::TargetMissing, "target_missing"),
     ] {
         assert_eq!(serde_json::to_value(reason).unwrap(), wire);
     }
@@ -90,16 +93,21 @@ fn execution_record_audits_writes_without_content_or_secrets() {
         status: HarnessExecutionStatus::Completed,
         writes: vec![
             HarnessExecutionWrite {
+                node_id: Some(WorkflowNodeId::BusinessFlow),
                 revision: 8,
                 summary: "保存核心业务流程章节".into(),
                 saved_at: "s1".into(),
             },
             HarnessExecutionWrite {
+                node_id: Some(WorkflowNodeId::BusinessFlow),
                 revision: 9,
                 summary: "保存流程步骤章节".into(),
                 saved_at: "s2".into(),
             },
         ],
+        completed_targets: vec![WorkflowNodeId::BusinessFlow],
+        stopped_target: None,
+        stopped_reason: None,
         public_error: None,
     };
     let value = serde_json::to_value(&record).unwrap();
@@ -204,6 +212,7 @@ fn planning_turn_with_plan_round_trips_inside_harness_state() {
         plan_turn_id: "turn-plan".into(),
         plan_message_id: "message-plan".into(),
         base_revision: 2,
+        targets: Vec::new(),
         summary: "补充范围边界".into(),
         status: HarnessPlanStatus::Pending,
         created_at: "created".into(),
@@ -268,10 +277,14 @@ fn execution_turn_with_audit_record_round_trips() {
         finished_at: Some("finish".into()),
         status: HarnessExecutionStatus::Failed,
         writes: vec![HarnessExecutionWrite {
+            node_id: Some(WorkflowNodeId::Goals),
             revision: 3,
             summary: "保存建设目标".into(),
             saved_at: "s".into(),
         }],
+        completed_targets: vec![WorkflowNodeId::Goals],
+        stopped_target: None,
+        stopped_reason: None,
         public_error: Some("模型步骤失败".into()),
     };
     let state = HarnessTurnState {

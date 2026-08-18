@@ -251,7 +251,8 @@ export type HarnessDiagnostics = {
   toolTraces: SanitizedToolTrace[];
 };
 export type HarnessPlanStatus = "pending" | "consumed" | "invalidated";
-export type HarnessPlanInvalidReason = "expired" | "node_changed" | "session_deleted" | "cancelled" | "restarted" | "ambiguous_confirmation" | "manual_edit";
+export type HarnessPlanInvalidReason = "expired" | "node_changed" | "session_deleted" | "cancelled" | "restarted" | "ambiguous_confirmation" | "manual_edit" | "target_changed" | "target_missing";
+export type HarnessExecutionTarget = { nodeId: NodeId; baseRevision: number; displayName?: string };
 export type HarnessExecutionPlan = {
   id: string;
   projectId: string;
@@ -260,6 +261,8 @@ export type HarnessExecutionPlan = {
   planTurnId: string;
   planMessageId: string;
   baseRevision: number;
+  /** Empty on legacy records; normalize to the owner node before use. */
+  targets?: HarnessExecutionTarget[];
   summary: string;
   status: HarnessPlanStatus;
   createdAt: string;
@@ -269,7 +272,7 @@ export type HarnessExecutionPlan = {
   invalidReason?: HarnessPlanInvalidReason;
 };
 export type HarnessExecutionStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
-export type HarnessExecutionWrite = { revision: number; summary: string; savedAt: string };
+export type HarnessExecutionWrite = { nodeId?: NodeId; revision: number; summary: string; savedAt: string };
 export type HarnessExecutionRecord = {
   runId: string;
   turnId: string;
@@ -277,6 +280,9 @@ export type HarnessExecutionRecord = {
   finishedAt?: string;
   status: HarnessExecutionStatus;
   writes: HarnessExecutionWrite[];
+  completedTargets?: NodeId[];
+  stoppedTarget?: NodeId;
+  stoppedReason?: string;
   publicError?: string;
 };
 export type HarnessTurnState = {

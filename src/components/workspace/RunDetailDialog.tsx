@@ -1,6 +1,7 @@
 import type { AgentRun, AgentRunDetail, DeliveryOutcome, TurnActivity } from "../../types";
 import { Button, Dialog, StatusDot } from "../ui";
 import { DeliveryDecisionDetails } from "./DeliveryDecisionDetails";
+import { executionNodeLabel } from "../../harness-execution";
 
 const LEGACY_MISSING = "历史记录未保存此信息";
 
@@ -195,14 +196,18 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
                   ))}
                 </ol>
               ) : null}
-              {turn?.harness?.execution ? (
-                <div className="run-detail-execution-audit">
-                  <strong>保存审计 · {turn.harness.execution.status}</strong>
-                  {turn.harness.execution.writes.length ? (
+                  {turn?.harness?.execution ? (
+                    <div className="run-detail-execution-audit">
+                      <strong>保存审计 · {turn.harness.execution.status}</strong>
+                      <small>
+                        已保存节点：{turn.harness.execution.completedTargets?.length ?? turn.harness.execution.writes.length}
+                        {turn.harness.execution.stoppedTarget ? ` · 停止于${executionNodeLabel(turn.harness.execution.stoppedTarget)}` : ""}
+                      </small>
+                      {turn.harness.execution.writes.length ? (
                     <ol className="run-detail-calls">
                       {turn.harness.execution.writes.map((write) => (
                         <li key={`${write.revision}-${write.savedAt}`}>
-                          <strong>revision {write.revision}</strong>
+                          <strong>{write.nodeId ? executionNodeLabel(write.nodeId) : "当前节点"} · revision {write.revision}</strong>
                           <span>{write.summary}</span>
                           <small>{formatTime(write.savedAt)}</small>
                         </li>

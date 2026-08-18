@@ -40,6 +40,7 @@ mod harness_runtime;
 mod harness_scope;
 mod harness_search;
 mod harness_tools;
+mod semantic_review;
 mod turn_runtime;
 use conversation_runtime::{EffectiveAgentRules, compose_effective_agent_rules};
 

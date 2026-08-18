@@ -11,6 +11,7 @@ const readToolNames = [
   "read_dependency_section",
   "search_allowed_context",
   "read_current_delivery",
+  "read_project_node",
   "read_effective_agent_rule",
 ];
 const planningToolNames = [

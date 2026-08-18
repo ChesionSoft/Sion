@@ -205,7 +205,13 @@ fn execution_request_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
-            "summary": { "type": "string", "maxLength": 400 }
+            "summary": { "type": "string", "maxLength": 400 },
+            "targets": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 12,
+                "items": { "type": "string", "enum": sion_core::WorkflowNodeId::ALL.iter().map(|id| id.as_str()).collect::<Vec<_>>() }
+            }
         },
         "required": ["summary"],
         "additionalProperties": false
@@ -235,6 +241,7 @@ struct ProposalCandidate {
 #[derive(Debug, Clone)]
 struct PendingExecutionCandidate {
     summary: String,
+    targets: Vec<sion_core::WorkflowNodeId>,
     created_at: String,
     expires_at: String,
 }
@@ -364,6 +371,20 @@ impl<'a> ProposalService<'a> {
         plan_message_id: &str,
     ) -> Option<sion_core::HarnessExecutionPlan> {
         let candidate = self.pending_execution.as_ref()?;
+        let targets = candidate
+            .targets
+            .iter()
+            .map(|node_id| {
+                self.store
+                    .node(*node_id)
+                    .ok()
+                    .map(|node| sion_core::HarnessExecutionTarget {
+                        node_id: *node_id,
+                        base_revision: node.revision,
+                        display_name: None,
+                    })
+            })
+            .collect::<Option<Vec<_>>>()?;
         Some(sion_core::HarnessExecutionPlan {
             id: format!("plan-{}", uuid::Uuid::new_v4()),
             project_id: self.scope.project_id.clone(),
@@ -372,6 +393,7 @@ impl<'a> ProposalService<'a> {
             plan_turn_id: plan_turn_id.to_string(),
             plan_message_id: plan_message_id.to_string(),
             base_revision: self.scope.expected_node_revision,
+            targets,
             summary: candidate.summary.clone(),
             status: sion_core::HarnessPlanStatus::Pending,
             created_at: candidate.created_at.clone(),
@@ -409,8 +431,22 @@ impl<'a> ProposalService<'a> {
                 "本轮已有一个待确认的执行计划，请不要重复请求".to_string(),
             ));
         }
+        let targets = payload.targets.unwrap_or_else(|| vec![self.scope.node_id]);
+        if targets.is_empty() || targets.len() > sion_core::WorkflowNodeId::ALL.len() {
+            return Err(ToolError::InvalidArguments("目标节点数量无效".to_string()));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for node_id in &targets {
+            if !seen.insert(*node_id) {
+                return Err(ToolError::InvalidArguments("目标节点不能重复".to_string()));
+            }
+            self.store
+                .node(*node_id)
+                .map_err(|_| ToolError::InvalidArguments("目标节点不存在".to_string()))?;
+        }
         self.pending_execution = Some(PendingExecutionCandidate {
             summary,
+            targets,
             created_at: now.to_string(),
             expires_at: expiry_from_now(now),
         });
@@ -690,6 +726,8 @@ struct DiscardArgs {
 #[serde(rename_all = "camelCase")]
 struct ExecutionRequestArgs {
     summary: String,
+    #[serde(default)]
+    targets: Option<Vec<sion_core::WorkflowNodeId>>,
 }
 
 #[cfg(test)]
