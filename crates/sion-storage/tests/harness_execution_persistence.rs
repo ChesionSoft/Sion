@@ -531,6 +531,16 @@ fn consume_plan_begins_execution_turn_with_user_message_and_run() {
             assert_eq!(run.kind, sion_agent::AgentRunKind::HarnessExecution);
             assert_eq!(turn.id, "turn-exec");
             assert_eq!(consumed.status, HarnessPlanStatus::Consumed);
+            assert_eq!(
+                turn.harness
+                    .as_ref()
+                    .unwrap()
+                    .execution_plan
+                    .as_ref()
+                    .unwrap()
+                    .status,
+                HarnessPlanStatus::Consumed
+            );
         }
         other => panic!("expected consumed, got {other:?}"),
     }
@@ -545,6 +555,17 @@ fn consume_plan_begins_execution_turn_with_user_message_and_run() {
     assert_eq!(turns.len(), 2);
     assert_eq!(turns[1].id, "turn-exec");
     assert_eq!(turns[1].status, TurnStatus::Running);
+    assert_eq!(
+        turns[1]
+            .harness
+            .as_ref()
+            .unwrap()
+            .execution_plan
+            .as_ref()
+            .unwrap()
+            .status,
+        HarnessPlanStatus::Consumed
+    );
     let plan_turn = &turns[0];
     assert_eq!(
         plan_turn

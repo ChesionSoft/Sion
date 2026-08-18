@@ -1096,6 +1096,14 @@ fn agent_run_start(
                 request.now.clone(),
             )
             .map_err(ApiError::CheckFailed)?;
+            let consumed_plan = start_result
+                .1
+                .harness
+                .as_ref()
+                .and_then(|harness| harness.execution_plan.clone())
+                .ok_or_else(|| {
+                    ApiError::CheckFailed("执行轮次缺少已确认计划".to_string())
+                })?;
             let job = harness_runtime::HarnessJob {
                 project_root,
                 project_id: request.project_id.clone(),
@@ -1109,7 +1117,9 @@ fn agent_run_start(
                 reasoning_effort: prepared.selection.reasoning_effort,
                 cancellation: CancellationToken::new(),
                 started_instant: Instant::now(),
-                mode: prepared.mode.clone(),
+                mode: harness_runtime::HarnessRunMode::Execution {
+                    plan: consumed_plan,
+                },
                 initial_messages: prepared.initial_messages.clone(),
                 limits: prepared.limits,
             };
@@ -2890,7 +2900,8 @@ fn spawn_agent_run(
                 }
                 // The legacy text-only paths never advertise tools; if a provider
                 // still streams a call, it is dropped rather than executed.
-                sion_agent::model_stream::StreamDelta::ToolCallDelta { .. } => {}
+                sion_agent::model_stream::StreamDelta::ToolCallDelta { .. }
+                | sion_agent::model_stream::StreamDelta::ToolCallArgumentsDone { .. } => {}
             },
         )
         .await;
@@ -3191,7 +3202,8 @@ fn spawn_regeneration_run(
                 }
                 sion_agent::model_stream::StreamDelta::ReasoningSummary(_) => {}
                 // Regeneration is a text-only path; never execute streamed calls.
-                sion_agent::model_stream::StreamDelta::ToolCallDelta { .. } => {}
+                sion_agent::model_stream::StreamDelta::ToolCallDelta { .. }
+                | sion_agent::model_stream::StreamDelta::ToolCallArgumentsDone { .. } => {}
             },
         )
         .await;

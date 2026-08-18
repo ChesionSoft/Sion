@@ -103,6 +103,9 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
   const context = run?.contextSnapshot;
   const usage = run?.usage;
   const harness = detail?.harnessSummary;
+  const toolTraces = harness?.toolTraces ?? [];
+  const proposals = harness?.proposals ?? [];
+  const executionWrites = turn?.harness?.execution?.writes ?? [];
 
   return (
     <Dialog open={open} title="运行详情" description="查看本次运行保存的上下文、用量和文稿提案结果。" size="medium" closeLabel="关闭运行详情" onClose={onClose}>
@@ -185,9 +188,9 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
                 <DetailField label="校验重试" value={harness.validationRetries} />
                 <DetailField label="触发限制" value={harness.limitReached ? HARNESS_LIMIT_LABEL[harness.limitReached] : undefined} />
               </dl>
-              {harness.toolTraces.length ? (
+              {toolTraces.length ? (
                 <ol className="run-detail-calls">
-                  {harness.toolTraces.map((trace) => (
+                  {toolTraces.map((trace) => (
                     <li key={trace.callId}>
                       <strong>{trace.name}</strong>
                       <span>{TOOL_STATUS_LABEL[trace.status]} · {trace.summary}</span>
@@ -200,12 +203,12 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
                     <div className="run-detail-execution-audit">
                       <strong>保存审计 · {turn.harness.execution.status}</strong>
                       <small>
-                        已保存节点：{turn.harness.execution.completedTargets?.length ?? turn.harness.execution.writes.length}
+                        已保存节点：{turn.harness.execution.completedTargets?.length ?? executionWrites.length}
                         {turn.harness.execution.stoppedTarget ? ` · 停止于${executionNodeLabel(turn.harness.execution.stoppedTarget)}` : ""}
                       </small>
-                      {turn.harness.execution.writes.length ? (
+                      {executionWrites.length ? (
                     <ol className="run-detail-calls">
-                      {turn.harness.execution.writes.map((write) => (
+                      {executionWrites.map((write) => (
                         <li key={`${write.revision}-${write.savedAt}`}>
                           <strong>{write.nodeId ? executionNodeLabel(write.nodeId) : "当前节点"} · revision {write.revision}</strong>
                           <span>{write.summary}</span>
@@ -241,9 +244,9 @@ export function RunDetailDialog({ open, detail, loading, error, onClose, onRetry
           {harness ? (
             <section>
               <h3>文稿提案</h3>
-              {harness.proposals.length ? (
+              {proposals.length ? (
                 <ol className="run-detail-calls">
-                  {harness.proposals.map((proposal) => (
+                  {proposals.map((proposal) => (
                     <li key={proposal.id}>
                       <strong>{proposal.kind === "delivery" ? "当前节点交付稿" : "当前节点 Agent 规则"}</strong>
                       <span>{proposal.status} · {proposal.reason}</span>

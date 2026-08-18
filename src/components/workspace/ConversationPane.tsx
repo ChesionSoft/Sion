@@ -184,7 +184,13 @@ export function ConversationPane(props: ConversationPaneProps) {
               saving={savingModelSelection}
               onSelection={onModelSelection}
             />
-            <Button variant={composerMode === "stop" ? "danger" : "primary"} disabled={sendDisabled} loading={composerMode === "sending"} type="submit">
+            <Button
+              variant={composerMode === "stop" ? "danger" : "primary"}
+              disabled={sendDisabled}
+              loading={composerMode === "sending"}
+              type="button"
+              onClick={submit}
+            >
               {composerMode === "stop" ? "停止" : "发送"}
             </Button>
           </div>

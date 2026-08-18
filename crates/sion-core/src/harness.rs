@@ -363,9 +363,9 @@ pub struct HarnessExecutionRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     pub status: HarnessExecutionStatus,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub writes: Vec<HarnessExecutionWrite>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub completed_targets: Vec<WorkflowNodeId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_target: Option<WorkflowNodeId>,

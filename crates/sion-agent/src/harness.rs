@@ -245,7 +245,8 @@ impl<'a> HarnessRunner<'a> {
                             reasoning_parts.push(text.clone());
                             observer.on_reasoning_delta(text);
                         }
-                        StreamDelta::ToolCallDelta { .. } => {}
+                        StreamDelta::ToolCallDelta { .. }
+                        | StreamDelta::ToolCallArgumentsDone { .. } => {}
                     }
                 })
                 .await;

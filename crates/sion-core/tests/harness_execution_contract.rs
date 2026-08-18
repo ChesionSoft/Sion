@@ -129,6 +129,25 @@ fn execution_record_audits_writes_without_content_or_secrets() {
 }
 
 #[test]
+fn running_execution_record_serializes_empty_collections_for_ipc() {
+    let record = HarnessExecutionRecord {
+        run_id: "run-1".into(),
+        turn_id: "turn-1".into(),
+        started_at: "start".into(),
+        finished_at: None,
+        status: HarnessExecutionStatus::Running,
+        writes: Vec::new(),
+        completed_targets: Vec::new(),
+        stopped_target: None,
+        stopped_reason: None,
+        public_error: None,
+    };
+    let value = serde_json::to_value(record).unwrap();
+    assert_eq!(value["writes"], serde_json::json!([]));
+    assert_eq!(value["completedTargets"], serde_json::json!([]));
+}
+
+#[test]
 fn write_result_round_trips_every_safe_outcome() {
     for result in [
         HarnessExecutionWriteResult::Saved { revision: 9 },

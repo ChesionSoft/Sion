@@ -1,13 +1,21 @@
 import { NODES } from "./types.ts";
-import type { HarnessExecutionPlan, HarnessExecutionRecord, HarnessExecutionTarget, HarnessPlanInvalidReason, NodeId } from "./types.ts";
+import type { HarnessExecutionPlan, HarnessExecutionRecord, HarnessExecutionTarget, HarnessPlanInvalidReason, HarnessPlanStatus, NodeId } from "./types.ts";
 
 export function executionPlanTargets(plan: HarnessExecutionPlan): HarnessExecutionTarget[] {
   return plan.targets?.length ? plan.targets : [{ nodeId: plan.nodeId, baseRevision: plan.baseRevision }];
 }
 
-export function executionPlanStatusLabel(plan: HarnessExecutionPlan): string {
-  if (plan.status === "pending") return "等待确认";
-  if (plan.status === "consumed") return "已确认执行";
+export function effectiveExecutionPlanStatus(
+  plan: HarnessExecutionPlan,
+  execution?: HarnessExecutionRecord,
+): HarnessPlanStatus {
+  return execution ? "consumed" : plan.status;
+}
+
+export function executionPlanStatusLabel(plan: HarnessExecutionPlan, execution?: HarnessExecutionRecord): string {
+  const status = effectiveExecutionPlanStatus(plan, execution);
+  if (status === "pending") return "等待确认";
+  if (status === "consumed") return "已确认执行";
   return "计划已失效";
 }
 
@@ -46,6 +54,6 @@ export function executionTargetState(
   nodeId: NodeId,
 ): "pending" | "saved" | "stopped" {
   if (record?.stoppedTarget === nodeId && !record.completedTargets?.includes(nodeId)) return "stopped";
-  if (record?.completedTargets?.includes(nodeId) || record?.writes.some((write) => (write.nodeId ?? plan?.nodeId) === nodeId)) return "saved";
+  if (record?.completedTargets?.includes(nodeId) || record?.writes?.some((write) => (write.nodeId ?? plan?.nodeId) === nodeId)) return "saved";
   return "pending";
 }

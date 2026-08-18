@@ -286,7 +286,7 @@ export type HarnessExecutionRecord = {
   startedAt: string;
   finishedAt?: string;
   status: HarnessExecutionStatus;
-  writes: HarnessExecutionWrite[];
+  writes?: HarnessExecutionWrite[];
   completedTargets?: NodeId[];
   stoppedTarget?: NodeId;
   stoppedReason?: string;

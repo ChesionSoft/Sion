@@ -28,9 +28,7 @@ pub struct HarnessRunDetailSummary {
     pub validation_retries: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit_reached: Option<HarnessLimitKind>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tool_traces: Vec<SanitizedToolTrace>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub proposals: Vec<HarnessProposal>,
 }
 
@@ -111,5 +109,20 @@ mod tests {
                 .get("prompt")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn harness_detail_keeps_empty_collections_in_the_ipc_shape() {
+        let detail = HarnessRunDetailSummary {
+            model_steps: 1,
+            tool_calls: 0,
+            validation_retries: 0,
+            limit_reached: None,
+            tool_traces: Vec::new(),
+            proposals: Vec::new(),
+        };
+        let value = serde_json::to_value(detail).unwrap();
+        assert_eq!(value["toolTraces"], serde_json::json!([]));
+        assert_eq!(value["proposals"], serde_json::json!([]));
     }
 }

@@ -432,13 +432,6 @@ pub struct ConversationDocument {
     pub turns: Vec<ConversationTurn>,
 }
 
-#[derive(Debug, serde::Deserialize)]
-#[serde(untagged)]
-enum StoredConversationDocument {
-    Legacy(Vec<ChatMessage>),
-    Current(ConversationDocument),
-}
-
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PendingConversationWrite {
@@ -489,13 +482,28 @@ fn read_conversation_document(path: &Path) -> Result<ConversationDocument> {
             turns: Vec::new(),
         });
     }
-    match read_json::<StoredConversationDocument>(path)? {
-        StoredConversationDocument::Legacy(messages) => Ok(ConversationDocument {
+    // Decode the top-level shape explicitly instead of relying on an
+    // untagged enum. This keeps legacy array documents compatible while
+    // avoiding an opaque "untagged enum" error for object-shaped records.
+    let value = read_json::<serde_json::Value>(path)?;
+    if value.is_array() {
+        let messages = serde_json::from_value::<Vec<ChatMessage>>(value).map_err(|source| {
+            StorageError::InvalidJson {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+        return Ok(ConversationDocument {
             messages,
             turns: Vec::new(),
-        }),
-        StoredConversationDocument::Current(document) => Ok(document),
+        });
     }
+    serde_json::from_value::<ConversationDocument>(value).map_err(|source| {
+        StorageError::InvalidJson {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
 }
 
 fn write_conversation_document(path: &Path, document: &ConversationDocument) -> Result<()> {
@@ -1645,7 +1653,7 @@ impl ProjectStore {
         plan_id: &str,
         reply: &str,
         user_message: ChatMessage,
-        turn: ConversationTurn,
+        mut turn: ConversationTurn,
         run: &AgentRun,
         now: String,
     ) -> Result<ConsumeExecutionPlanResult> {
@@ -1793,6 +1801,9 @@ impl ProjectStore {
             .and_then(|harness| harness.execution_plan.as_mut())
         {
             *plan = consumed_plan.clone();
+        }
+        if let Some(harness) = turn.harness.as_mut() {
+            harness.execution_plan = Some(consumed_plan.clone());
         }
         if !document
             .messages
