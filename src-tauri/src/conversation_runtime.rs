@@ -641,10 +641,14 @@ pub(crate) fn build_harness_initial_messages(
     limits: HarnessLimits,
     context_window_tokens: u64,
     calculated_at: &str,
+    phase_instruction: Option<&str>,
 ) -> Result<(Vec<sion_agent::model_protocol::ProtocolMessage>, ConversationContextSnapshot), String> {
     let sections = build_harness_sections(store, scope, selected_file_ids, tool_definitions, limits)?;
+    let phase_instruction = phase_instruction
+        .map(|instruction| format!("{instruction}\n\n"))
+        .unwrap_or_default();
     let system_content = format!(
-        "{}\n\n# 本节点规则\n{}\n\n{}\n\n{}\n\n{}",
+        "{phase_instruction}{}\n\n# 本节点规则\n{}\n\n{}\n\n{}\n\n{}",
         sections.protocol,
         sections.rules,
         sections.dependency_nodes,

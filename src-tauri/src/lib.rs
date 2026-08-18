@@ -3988,19 +3988,29 @@ fn fail_promoted_run(
             None
         }
     } else {
-        let job = state
-            .jobs
+        let harness_job = state
+            .harness_jobs
             .lock()
             .ok()
             .and_then(|mut jobs| jobs.remove(&run.id));
-        if let Some(job) = job {
+        if let Some(job) = harness_job {
             let store = ProjectStore::at(&job.project_root);
             let failed_turn = store
                 .turns(job.node_id, &job.session_id)
                 .ok()
                 .and_then(|turns| turns.into_iter().find(|turn| turn.id == job.turn_id))
                 .map(|mut turn| {
-                    turn_runtime::mark_turn_start_failed(&mut turn, &failed_at);
+                    turn.status = TurnStatus::Failed;
+                    turn.finished_at = Some(failed_at.clone());
+                    if let Some(execution) = turn
+                        .harness
+                        .as_mut()
+                        .and_then(|harness| harness.execution.as_mut())
+                    {
+                        execution.status = sion_core::HarnessExecutionStatus::Failed;
+                        execution.finished_at = Some(failed_at.clone());
+                        execution.public_error = Some(error.to_string());
+                    }
                     turn
                 });
             if let Some(turn) = failed_turn
@@ -4018,7 +4028,38 @@ fn fail_promoted_run(
             }
             Some(job.project_root)
         } else {
-            None
+            let job = state
+                .jobs
+                .lock()
+                .ok()
+                .and_then(|mut jobs| jobs.remove(&run.id));
+            if let Some(job) = job {
+                let store = ProjectStore::at(&job.project_root);
+                let failed_turn = store
+                    .turns(job.node_id, &job.session_id)
+                    .ok()
+                    .and_then(|turns| turns.into_iter().find(|turn| turn.id == job.turn_id))
+                    .map(|mut turn| {
+                        turn_runtime::mark_turn_start_failed(&mut turn, &failed_at);
+                        turn
+                    });
+                if let Some(turn) = failed_turn
+                    && store
+                        .save_turn(job.node_id, &job.session_id, turn.clone())
+                        .is_ok()
+                {
+                    let _ = app.emit(
+                        "conversation-turn-updated",
+                        ConversationTurnEvent {
+                            turn,
+                            saved_node: None,
+                        },
+                    );
+                }
+                Some(job.project_root)
+            } else {
+                None
+            }
         }
     };
     if let Some(failed) = failed {
